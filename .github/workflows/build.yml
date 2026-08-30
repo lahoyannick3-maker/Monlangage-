@@ -1,1 +1,46 @@
+name: Build APK
 
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+
+      - name: Installer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Installer les dependances
+        run: npm install
+
+      - name: Ajouter la plateforme Android
+        run: npx cap add android
+
+      - name: Synchroniser le contenu web (www/) vers Android
+        run: npx cap sync android
+
+      - name: Patcher le projet Android (association .mlg + ouverture externe)
+        run: node scripts/patch-android.js
+
+      - name: Installer Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Builder l'APK (debug)
+        working-directory: android
+        run: chmod +x ./gradlew && ./gradlew assembleDebug
+
+      - name: Publier l'APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: monlangage-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
