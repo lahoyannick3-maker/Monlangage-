@@ -1,0 +1,14 @@
+{
+  "name": "monlangage-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Application Capacitor pour MonLangage (fichiers .mlg)",
+  "scripts": {},
+  "dependencies": {
+    "@capacitor/core": "^6.1.2",
+    "@capacitor/android": "^6.1.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.2"
+  }
+}
