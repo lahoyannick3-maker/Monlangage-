@@ -19,6 +19,18 @@ const appId = config.appId;
 const manifestPath = path.join('android', 'app', 'src', 'main', 'AndroidManifest.xml');
 let manifest = fs.readFileSync(manifestPath, 'utf8');
 
+// Permissions necessaires pour que MainActivity accede directement au stockage
+// (listerDossier / ecrireFichier / lireFichier), sans passer par un selecteur systeme.
+const permissionsStockage =
+`    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+`;
+if (!manifest.includes('MANAGE_EXTERNAL_STORAGE')) {
+  manifest = manifest.replace('<application', permissionsStockage + '\n    <application');
+  console.log('[patch-android] AndroidManifest.xml : permissions de stockage ajoutees.');
+}
+
 const intentFilterMlg =
 `        <intent-filter>
             <action android:name="android.intent.action.VIEW" />
@@ -33,11 +45,11 @@ const intentFilterMlg =
 
 if (!manifest.includes('.mlg')) {
   manifest = manifest.replace('</activity>', intentFilterMlg);
-  fs.writeFileSync(manifestPath, manifest);
   console.log('[patch-android] AndroidManifest.xml : association .mlg ajoutee.');
 } else {
-  console.log('[patch-android] AndroidManifest.xml : deja patche.');
+  console.log('[patch-android] AndroidManifest.xml : association .mlg deja presente.');
 }
+fs.writeFileSync(manifestPath, manifest);
 
 /* ---------- 2) MainActivity.java ---------- */
 const mainActivityDir = path.join('android', 'app', 'src', 'main', 'java', ...appId.split('.'));
@@ -47,31 +59,32 @@ const mainActivityContent = `package ${appId};
 
 import android.content.Intent;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
+import android.provider.Settings;
 import android.webkit.JavascriptInterface;
 import com.getcapacitor.BridgeActivity;
+import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 // Activite Android native de MonLangage.
-// Elle fournit aussi un pont JavaScript pour Enregistrer/Ouvrir les fichiers .mlg.
+// Fournit un pont JavaScript (window.MonLangage) qui donne un acces direct au
+// stockage de l'appareil (pas de selecteur systeme Android) : l'editeur affiche
+// son propre navigateur de dossiers, dans le style de l'app.
 public class MainActivity extends BridgeActivity {
-
-    private static final int REQUEST_OPEN_MLG = 4101;
-    private static final int REQUEST_SAVE_MLG = 4102;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
-        // Les boutons de l'editeur utilisent ce pont pour ouvrir les vrais
-        // selecteurs de fichiers Android. Cela evite les limitations des
-        // telechargements Blob dans une WebView Capacitor.
         getBridge().getWebView().addJavascriptInterface(new MonLangageBridge(), "MonLangage");
-
         traiterIntentOuverture(getIntent());
     }
 
@@ -83,102 +96,105 @@ public class MainActivity extends BridgeActivity {
     }
 
     private class MonLangageBridge {
+
+        // Chemin du dossier racine a partir duquel commence la navigation
+        // (stockage partage de l'appareil).
         @JavascriptInterface
-        public void saveFile(String filename, String content) {
+        public String dossierRacine() {
+            return Environment.getExternalStorageDirectory().getAbsolutePath();
+        }
+
+        // VRAI si l'app a le droit d'acceder librement au stockage (Android 11+).
+        @JavascriptInterface
+        public boolean permissionStockageAccordee() {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                return Environment.isExternalStorageManager();
+            }
+            return true;
+        }
+
+        // Ouvre l'ecran systeme ou l'utilisateur accorde "l'acces a tous les fichiers"
+        // a l'app (une seule fois necessaire). L'app doit ensuite rouvrir le
+        // navigateur de fichiers elle-meme.
+        @JavascriptInterface
+        public void demanderPermissionStockage() {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return;
             runOnUiThread(() -> {
-                Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-                intent.addCategory(Intent.CATEGORY_OPENABLE);
-                // "application/octet-stream" n'a aucune extension associee dans le systeme
-                // Android (contrairement a "text/plain" -> .txt) : le nom de fichier donne
-                // via EXTRA_TITLE (deja termine par .mlg) n'est alors pas modifie.
-                intent.setType("application/octet-stream");
-                intent.putExtra(Intent.EXTRA_TITLE, filename);
-                startActivityForResult(intent, REQUEST_SAVE_MLG);
-                contenuAEnregistrer = content;
+                try {
+                    Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+                    intent.setData(Uri.parse("package:" + getPackageName()));
+                    startActivity(intent);
+                } catch (Exception e) {
+                    startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                }
             });
         }
 
+        // Liste le contenu d'un dossier : [{"nom":"...", "dossier":true/false}, ...],
+        // dossiers d'abord puis ordre alphabetique. [] si illisible/inexistant.
         @JavascriptInterface
-        public void openFile() {
-            runOnUiThread(() -> {
-                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-                intent.addCategory(Intent.CATEGORY_OPENABLE);
-                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                // "*/*" seul, sans EXTRA_MIME_TYPES : une extension inconnue du systeme
-                // comme .mlg n'est associee a aucun type MIME standard, donc combiner
-                // "*/*" avec une liste de types precis grisait tous les fichiers.
-                intent.setType("*/*");
-                startActivityForResult(intent, REQUEST_OPEN_MLG);
-            });
+        public String listerDossier(String chemin) {
+            try {
+                File dossier = new File(chemin);
+                File[] elements = dossier.listFiles();
+                JSONArray tableau = new JSONArray();
+                if (elements != null) {
+                    Arrays.sort(elements, (a, b) -> {
+                        if (a.isDirectory() != b.isDirectory()) return a.isDirectory() ? -1 : 1;
+                        return a.getName().compareToIgnoreCase(b.getName());
+                    });
+                    for (File f : elements) {
+                        if (f.isHidden()) continue;
+                        JSONObject o = new JSONObject();
+                        o.put("nom", f.getName());
+                        o.put("dossier", f.isDirectory());
+                        tableau.put(o);
+                    }
+                }
+                return tableau.toString();
+            } catch (Exception e) {
+                return "[]";
+            }
         }
-    }
 
-    private String contenuAEnregistrer = null;
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-
-        if (requestCode == REQUEST_SAVE_MLG) {
-            if (resultCode != RESULT_OK || data == null || data.getData() == null) {
-                contenuAEnregistrer = null;
-                notifierSauvegardeJS(false);
-                return;
-            }
-
-            Uri uri = data.getData();
-            if (contenuAEnregistrer == null) {
-                notifierSauvegardeJS(false);
-                return;
-            }
-
-            try (OutputStream sortie = getContentResolver().openOutputStream(uri)) {
-                if (sortie == null) throw new Exception("Impossible d'ouvrir le fichier de destination.");
-                sortie.write(contenuAEnregistrer.getBytes(StandardCharsets.UTF_8));
-                sortie.flush();
-                notifierSauvegardeJS(true);
+        // Ecrit directement le contenu texte a l'emplacement demande (creation des
+        // dossiers manquants si besoin). Renvoie VRAI en cas de succes.
+        @JavascriptInterface
+        public boolean ecrireFichier(String cheminComplet, String contenu) {
+            try {
+                File fichier = new File(cheminComplet);
+                File parent = fichier.getParentFile();
+                if (parent != null && !parent.exists()) parent.mkdirs();
+                try (FileOutputStream sortie = new FileOutputStream(fichier)) {
+                    sortie.write(contenu.getBytes(StandardCharsets.UTF_8));
+                }
+                return true;
             } catch (Exception e) {
                 e.printStackTrace();
-                afficherErreurJS("Impossible d'enregistrer le fichier.");
-                notifierSauvegardeJS(false);
-            } finally {
-                contenuAEnregistrer = null;
+                return false;
             }
-
-        } else if (requestCode == REQUEST_OPEN_MLG) {
-            if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
-            lireFichierEtEnvoyerAuWebView(data.getData());
         }
-    }
 
-    private void lireFichierEtEnvoyerAuWebView(Uri uri) {
-        try {
-            StringBuilder contenu = new StringBuilder();
-
-            try (BufferedReader lecteur = new BufferedReader(
-                    new InputStreamReader(
-                            getContentResolver().openInputStream(uri),
-                            StandardCharsets.UTF_8))) {
-
-                String ligne;
-                boolean premiereLigne = true;
-                while ((ligne = lecteur.readLine()) != null) {
-                    if (!premiereLigne) contenu.append("\\n");
-                    contenu.append(ligne);
-                    premiereLigne = false;
+        // Lit un fichier texte directement depuis le stockage. null si echec.
+        @JavascriptInterface
+        public String lireFichier(String cheminComplet) {
+            try {
+                StringBuilder contenu = new StringBuilder();
+                try (BufferedReader lecteur = new BufferedReader(new InputStreamReader(
+                        new FileInputStream(new File(cheminComplet)), StandardCharsets.UTF_8))) {
+                    String ligne;
+                    boolean premiere = true;
+                    while ((ligne = lecteur.readLine()) != null) {
+                        if (!premiere) contenu.append("\\n");
+                        contenu.append(ligne);
+                        premiere = false;
+                    }
                 }
+                return contenu.toString();
+            } catch (Exception e) {
+                return null;
             }
-
-            envoyerTexteAuWebView(contenu.toString(), obtenirNomFichier(uri));
-
-        } catch (Exception e) {
-            e.printStackTrace();
-            afficherErreurJS("Impossible de lire ce fichier.");
         }
-    }
-
-    private void envoyerTexteAuWebView(String texte) {
-        envoyerTexteAuWebView(texte, "Sans fichier");
     }
 
     private void envoyerTexteAuWebView(String texte, String nom) {
@@ -188,21 +204,6 @@ public class MainActivity extends BridgeActivity {
 
         // Le fichier peut etre choisi juste apres le demarrage de l'application.
         // post() attend que la WebView soit prete avant d'appeler JavaScript.
-        getBridge().getWebView().post(() ->
-            getBridge().getWebView().evaluateJavascript(js, null)
-        );
-    }
-
-    private void notifierSauvegardeJS(boolean succes) {
-        String js = "window.monLangageSaveFinished && window.monLangageSaveFinished(" + (succes ? "true" : "false") + ");";
-        getBridge().getWebView().post(() ->
-            getBridge().getWebView().evaluateJavascript(js, null)
-        );
-    }
-
-    private void afficherErreurJS(String message) {
-        String texteEchappe = JSONObject.quote(message);
-        String js = "alert(" + texteEchappe + ");";
         getBridge().getWebView().post(() ->
             getBridge().getWebView().evaluateJavascript(js, null)
         );
@@ -225,6 +226,7 @@ public class MainActivity extends BridgeActivity {
         return nom;
     }
 
+    // Fichier .mlg ouvert depuis une autre appli (association .mlg / "Ouvrir avec...").
     private void traiterIntentOuverture(Intent intent) {
         if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) return;
 
