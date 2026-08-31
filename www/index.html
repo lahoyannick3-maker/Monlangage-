@@ -241,6 +241,41 @@
   animation: tournerSpinnerAttente 0.7s linear infinite;
 }
 @keyframes tournerSpinnerAttente { to { transform: rotate(360deg); } }
+
+/* Toast de confirmation d'enregistrement (succes / echec), meme habillage
+   que l'indicateur d'attente pour rester dans le theme de l'app. */
+#toastEnregistrement {
+  position: fixed;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%) translateY(12px);
+  background: #161b22;
+  border: 1px solid #30363d;
+  color: #c9d1d9;
+  padding: 8px 16px;
+  border-radius: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  font-family: monospace;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  z-index: 1001;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+#toastEnregistrement.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+#toastEnregistrement.succes { border-color: #238636; }
+#toastEnregistrement.echec { border-color: #da3633; }
+.toastIcone {
+  width: 16px; height: 16px; flex-shrink: 0;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: bold; line-height: 1;
+}
+#toastEnregistrement.succes .toastIcone { background: #238636; color: #c9d1d9; }
+#toastEnregistrement.echec .toastIcone { background: #da3633; color: #c9d1d9; }
   </style>
 </head>
 <body>
@@ -294,6 +329,8 @@ affi(|Bonjour |, nom)</textarea>
   </div>
 
   <div id="indicateurAttente"><div class="spinnerAttente"></div><span>Execution en cours, patientez…</span></div>
+
+  <div id="toastEnregistrement"><span class="toastIcone"></span><span class="toastTexte"></span></div>
 
   <div id="modalFichiers" class="modalFichiersOverlay">
     <div class="modalFichiersBoite">
@@ -349,6 +386,20 @@ let modalFichiersNomLigne = document.getElementById("modalFichiersNomLigne");
 let modalFichiersNom = document.getElementById("modalFichiersNom");
 let modalFichiersAnnuler = document.getElementById("modalFichiersAnnuler");
 let modalFichiersValider = document.getElementById("modalFichiersValider");
+let toastEnregistrement = document.getElementById("toastEnregistrement");
+
+let toastEnregistrementTimeoutId = null;
+function afficherToastEnregistrement(succes, message) {
+  clearTimeout(toastEnregistrementTimeoutId);
+  toastEnregistrement.classList.remove("succes", "echec");
+  toastEnregistrement.classList.add(succes ? "succes" : "echec");
+  toastEnregistrement.querySelector(".toastIcone").textContent = succes ? "✓" : "✕";
+  toastEnregistrement.querySelector(".toastTexte").textContent = message;
+  toastEnregistrement.classList.add("visible");
+  toastEnregistrementTimeoutId = setTimeout(() => {
+    toastEnregistrement.classList.remove("visible");
+  }, 2200);
+}
 
 /* ===================== ONGlets DE L'EDITEUR ===================== */
 let onglets = [];
@@ -493,8 +544,9 @@ function enregistrerOnglet(onglet, apresSauvegarde) {
           sauvegarderEtatOnglets();
           mettreAJourBarreOnglets();
           if (onglet.id === ongletActifId) afficherNomOngletActif();
+          afficherToastEnregistrement(true, "Enregistre avec succes");
         } else {
-          alert("Impossible d'enregistrer le fichier a cet emplacement.");
+          afficherToastEnregistrement(false, "Echec de l'enregistrement");
         }
         if (apresSauvegarde) apresSauvegarde(!!ok);
       }
@@ -504,23 +556,29 @@ function enregistrerOnglet(onglet, apresSauvegarde) {
 
   // Fallback navigateur web classique (previsualisation hors app, ou app native
   // pas encore reconstruite avec le navigateur de fichiers integre).
-  onglet.nom = nomDefaut + ".mlg";
-  let blob = new Blob([onglet.contenu], { type: "text/plain;charset=utf-8" });
-  let url = URL.createObjectURL(blob);
-  let a = document.createElement("a");
-  a.href = url;
-  a.download = onglet.nom;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  try {
+    onglet.nom = nomDefaut + ".mlg";
+    let blob = new Blob([onglet.contenu], { type: "text/plain;charset=utf-8" });
+    let url = URL.createObjectURL(blob);
+    let a = document.createElement("a");
+    a.href = url;
+    a.download = onglet.nom;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
 
-  onglet.contenuSauvegarde = onglet.contenu;
-  onglet.dirty = false;
-  sauvegarderEtatOnglets();
-  mettreAJourBarreOnglets();
-  if (onglet.id === ongletActifId) afficherNomOngletActif();
-  if (apresSauvegarde) apresSauvegarde(true);
+    onglet.contenuSauvegarde = onglet.contenu;
+    onglet.dirty = false;
+    sauvegarderEtatOnglets();
+    mettreAJourBarreOnglets();
+    if (onglet.id === ongletActifId) afficherNomOngletActif();
+    afficherToastEnregistrement(true, "Enregistre avec succes");
+    if (apresSauvegarde) apresSauvegarde(true);
+  } catch (e) {
+    afficherToastEnregistrement(false, "Echec de l'enregistrement");
+    if (apresSauvegarde) apresSauvegarde(false);
+  }
 }
 
 function enregistrerFichierMlg() {
