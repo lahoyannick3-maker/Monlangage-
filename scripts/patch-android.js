@@ -88,7 +88,10 @@ public class MainActivity extends BridgeActivity {
             runOnUiThread(() -> {
                 Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
                 intent.addCategory(Intent.CATEGORY_OPENABLE);
-                intent.setType("text/plain");
+                // "application/octet-stream" n'a aucune extension associee dans le systeme
+                // Android (contrairement a "text/plain" -> .txt) : le nom de fichier donne
+                // via EXTRA_TITLE (deja termine par .mlg) n'est alors pas modifie.
+                intent.setType("application/octet-stream");
                 intent.putExtra(Intent.EXTRA_TITLE, filename);
                 startActivityForResult(intent, REQUEST_SAVE_MLG);
                 contenuAEnregistrer = content;
