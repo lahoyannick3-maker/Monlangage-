@@ -2,16 +2,55 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MonLangage IDE v4.0</title>
   <style>
     * { box-sizing: border-box; }
-    body { background: #0d1117; color: #c9d1d9; font-family: monospace; margin: 0; height: 100vh; overflow: hidden; }
-    #editeur { width: 100%; height: 100vh; display: flex; flex-direction: column; }
-    #console { width: 100%; height: 100vh; display: none; flex-direction: column; }
+    html {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      overscroll-behavior: none;
+    }
+    body {
+      background: #0d1117;
+      color: #c9d1d9;
+      font-family: monospace;
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      position: fixed;
+      inset: 0;
+      overscroll-behavior: none;
+    }
+    #editeur {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      overscroll-behavior: none;
+    }
+    #console { width: 100%; height: 100%; display: none; flex-direction: column; }
     #console.actif { display: flex; }
     #editeur.masque { display: none; }
-    #barre { background: #161b22; padding: 8px; border-bottom: 1px solid #30363d; display: flex; gap: 10px; flex-shrink: 0; align-items: center; }
+    #barre {
+      background: #161b22;
+      padding: 8px;
+      border-bottom: 1px solid #30363d;
+      display: flex;
+      gap: 10px;
+      flex-shrink: 0;
+      align-items: center;
+      position: relative;
+      z-index: 1000;
+    }
     button { background: #238636; color: white; border: none; padding: 6px 16px; border-radius: 6px; font-weight: bold; cursor: pointer; font-family: monospace; }
     button:hover { background: #2ea043; }
     button:disabled { background: #444; cursor: not-allowed; }
@@ -19,12 +58,87 @@
     #btnConsole:hover { background: #388bfd; }
     #btnRetour { background: #30363d; }
     #btnRetour:hover { background: #484f58; }
-    #btnSauver { background: #8957e5; }
+    #btnSauver {
+      background: #8957e5;
+      width: 46px;
+      min-width: 46px;
+      height: 42px;
+      padding: 0;
+      font-size: 22px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
     #btnSauver:hover { background: #a371f7; }
-    #btnOuvrir { background: #9e6a03; }
-    #btnOuvrir:hover { background: #bb8009; }
 
-    #zoneCode { flex: 1; display: flex; overflow: hidden; min-height: 0; }
+    .menuOuvrir { position: relative; flex-shrink: 0; }
+    #btnOuvrir {
+      background: #9e6a03;
+      width: 46px;
+      min-width: 46px;
+      height: 42px;
+      padding: 0;
+      font-size: 22px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #btnOuvrir:hover { background: #bb8009; }
+    #menuOuvrir {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      width: 190px;
+      padding: 6px;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.45);
+      display: none;
+      z-index: 2000;
+    }
+    #menuOuvrir.ouvert { display: block; }
+    #menuOuvrir button {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      background: transparent;
+      color: #c9d1d9;
+      border-radius: 6px;
+      text-align: left;
+      font-size: 14px;
+    }
+    #menuOuvrir button:hover { background: #21262d; }
+    #nomFichier { margin-left: auto; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8b949e; font-size: 13px; }
+
+    #ongletsBarre {
+      background: #0d1117;
+      border-bottom: 1px solid #30363d;
+      display: flex;
+      align-items: stretch;
+      overflow-x: auto;
+      overflow-y: hidden;
+      min-height: 38px;
+      flex-shrink: 0;
+      position: relative;
+      z-index: 999;
+      touch-action: pan-x;
+    }
+    #ongletsBarre::-webkit-scrollbar { height: 4px; }
+    .onglet { display: flex; align-items: center; gap: 7px; min-width: 115px; max-width: 220px; height: 38px; padding: 0 8px 0 12px; border-right: 1px solid #30363d; background: #161b22; color: #8b949e; cursor: pointer; user-select: none; }
+    .onglet.actif { background: #010409; color: #c9d1d9; border-top: 2px solid #58a6ff; }
+    .ongletNom { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .ongletFermer { width: 24px; height: 24px; padding: 0; border-radius: 4px; background: transparent; color: #8b949e; font-size: 17px; line-height: 24px; flex-shrink: 0; }
+    .ongletFermer:hover { background: #30363d; color: #fff; }
+    #zoneCode {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+      min-height: 0;
+      position: relative;
+    }
     #numeros { width: 42px; flex-shrink: 0; background: #0d1117; color: #6e7681; text-align: right; padding: 10px 6px 10px 0; font-size: 15px; line-height: 23px; overflow: hidden; user-select: none; white-space: pre; }
     #codeConteneur { position: relative; flex: 1; overflow: hidden; background: #010409; }
     #codeHighlight, #code { position: absolute; inset: 0; margin: 0; padding: 10px; font-size: 15px; line-height: 23px; font-family: monospace; white-space: pre; overflow-wrap: normal; }
@@ -88,10 +202,18 @@
     <div id="barre">
       <button id="btnRun">▶ RUN</button>
       <button id="btnConsole">Console</button>
-      <button id="btnSauver">💾 Enregistrer</button>
-      <button id="btnOuvrir">📂 Ouvrir</button>
+      <button id="btnSauver" title="Enregistrer" aria-label="Enregistrer">💾</button>
+      <div class="menuOuvrir">
+        <button id="btnOuvrir" title="Ouvrir / Nouveau" aria-label="Ouvrir / Nouveau">📂</button>
+        <div id="menuOuvrir" role="menu">
+          <button id="btnMenuNouvelOnglet" type="button" role="menuitem">＋&nbsp;&nbsp;Nouvel onglet</button>
+          <button id="btnMenuOuvrirFichier" type="button" role="menuitem">📄&nbsp;&nbsp;Ouvrir un fichier</button>
+        </div>
+      </div>
       <input type="file" id="inputOuvrir" accept=".mlg,text/plain" style="display:none">
+      <span id="nomFichier" title="Fichier actuel">Sans fichier</span>
     </div>
+    <div id="ongletsBarre"></div>
     <div id="zoneCode">
       <div id="numeros">1</div>
       <div id="codeConteneur">
@@ -148,6 +270,277 @@ let btnRetour = document.getElementById("btnRetour");
 let btnSauver = document.getElementById("btnSauver");
 let btnOuvrir = document.getElementById("btnOuvrir");
 let inputOuvrir = document.getElementById("inputOuvrir");
+let nomFichier = document.getElementById("nomFichier");
+let ongletsBarre = document.getElementById("ongletsBarre");
+let menuOuvrir = document.getElementById("menuOuvrir");
+let btnMenuNouvelOnglet = document.getElementById("btnMenuNouvelOnglet");
+let btnMenuOuvrirFichier = document.getElementById("btnMenuOuvrirFichier");
+
+/* ===================== ONGlets DE L'EDITEUR ===================== */
+let onglets = [];
+let ongletActifId = null;
+let prochainIdOnglet = 1;
+let operationSauvegarde = null;
+
+function sauvegarderEtatOnglets() {
+  localStorage.setItem("monlangage_onglets", JSON.stringify(onglets));
+  localStorage.setItem("monlangage_onglet_actif", String(ongletActifId ?? ""));
+}
+
+function trouverOnglet(id) {
+  return onglets.find(o => o.id === id) || null;
+}
+
+function mettreAJourBarreOnglets() {
+  ongletsBarre.querySelectorAll(".onglet").forEach(el => el.remove());
+
+  onglets.forEach(onglet => {
+    let bouton = document.createElement("div");
+    bouton.className = "onglet" + (onglet.id === ongletActifId ? " actif" : "");
+    bouton.dataset.id = onglet.id;
+
+    let nom = document.createElement("span");
+    nom.className = "ongletNom";
+    nom.textContent = (onglet.dirty ? "*" : "") + (onglet.nom || "sans titre");
+    nom.title = onglet.nom || "sans titre";
+
+    let fermer = document.createElement("button");
+    fermer.className = "ongletFermer";
+    fermer.textContent = "×";
+    fermer.title = "Fermer";
+    fermer.addEventListener("click", function(e) {
+      e.stopPropagation();
+      fermerOnglet(onglet.id);
+    });
+
+    bouton.appendChild(nom);
+    bouton.appendChild(fermer);
+    bouton.addEventListener("click", () => activerOnglet(onglet.id));
+    ongletsBarre.appendChild(bouton);
+  });
+}
+
+function afficherNomOngletActif() {
+  let onglet = trouverOnglet(ongletActifId);
+  let nom = onglet ? (onglet.nom || "sans titre") : "";
+  nomFichier.textContent = nom || "Sans fichier";
+  nomFichier.title = nom || "Fichier actuel";
+}
+
+function definirNomFichier(nom) {
+  let onglet = trouverOnglet(ongletActifId);
+  if (onglet) {
+    onglet.nom = nom || "sans titre";
+    afficherNomOngletActif();
+    mettreAJourBarreOnglets();
+    sauvegarderEtatOnglets();
+  } else {
+    nomFichier.textContent = nom || "Sans fichier";
+    nomFichier.title = nom || "Fichier actuel";
+  }
+}
+
+function creerOnglet(nom, contenu, contenuSauvegarde, activer = true) {
+  let onglet = {
+    id: prochainIdOnglet++,
+    nom: nom || "sans titre",
+    contenu: contenu || "",
+    contenuSauvegarde: contenuSauvegarde !== undefined ? contenuSauvegarde : (contenu || ""),
+    dirty: contenuSauvegarde !== undefined ? (contenu || "") !== contenuSauvegarde : false
+  };
+  onglets.push(onglet);
+  if (activer) {
+    ongletActifId = onglet.id;
+    codeArea.value = onglet.contenu;
+    afficherNomOngletActif();
+    majNumeros();
+    majSurbrillance();
+    synchroniserScrollEditeur();
+  }
+  mettreAJourBarreOnglets();
+  sauvegarderEtatOnglets();
+  return onglet;
+}
+
+function mettreAJourOngletDepuisEditeur() {
+  let onglet = trouverOnglet(ongletActifId);
+  if (!onglet) return;
+  onglet.contenu = codeArea.value;
+  onglet.dirty = onglet.contenu !== onglet.contenuSauvegarde;
+  mettreAJourBarreOnglets();
+  sauvegarderEtatOnglets();
+}
+
+function activerOnglet(id) {
+  if (id === ongletActifId) return;
+  mettreAJourOngletDepuisEditeur();
+
+  let onglet = trouverOnglet(id);
+  if (!onglet) return;
+  ongletActifId = id;
+  codeArea.value = onglet.contenu;
+  afficherNomOngletActif();
+  majNumeros();
+  majSurbrillance();
+  synchroniserScrollEditeur();
+  sauvegarderEtatOnglets();
+  mettreAJourBarreOnglets();
+  requestAnimationFrame(synchroniserScrollEditeur);
+}
+
+function nouvelOnglet() {
+  creerOnglet("sans titre", "", "", true);
+}
+
+function enregistrerOnglet(onglet, apresSauvegarde) {
+  if (!onglet) return;
+
+  let nom = (onglet.nom || "").trim();
+  if (!nom || nom.toLowerCase() === "sans titre") {
+    nom = window.prompt("Nom du fichier :", "monscript") || "";
+    nom = nom.trim().replace(/\.mlg$/i, "");
+    if (!nom) return;
+    onglet.nom = nom + ".mlg";
+  } else if (!/\.mlg$/i.test(nom)) {
+    onglet.nom = nom + ".mlg";
+  }
+
+  operationSauvegarde = {
+    ongletId: onglet.id,
+    apresSauvegarde: apresSauvegarde || null
+  };
+  mettreAJourBarreOnglets();
+  sauvegarderEtatOnglets();
+
+  if (window.MonLangage && typeof window.MonLangage.saveFile === "function") {
+    window.MonLangage.saveFile(onglet.nom, onglet.contenu);
+    return;
+  }
+
+  // Fallback navigateur.
+  let blob = new Blob([onglet.contenu], { type: "text/plain;charset=utf-8" });
+  let url = URL.createObjectURL(blob);
+  let a = document.createElement("a");
+  a.href = url;
+  a.download = onglet.nom;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+  onglet.contenuSauvegarde = onglet.contenu;
+  onglet.dirty = false;
+  sauvegarderEtatOnglets();
+  mettreAJourBarreOnglets();
+  if (operationSauvegarde && operationSauvegarde.apresSauvegarde) {
+    let cb = operationSauvegarde.apresSauvegarde;
+    operationSauvegarde = null;
+    cb(true);
+  } else {
+    operationSauvegarde = null;
+  }
+}
+
+function enregistrerFichierMlg() {
+  mettreAJourOngletDepuisEditeur();
+  let onglet = trouverOnglet(ongletActifId);
+  enregistrerOnglet(onglet);
+}
+
+window.monLangageSaveFinished = function(succes) {
+  if (!operationSauvegarde) return;
+
+  let operation = operationSauvegarde;
+  operationSauvegarde = null;
+  let onglet = trouverOnglet(operation.ongletId);
+  if (!onglet) return;
+
+  if (succes) {
+    onglet.contenuSauvegarde = onglet.contenu;
+    onglet.dirty = false;
+    sauvegarderEtatOnglets();
+    mettreAJourBarreOnglets();
+    if (onglet.id === ongletActifId) afficherNomOngletActif();
+  }
+
+  if (operation.apresSauvegarde) operation.apresSauvegarde(!!succes);
+};
+
+function fermerOnglet(id) {
+  let onglet = trouverOnglet(id);
+  if (!onglet) return;
+
+  if (onglet.dirty) {
+    let enregistrer = confirm("Le fichier « " + (onglet.nom || "sans titre") + " » contient des modifications non enregistrées.\n\nOK = enregistrer avant de fermer\nAnnuler = fermer sans enregistrer");
+
+    if (enregistrer) {
+      enregistrerOnglet(onglet, function(succes) {
+        if (succes) fermerOnglet(id);
+      });
+      return;
+    }
+  }
+
+  let index = onglets.findIndex(o => o.id === id);
+  onglets.splice(index, 1);
+
+  if (onglets.length === 0) {
+    creerOnglet("sans titre", "", "", true);
+    return;
+  }
+
+  if (id === ongletActifId) {
+    let nouvelIndex = Math.min(index, onglets.length - 1);
+    ongletActifId = onglets[nouvelIndex].id;
+    codeArea.value = onglets[nouvelIndex].contenu;
+    afficherNomOngletActif();
+    majNumeros();
+    majSurbrillance();
+    synchroniserScrollEditeur();
+  }
+
+  sauvegarderEtatOnglets();
+  mettreAJourBarreOnglets();
+}
+
+function chargerFichierDansNouvelOnglet(texte, nom) {
+  creerOnglet(nom || "sans titre", texte, texte, true);
+  sauvegarderCode();
+  afficherEditeur();
+  requestAnimationFrame(synchroniserScrollEditeur);
+}
+
+function initialiserOnglets() {
+  let stock = null;
+  try {
+    stock = JSON.parse(localStorage.getItem("monlangage_onglets") || "null");
+  } catch (_) {}
+
+  if (Array.isArray(stock) && stock.length) {
+    onglets = stock.map(o => ({
+      id: Number(o.id) || prochainIdOnglet++,
+      nom: o.nom || "sans titre",
+      contenu: o.contenu || "",
+      contenuSauvegarde: o.contenuSauvegarde !== undefined ? o.contenuSauvegarde : (o.contenu || ""),
+      dirty: !!o.dirty
+    }));
+    prochainIdOnglet = Math.max(...onglets.map(o => Number(o.id) || 0), 0) + 1;
+    let idSauvegarde = Number(localStorage.getItem("monlangage_onglet_actif"));
+    ongletActifId = onglets.some(o => o.id === idSauvegarde) ? idSauvegarde : onglets[0].id;
+    let actif = trouverOnglet(ongletActifId);
+    codeArea.value = actif.contenu;
+  } else {
+    let ancienCode = localStorage.getItem("monlangage_code");
+    let ancienNom = localStorage.getItem("monlangage_nom_fichier") || "sans titre";
+    let contenu = ancienCode !== null ? ancienCode : codeArea.value;
+    creerOnglet(ancienNom, contenu, contenu, true);
+  }
+
+  afficherNomOngletActif();
+  mettreAJourBarreOnglets();
+  majNumeros();
+  majSurbrillance();
+}
 
 function focaliserSaisieConsole() {
   let saisies = outputDiv.querySelectorAll(".cmdInput, .entrInput");
@@ -1300,6 +1693,40 @@ function ajouterMatrice(m, elements) {
   for (let i = 0; i < m.donnees.length; i++) m.donnees[i] = coherent[i];
 }
 
+// nom.supri(...) : supprime des elements d'un vecteur/une matrice EXISTANTS (inverse de .ajout()).
+// Pour un vecteur : supprime, pour chaque valeur donnee, sa PREMIERE occurrence trouvee
+// (v~c(2,3,2,5) ; v.supri(2,3) -> reste c(2,5)).
+function supprimerVecteur(v, elements) {
+  for (let el of elements) {
+    let idx = v.findIndex(x => x === el);
+    if (idx === -1) {
+      throw new Error(".supri(...) : la valeur " + JSON.stringify(el) + " n'a pas ete trouvee dans le vecteur");
+    }
+    v.splice(idx, 1);
+  }
+}
+// Pour une matrice : meme logique que .ajout(), mais en sens inverse -- les elements
+// donnes (par groupe de nlig, comme pour l'ajout) doivent correspondre exactement a
+// une colonne existante, qui est alors supprimee (la premiere trouvee qui correspond).
+function supprimerMatrice(m, elements) {
+  if (elements.length % m.nlig !== 0) {
+    throw new Error(".supri(...) sur une matrice : le nombre d'elements donnes (" + elements.length + ") doit etre un multiple du nombre de lignes (" + m.nlig + "), car la suppression se fait par colonne(s) entiere(s)");
+  }
+  for (let i = 0; i < elements.length; i += m.nlig) {
+    let bloc = elements.slice(i, i + m.nlig);
+    let colTrouvee = -1;
+    for (let c = 0; c < m.ncol; c++) {
+      let colonne = m.donnees.slice(c * m.nlig, c * m.nlig + m.nlig);
+      if (colonne.every((v, j) => v === bloc[j])) { colTrouvee = c; break; }
+    }
+    if (colTrouvee === -1) {
+      throw new Error(".supri(...) sur une matrice : aucune colonne ne correspond exactement aux valeurs donnees (" + bloc.join(",") + ")");
+    }
+    m.donnees.splice(colTrouvee * m.nlig, m.nlig);
+    m.ncol -= 1;
+  }
+}
+
 // Agrandit une matrice existante a nligCible x ncolCible (>= dimensions actuelles), en
 // remplissant les nouvelles cases avec 0. Reconstruit les donnees en respectant le
 // format en colonne utilise partout ailleurs dans le langage. Utilisee pour permettre
@@ -2106,6 +2533,11 @@ let aideCommandes = [
       "Ajoute de nouveaux elements a un vecteur ou une matrice qui existe deja, sans supprimer ce qu'il contenait.",
       "Pour une matrice, les elements sont ajoutes comme nouvelle(s) colonne(s)."
     ], exemple: "v.ajout(4,5)\nm.ajout(9,9)" },
+  { noms: ["supri"], categorie: "Acceder / modifier un element", syntaxe: "nom.supri(elements)", description: [
+      "Supprime des elements d'un vecteur ou d'une matrice qui existe deja (inverse de .ajout()).",
+      "Pour un vecteur : supprime, pour chaque valeur donnee, sa premiere occurrence trouvee.",
+      "Pour une matrice : les elements donnes (par groupe de nlig, comme pour .ajout()) doivent correspondre exactement a une colonne existante, qui est alors supprimee."
+    ], exemple: "v~c(2,3,2,5)\nv.supri(2,3)     ->   reste c(2,5)\nv~c(|rea|,|r|,|e|)\nv.supri(|rea|)   ->   reste c(|r|,|e|)\nv.supri(v[1])    ->   supprime la valeur en 1ere position" },
 
   { noms: ["+"], categorie: "Operateurs", syntaxe: "a + b", description: [
       "Additionne deux nombres, deux vecteurs (element par element) ou deux matrices (element par element, memes dimensions).",
@@ -3352,6 +3784,21 @@ async function executerCommandeSimple(ligne) {
       return;
     }
 
+    if (methode === "supri") {
+      let cible = getVar(nomVar);
+      let elements = [];
+      for (let a of argExprs) {
+        let v = await evaluerElementBrut(a, ctxExpr);
+        if (estVecteur(v)) elements.push(...v);
+        else if (estMatrice(v)) elements.push(...v.donnees);
+        else elements.push(v);
+      }
+      if (estVecteur(cible)) supprimerVecteur(cible, elements);
+      else if (estMatrice(cible)) supprimerMatrice(cible, elements);
+      else throw new Error(nomVar + " n'est pas un vecteur ou une matrice");
+      return;
+    }
+
     // Conversion/nettoyage du texte dans une variable.
     if (methode === "miniscul" || methode === "majuscul" || methode === "suprespac") {
       if (argExprs.length !== 0) {
@@ -3745,59 +4192,61 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
   return { index: index, signal: null };
 }
 
-/* ===================== SAUVEGARDE / LIGNES DE L'EDITEUR ===================== */
+/* ===================== SAUVEGARDE / OUVERTURE ===================== */
 function sauvegarderCode() {
-  localStorage.setItem('monlangage_code', codeArea.value);
+  mettreAJourOngletDepuisEditeur();
+  let onglet = trouverOnglet(ongletActifId);
+  if (onglet) localStorage.setItem('monlangage_code', onglet.contenu);
 }
 
-// Enregistre le contenu de l'editeur dans un fichier .mlg telecharge sur l'appareil
-// (comme "Enregistrer sous..."). Le fichier reste un simple texte brut : l'extension
-// .mlg n'est qu'un nom de fichier, elle ne change rien au format des donnees.
-function enregistrerFichierMlg() {
-  let nom = window.prompt("Nom du fichier :", "monscript") || "monscript";
-  nom = nom.trim().replace(/\.mlg$/i, "");
-  if (!nom) return;
-  let blob = new Blob([codeArea.value], { type: "text/plain" });
-  let url = URL.createObjectURL(blob);
-  let a = document.createElement("a");
-  a.href = url;
-  a.download = nom + ".mlg";
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-// Ouvre un fichier .mlg choisi par l'utilisateur et remplace le contenu de l'editeur.
 function ouvrirFichierMlg(fichier) {
   if (!fichier) return;
   let lecteur = new FileReader();
   lecteur.onload = () => {
-    codeArea.value = lecteur.result;
-    majNumeros(); majSurbrillance(); sauvegarderCode();
-    synchroniserScrollEditeur();
-    requestAnimationFrame(synchroniserScrollEditeur);
+    chargerFichierDansNouvelOnglet(lecteur.result, fichier.name);
   };
   lecteur.onerror = () => alert("Impossible de lire ce fichier.");
   lecteur.readAsText(fichier);
 }
+
 btnSauver.addEventListener("click", enregistrerFichierMlg);
-btnOuvrir.addEventListener("click", () => inputOuvrir.click());
-inputOuvrir.addEventListener("change", () => {
-  ouvrirFichierMlg(inputOuvrir.files[0]);
-  inputOuvrir.value = ""; // permet de reouvrir le meme fichier une 2e fois d'affilee
+
+// Menu regroupant les actions "Nouveau" et "Ouvrir" pour alléger la barre du haut.
+btnOuvrir.addEventListener("click", (e) => {
+  e.stopPropagation();
+  menuOuvrir.classList.toggle("ouvert");
 });
 
-// Appelee par MainActivity.java (cote natif Android) quand l'utilisateur ouvre un
-// fichier .mlg depuis une autre appli (gestionnaire de fichiers, WhatsApp, etc.) :
-// window.chargerFichierExterne(texte) remplace le contenu de l'editeur, comme si
-// le fichier avait ete choisi via le bouton "Ouvrir".
-window.chargerFichierExterne = function(texte) {
-  codeArea.value = texte;
-  majNumeros(); majSurbrillance(); sauvegarderCode();
-  synchroniserScrollEditeur();
-  requestAnimationFrame(synchroniserScrollEditeur);
-  afficherEditeur();
+btnMenuNouvelOnglet.addEventListener("click", () => {
+  nouvelOnglet();
+  menuOuvrir.classList.remove("ouvert");
+});
+
+btnMenuOuvrirFichier.addEventListener("click", () => {
+  menuOuvrir.classList.remove("ouvert");
+  if (window.MonLangage && typeof window.MonLangage.openFile === "function") {
+    window.MonLangage.openFile();
+    return;
+  }
+  inputOuvrir.click();
+});
+
+inputOuvrir.addEventListener("change", () => {
+  ouvrirFichierMlg(inputOuvrir.files[0]);
+  inputOuvrir.value = "";
+});
+
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".menuOuvrir")) menuOuvrir.classList.remove("ouvert");
+});
+
+/*
+ * Appelee par MainActivity.java quand un fichier est choisi avec le selecteur
+ * Android ou quand un .mlg est ouvert depuis le gestionnaire de fichiers.
+ * Chaque ouverture cree un nouvel onglet : aucun onglet existant n'est ecrase.
+ */
+window.chargerFichierExterne = function(texte, nom) {
+  chargerFichierDansNouvelOnglet(texte, nom || "sans titre");
 };
 
 function majNumeros() {
@@ -4001,10 +4450,7 @@ outputDiv.addEventListener("input", function(e) {
 btnRun.addEventListener("click", runScript);
 
 /* ===================== INITIALISATION ===================== */
-let codeSauvegarde = localStorage.getItem('monlangage_code');
-if (codeSauvegarde !== null) codeArea.value = codeSauvegarde;
-majNumeros();
-majSurbrillance();
+initialiserOnglets();
 clearConsole();
 printInvite();
 </script>
