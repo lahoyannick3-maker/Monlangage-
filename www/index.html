@@ -790,6 +790,36 @@ function setVar(nom, valeur) {
   }
   scopes[scopes.length - 1][nom] = valeur;
 }
+// Resout un chemin d'attributs chaine du style "moi.comptes" ou "a.b.c" (au moins 1 segment,
+// sans limite de profondeur) en suivant les instances de classe une a une, et renvoie la
+// valeur finale. Utilise pour les appels de methode en instruction (nom.ajout(...), etc.) qui
+// portaient auparavant sur une variable simple uniquement.
+function resoudreCheminCible(chemin) {
+  let segments = chemin.split(".");
+  let valeur = getVar(segments[0]);
+  for (let i = 1; i < segments.length; i++) {
+    if (!valeur || typeof valeur !== "object" || valeur.__classe === undefined) {
+      throw new Error(segments.slice(0, i).join(".") + " n'est pas une instance de classe (dans " + chemin + ")");
+    }
+    if (!Object.prototype.hasOwnProperty.call(valeur, segments[i])) {
+      throw new Error("Attribut \"" + segments[i] + "\" introuvable sur " + segments.slice(0, i).join(".") + " (dans " + chemin + ")");
+    }
+    valeur = valeur[segments[i]];
+  }
+  return valeur;
+}
+// Ecrit "valeur" a l'emplacement designe par un chemin d'attributs chaine (meme forme que
+// resoudreCheminCible). Pour un chemin a un seul segment, ecrit dans la variable/portee comme
+// setVar ; pour un chemin plus long, ecrit l'attribut final sur l'instance parente.
+function assignerCheminValeur(chemin, valeur) {
+  let segments = chemin.split(".");
+  if (segments.length === 1) { setVar(segments[0], valeur); return; }
+  let parent = resoudreCheminCible(segments.slice(0, -1).join("."));
+  if (!parent || typeof parent !== "object" || parent.__classe === undefined) {
+    throw new Error(segments.slice(0, -1).join(".") + " n'est pas une instance de classe (dans " + chemin + ")");
+  }
+  parent[segments[segments.length - 1]] = valeur;
+}
 function estVrai(v) {
   if (estVecteur(v)) return v.some(x => estVrai(x));
   if (estMatrice(v)) return v.donnees.some(x => estVrai(x));
@@ -1099,37 +1129,61 @@ function evalExprSansEntreeSync(str, ctx) {
   }
   function parsePrimary() {
     let valeur = parsePrimaryBrute();
-    // Attribut/methode d'une instance de classe : a.nom (lecture), a.methode(...) (appel).
-    // Prioritaire sur tout le reste des lors que valeur est une instance, pour ne jamais
-    // confondre avec l'operateur '.' (produit scalaire) ou les methodes de texte ci-dessous.
-    while (peek() && peek().type === 'op' && peek().v === '.' &&
-           tokens[pos + 1] && tokens[pos + 1].type === 'ident' &&
-           valeur && typeof valeur === 'object' && valeur.__classe !== undefined) {
-      if (tokens[pos + 2] && tokens[pos + 2].type === '(') {
-        // Appel de methode : execute un corps entier, ca a besoin d'etre async.
-        // On laisse la main au parseur lent.
-        throw new __BesoinAsync();
+    // Suite d'attributs / indexations / methodes de texte enchaines sur le resultat, dans
+    // n'importe quel ordre : moi.comptes[i].nom, v[i].texte(), etc. Une methode d'instance
+    // rencontree ici (a.methode(...)) a besoin d'executer un corps entier : on delegue au
+    // parseur lent.
+    while (true) {
+      // Attribut/methode d'une instance de classe : a.nom (lecture), a.methode(...) (appel).
+      if (peek() && peek().type === 'op' && peek().v === '.' &&
+          tokens[pos + 1] && tokens[pos + 1].type === 'ident' &&
+          valeur && typeof valeur === 'object' && valeur.__classe !== undefined) {
+        if (tokens[pos + 2] && tokens[pos + 2].type === '(') {
+          // Appel de methode : execute un corps entier, ca a besoin d'etre async.
+          // On laisse la main au parseur lent.
+          throw new __BesoinAsync();
+        }
+        next(); // '.'
+        let nomAttr = next().v;
+        valeur = Object.prototype.hasOwnProperty.call(valeur, nomAttr) ? valeur[nomAttr] : undefined;
+        continue;
       }
-      next(); // '.'
-      let nomAttr = next().v;
-      valeur = Object.prototype.hasOwnProperty.call(valeur, nomAttr) ? valeur[nomAttr] : undefined;
-    }
-    // Methodes de texte chainees directement dans une expression (si(...), affi(...), etc.) :
-    // var.miniscul(), |texte|.majuscul(), (a+b).suprespac()... Ne consomme le '.' que si le
-    // motif complet correspond, pour ne jamais gener l'operateur '.' de produit scalaire.
-    while (peek() && peek().type === 'op' && peek().v === '.' &&
-           tokens[pos + 1] && tokens[pos + 1].type === 'ident' &&
-           (tokens[pos + 1].v === 'miniscul' || tokens[pos + 1].v === 'majuscul' || tokens[pos + 1].v === 'suprespac') &&
-           tokens[pos + 2] && tokens[pos + 2].type === '(' &&
-           tokens[pos + 3] && tokens[pos + 3].type === ')') {
-      next(); // '.'
-      let methode = next().v; // miniscul / majuscul / suprespac
-      next(); next(); // '(' ')'
-      if (typeof valeur === 'number') continue; // rien a convertir : ignore silencieusement
-      if (typeof valeur !== 'string') throw new Error("." + methode + "() attend du texte");
-      if (methode === 'miniscul') valeur = valeur.toLowerCase();
-      else if (methode === 'majuscul') valeur = valeur.toUpperCase();
-      else if (methode === 'suprespac') valeur = valeur.trim();
+      // Methodes de texte chainees directement dans une expression (si(...), affi(...), etc.) :
+      // var.miniscul(), |texte|.majuscul(), (a+b).suprespac()... Ne consomme le '.' que si le
+      // motif complet correspond, pour ne jamais gener l'operateur '.' de produit scalaire.
+      if (peek() && peek().type === 'op' && peek().v === '.' &&
+          tokens[pos + 1] && tokens[pos + 1].type === 'ident' &&
+          (tokens[pos + 1].v === 'miniscul' || tokens[pos + 1].v === 'majuscul' || tokens[pos + 1].v === 'suprespac') &&
+          tokens[pos + 2] && tokens[pos + 2].type === '(' &&
+          tokens[pos + 3] && tokens[pos + 3].type === ')') {
+        next(); // '.'
+        let methode = next().v; // miniscul / majuscul / suprespac
+        next(); next(); // '(' ')'
+        if (typeof valeur === 'number') continue; // rien a convertir : ignore silencieusement
+        if (typeof valeur !== 'string') throw new Error("." + methode + "() attend du texte");
+        if (methode === 'miniscul') valeur = valeur.toLowerCase();
+        else if (methode === 'majuscul') valeur = valeur.toUpperCase();
+        else if (methode === 'suprespac') valeur = valeur.trim();
+        continue;
+      }
+      // Indexation sur le resultat d'un attribut/appel precedent : moi.comptes[i], f()[1]...
+      if (peek() && peek().type === '[' && (estVecteur(valeur) || estMatrice(valeur))) {
+        next(); // '['
+        let idx1 = (peek() && peek().type !== ',' && peek().type !== ']') ? parseOr() : null;
+        if (peek() && peek().type === ',') {
+          next();
+          let idx2 = (peek() && peek().type !== ']') ? parseOr() : null;
+          if (!peek() || peek().type !== ']') throw new Error("Crochet fermant manquant pour l'indexation");
+          next();
+          valeur = accederMatrice(valeur, idx1, idx2, "resultat");
+          continue;
+        }
+        if (!peek() || peek().type !== ']') throw new Error("Crochet fermant manquant pour l'indexation");
+        next();
+        valeur = accederUnique(valeur, idx1, "resultat");
+        continue;
+      }
+      break;
     }
     return valeur;
   }
@@ -1279,42 +1333,68 @@ async function evalExprSansEntreeAsync(str, ctx) {
   }
   async function parsePrimary() {
     let valeur = await parsePrimaryBrute();
-    // Attribut/methode d'une instance de classe : a.nom (lecture), a.methode(...) (appel,
-    // execute reellement le corps de la methode, moi = l'instance elle-meme).
-    while (peek() && peek().type === 'op' && peek().v === '.' &&
-           tokens[pos + 1] && tokens[pos + 1].type === 'ident' &&
-           valeur && typeof valeur === 'object' && valeur.__classe !== undefined) {
-      let nomSuivant = tokens[pos + 1].v;
-      if (tokens[pos + 2] && tokens[pos + 2].type === '(') {
-        next(); next(); // '.' nomMethode
-        next(); // '('
-        let args = [];
-        if (!(peek() && peek().type === ')')) {
-          args.push(await parseOr());
-          while (peek() && peek().type === ',') { next(); args.push(await parseOr()); }
+    // Suite d'attributs / indexations / methodes de texte / appels de methode d'instance
+    // enchaines sur le resultat, dans n'importe quel ordre : moi.comptes[i].nom,
+    // moi.comptes[i].verifier(pin), v[i].texte(), etc.
+    while (true) {
+      // Attribut/methode d'une instance de classe : a.nom (lecture), a.methode(...) (appel,
+      // execute reellement le corps de la methode, moi = l'instance elle-meme).
+      if (peek() && peek().type === 'op' && peek().v === '.' &&
+          tokens[pos + 1] && tokens[pos + 1].type === 'ident' &&
+          valeur && typeof valeur === 'object' && valeur.__classe !== undefined) {
+        let nomSuivant = tokens[pos + 1].v;
+        if (tokens[pos + 2] && tokens[pos + 2].type === '(') {
+          next(); next(); // '.' nomMethode
+          next(); // '('
+          let args = [];
+          if (!(peek() && peek().type === ')')) {
+            args.push(await parseOr());
+            while (peek() && peek().type === ',') { next(); args.push(await parseOr()); }
+          }
+          if (!peek() || peek().type !== ')') throw new Error("Parenthese fermante manquante pour l'appel de " + nomSuivant);
+          next();
+          valeur = await appellerMethodeInstance(valeur, nomSuivant, args);
+        } else {
+          next(); // '.'
+          let nomAttr = next().v;
+          valeur = Object.prototype.hasOwnProperty.call(valeur, nomAttr) ? valeur[nomAttr] : undefined;
         }
-        if (!peek() || peek().type !== ')') throw new Error("Parenthese fermante manquante pour l'appel de " + nomSuivant);
-        next();
-        valeur = await appellerMethodeInstance(valeur, nomSuivant, args);
-      } else {
-        next(); // '.'
-        let nomAttr = next().v;
-        valeur = Object.prototype.hasOwnProperty.call(valeur, nomAttr) ? valeur[nomAttr] : undefined;
+        continue;
       }
-    }
-    while (peek() && peek().type === 'op' && peek().v === '.' &&
-           tokens[pos + 1] && tokens[pos + 1].type === 'ident' &&
-           (tokens[pos + 1].v === 'miniscul' || tokens[pos + 1].v === 'majuscul' || tokens[pos + 1].v === 'suprespac') &&
-           tokens[pos + 2] && tokens[pos + 2].type === '(' &&
-           tokens[pos + 3] && tokens[pos + 3].type === ')') {
-      next(); // '.'
-      let methode = next().v; // miniscul / majuscul / suprespac
-      next(); next(); // '(' ')'
-      if (typeof valeur === 'number') continue;
-      if (typeof valeur !== 'string') throw new Error("." + methode + "() attend du texte");
-      if (methode === 'miniscul') valeur = valeur.toLowerCase();
-      else if (methode === 'majuscul') valeur = valeur.toUpperCase();
-      else if (methode === 'suprespac') valeur = valeur.trim();
+      // Methodes de texte chainees directement dans une expression.
+      if (peek() && peek().type === 'op' && peek().v === '.' &&
+          tokens[pos + 1] && tokens[pos + 1].type === 'ident' &&
+          (tokens[pos + 1].v === 'miniscul' || tokens[pos + 1].v === 'majuscul' || tokens[pos + 1].v === 'suprespac') &&
+          tokens[pos + 2] && tokens[pos + 2].type === '(' &&
+          tokens[pos + 3] && tokens[pos + 3].type === ')') {
+        next(); // '.'
+        let methode = next().v; // miniscul / majuscul / suprespac
+        next(); next(); // '(' ')'
+        if (typeof valeur === 'number') continue;
+        if (typeof valeur !== 'string') throw new Error("." + methode + "() attend du texte");
+        if (methode === 'miniscul') valeur = valeur.toLowerCase();
+        else if (methode === 'majuscul') valeur = valeur.toUpperCase();
+        else if (methode === 'suprespac') valeur = valeur.trim();
+        continue;
+      }
+      // Indexation sur le resultat d'un attribut/appel precedent : moi.comptes[i], f()[1]...
+      if (peek() && peek().type === '[' && (estVecteur(valeur) || estMatrice(valeur))) {
+        next(); // '['
+        let idx1 = (peek() && peek().type !== ',' && peek().type !== ']') ? await parseOr() : null;
+        if (peek() && peek().type === ',') {
+          next();
+          let idx2 = (peek() && peek().type !== ']') ? await parseOr() : null;
+          if (!peek() || peek().type !== ']') throw new Error("Crochet fermant manquant pour l'indexation");
+          next();
+          valeur = accederMatrice(valeur, idx1, idx2, "resultat");
+          continue;
+        }
+        if (!peek() || peek().type !== ']') throw new Error("Crochet fermant manquant pour l'indexation");
+        next();
+        valeur = accederUnique(valeur, idx1, "resultat");
+        continue;
+      }
+      break;
     }
     return valeur;
   }
@@ -2827,7 +2907,7 @@ function enregistrerFonctionsBase() {
         // Les parties sont normalement separees par un espace, sauf autour d'un saut de
         // ligne insere par saulig : on retire l'espace parasite qui se retrouverait juste
         // avant/apres le "\n".
-        printValeur(parties.join(" ").replace(/ *\n */g, "\n"));
+        printValeur(parties.join(" ").replace(/ {2,}/g, " ").replace(/ *\n */g, "\n"));
         // Force l'affichage immediat de ce resultat avant de poursuivre l'execution,
         // au lieu de tout accumuler et de ne peindre l'ecran qu'a la toute fin.
         await respirer(true);
@@ -2952,7 +3032,7 @@ function enregistrerFonctionsBase() {
                 catch (e) { parties.push(elemTrim); }
             }
         }
-        let message = parties.join(" ").replace(/ *\n */g, "\n");
+        let message = parties.join(" ").replace(/ {2,}/g, " ").replace(/ *\n */g, "\n");
         let saisie = await demanderSaisieConsole(message);
         if (saisie === null || saisie === undefined) saisie = "";
         let asTrim = saisie.trim();
@@ -3799,33 +3879,36 @@ function analyserEnTetePou(token) {
 async function executerCommandeSimple(ligne) {
   if (ligne === "") return;
 
-  // Affectation indexee : nom[indice] ~ valeur  ou  nom[ligne,colonne] ~ valeur
-  let mIdentCrochet = ligne.match(/^([a-zA-Z_]\w*)\[/);
+  // Affectation indexee : chemin[indice] ~ valeur  ou  chemin[ligne,colonne] ~ valeur
+  // "chemin" peut etre une variable simple (v[i]~...) ou un chemin d'attributs chaine
+  // (moi.compte[i]~..., a.b.c[i]~...), pour rester coherent avec la lecture qui accepte
+  // deja moi.comptes[i] dans une expression.
+  let mIdentCrochet = ligne.match(/^([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\[/);
   if (mIdentCrochet) {
-    let nom = mIdentCrochet[1];
+    let chemin = mIdentCrochet[1];
     let j = mIdentCrochet[0].length, depth = 1;
     while (j < ligne.length && depth > 0) {
       if (ligne[j] === '[') depth++;
       else if (ligne[j] === ']') depth--;
       j++;
     }
-    if (depth !== 0) throw new Error("Crochet fermant manquant pour l'indexation de " + nom);
+    if (depth !== 0) throw new Error("Crochet fermant manquant pour l'indexation de " + chemin);
     let indicesStr = ligne.slice(mIdentCrochet[0].length, j - 1);
     let reste = ligne.slice(j).trim();
     let mTilde = reste.match(/^~\s*(.*)$/);
     if (mTilde) {
       let indices = splitTopLevelComma(indicesStr);
       let valeur = await evaluerElementBrut(mTilde[1], ctxExpr);
-      let cible = getVar(nom);
+      let cible = resoudreCheminCible(chemin);
       if (indices.length === 1) {
         let idx = indices[0].trim() === "" ? null : await evalExpr(indices[0], ctxExpr);
-        affecterUnique(cible, idx, valeur, nom);
+        affecterUnique(cible, idx, valeur, chemin);
       } else if (indices.length === 2) {
         let l = indices[0].trim() === "" ? null : await evalExpr(indices[0], ctxExpr);
         let c = indices[1].trim() === "" ? null : await evalExpr(indices[1], ctxExpr);
-        affecterMatrice(cible, l, c, valeur, nom);
+        affecterMatrice(cible, l, c, valeur, chemin);
       } else {
-        throw new Error("Indexation invalide pour " + nom);
+        throw new Error("Indexation invalide pour " + chemin);
       }
       return;
     }
@@ -3836,13 +3919,13 @@ async function executerCommandeSimple(ligne) {
 
   // Methodes sur variable : nom.ajout(...), nom.miniscul(), nom.majuscul(), nom.suprespac()
   // Les methodes texte peuvent etre enchainees : var.miniscul().suprespac()
-  let mMethodesTexte = ligne.match(/^([a-zA-Z_]\w*)((?:\.(?:miniscul|majuscul|suprespac)\(\s*\))+)$/);
+  let mMethodesTexte = ligne.match(/^([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)((?:\.(?:miniscul|majuscul|suprespac)\(\s*\))+)$/);
   if (mMethodesTexte) {
-    let nomVar = mMethodesTexte[1];
-    let cible = getVar(nomVar);
+    let chemin = mMethodesTexte[1];
+    let cible = resoudreCheminCible(chemin);
     if (typeof cible === "number") { return; } // nombre : rien a convertir, on ignore silencieusement
     if (typeof cible !== "string") {
-      throw new Error(nomVar + ".miniscul()/majuscul()/suprespac() attend une variable contenant du texte");
+      throw new Error(chemin + ".miniscul()/majuscul()/suprespac() attend une variable contenant du texte");
     }
     let chaine = mMethodesTexte[2];
     let methodes = [];
@@ -3854,12 +3937,12 @@ async function executerCommandeSimple(ligne) {
       else if (methode === "majuscul") valeur = valeur.toUpperCase();
       else if (methode === "suprespac") valeur = valeur.trim();
     }
-    setVar(nomVar, valeur);
+    assignerCheminValeur(chemin, valeur);
     return;
   }
 
   // Methode sur vecteur/matrice : nom.ajout(elements)
-  let mMethode = ligne.match(/^([a-zA-Z_]\w*)\.(\w+)\((.*)\)$/);
+  let mMethode = ligne.match(/^([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\.(\w+)\((.*)\)$/);
   if (mMethode && mMethode[1] !== "base" && mMethode[1] !== "conver" && mMethode[1] !== "est") {
     let nomVar = mMethode[1], methode = mMethode[2], argsStr = mMethode[3].trim();
     let argExprs = argsStr === "" ? [] : splitTopLevelComma(argsStr);
@@ -3882,7 +3965,7 @@ async function executerCommandeSimple(ligne) {
     // "classe NomClasse { fonc methode(moi, ...) {...} }". Prioritaire sur les methodes
     // integrees ci-dessous (ajout/miniscul/majuscul/suprespac), qui ne s'appliquent qu'aux
     // vecteurs/matrices/textes, jamais aux instances de classe.
-    let cibleEventuelle = getVar(nomVar);
+    let cibleEventuelle = resoudreCheminCible(nomVar);
     if (cibleEventuelle && typeof cibleEventuelle === 'object' && cibleEventuelle.__classe !== undefined) {
       let argsVals = [];
       for (let a of argExprs) argsVals.push(await evalExpr(a, ctxExpr));
@@ -3893,7 +3976,7 @@ async function executerCommandeSimple(ligne) {
     }
 
     if (methode === "ajout") {
-      let cible = getVar(nomVar);
+      let cible = resoudreCheminCible(nomVar);
       let elements = [];
       for (let a of argExprs) {
         let v = await evaluerElementBrut(a, ctxExpr);
@@ -3908,7 +3991,7 @@ async function executerCommandeSimple(ligne) {
     }
 
     if (methode === "supri") {
-      let cible = getVar(nomVar);
+      let cible = resoudreCheminCible(nomVar);
       let elements = [];
       for (let a of argExprs) {
         let v = await evaluerElementBrut(a, ctxExpr);
@@ -3927,13 +4010,13 @@ async function executerCommandeSimple(ligne) {
       if (argExprs.length !== 0) {
         throw new Error(nomVar + "." + methode + "() n'accepte aucun argument");
       }
-      let cible = getVar(nomVar);
+      let cible = resoudreCheminCible(nomVar);
       if (typeof cible === "number") { return; } // nombre : rien a convertir, on ignore silencieusement
       if (typeof cible !== "string") {
         throw new Error(nomVar + "." + methode + "() attend une variable contenant du texte");
       }
       let valeur = methode === "miniscul" ? cible.toLowerCase() : methode === "majuscul" ? cible.toUpperCase() : cible.trim();
-      setVar(nomVar, valeur);
+      assignerCheminValeur(nomVar, valeur);
       return;
     }
 
@@ -3948,7 +4031,24 @@ async function executerCommandeSimple(ligne) {
   if (mAttribut) {
     let nomVar = mAttribut[1], nomAttr = mAttribut[2], valeurExpr = mAttribut[3].trim();
     let valeur;
-    if (/^\|[\s\S]*\|$/.test(valeurExpr)) {
+    let elementsAttr = splitTopLevelComma(valeurExpr);
+    if (elementsAttr.length > 1) {
+      // Plusieurs elements separes par virgule : concatenes en un seul texte,
+      // exactement comme les arguments de affi()/retour().
+      let parties = [];
+      for (let elem of elementsAttr) {
+        let elemTrim = elem.trim();
+        if (elemTrim === "saulig") {
+          parties.push("\n");
+        } else if (/^\|[\s\S]*\|$/.test(elemTrim)) {
+          parties.push(elemTrim.slice(1, -1));
+        } else {
+          verifierTexteLitteralFerme(elemTrim);
+          parties.push(formatValeur(await evalExpr(elemTrim, ctxExpr)));
+        }
+      }
+      valeur = parties.join(" ").replace(/ {2,}/g, " ").replace(/ *\n */g, "\n");
+    } else if (/^\|[\s\S]*\|$/.test(valeurExpr)) {
       valeur = valeurExpr.slice(1, -1);
     } else {
       verifierTexteLitteralFerme(valeurExpr);
@@ -3972,6 +4072,25 @@ async function executerCommandeSimple(ligne) {
   let mAssign = ligne.match(/^([a-zA-Z_]\w*)\s*~\s*(.*)$/);
   if (mAssign) {
     let nom = mAssign[1], valeur = mAssign[2].trim();
+    let elementsAssign = splitTopLevelComma(valeur);
+    if (elementsAssign.length > 1) {
+      // Plusieurs elements separes par virgule : concatenes en un seul texte,
+      // exactement comme les arguments de affi()/retour() (avec |texte| et saulig).
+      let parties = [];
+      for (let elem of elementsAssign) {
+        let elemTrim = elem.trim();
+        if (elemTrim === "saulig") {
+          parties.push("\n");
+        } else if (/^\|[\s\S]*\|$/.test(elemTrim)) {
+          parties.push(elemTrim.slice(1, -1));
+        } else {
+          verifierTexteLitteralFerme(elemTrim);
+          parties.push(formatValeur(await evalExpr(elemTrim, ctxExpr)));
+        }
+      }
+      setVar(nom, parties.join(" ").replace(/ {2,}/g, " ").replace(/ *\n */g, "\n"));
+      return;
+    }
     if (/^\|[\s\S]*\|$/.test(valeur)) {
       setVar(nom, valeur.slice(1, -1));
     } else {
@@ -4299,7 +4418,7 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
                 parties.push(formatValeur(await evalExpr(elemTrim, ctxExpr)));
               }
             }
-            valeur = parties.join(" ").replace(/ *\n */g, "\n");
+            valeur = parties.join(" ").replace(/ {2,}/g, " ").replace(/ *\n */g, "\n");
           }
         }
         return { index: index + 1, signal: { type: 'retour', valeur: valeur } };
