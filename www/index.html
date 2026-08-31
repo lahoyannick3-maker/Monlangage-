@@ -318,6 +318,14 @@ function mettreAJourBarreOnglets() {
     bouton.addEventListener("click", () => activerOnglet(onglet.id));
     ongletsBarre.appendChild(bouton);
   });
+
+  // Fait defiler la barre d'onglets pour que l'onglet ACTIF soit toujours visible
+  // (sinon, avec beaucoup d'onglets ouverts, l'onglet actif peut se retrouver hors
+  // de l'ecran sans que rien ne le signale).
+  let ongletActifEl = ongletsBarre.querySelector(".onglet.actif");
+  if (ongletActifEl) {
+    ongletActifEl.scrollIntoView({ behavior: "smooth", inline: "nearest", block: "nearest" });
+  }
 }
 
 function afficherNomOngletActif() {
