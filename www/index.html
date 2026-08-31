@@ -210,7 +210,7 @@
           <button id="btnMenuOuvrirFichier" type="button" role="menuitem">📄&nbsp;&nbsp;Ouvrir un fichier</button>
         </div>
       </div>
-      <input type="file" id="inputOuvrir" accept=".mlg,text/plain" style="display:none">
+      <input type="file" id="inputOuvrir" accept="*/*" style="display:none">
       <span id="nomFichier" title="Fichier actuel">Sans fichier</span>
     </div>
     <div id="ongletsBarre"></div>
@@ -461,6 +461,8 @@ window.monLangageSaveFinished = function(succes) {
     sauvegarderEtatOnglets();
     mettreAJourBarreOnglets();
     if (onglet.id === ongletActifId) afficherNomOngletActif();
+  } else {
+    alert("Enregistrement annule ou echoue pour « " + (onglet.nom || "sans titre") + " ».");
   }
 
   if (operation.apresSauvegarde) operation.apresSauvegarde(!!succes);
