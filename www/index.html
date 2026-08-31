@@ -295,6 +295,25 @@ affi(|Bonjour |, nom)</textarea>
 
   <div id="indicateurAttente"><div class="spinnerAttente"></div><span>Execution en cours, patientez…</span></div>
 
+  <div id="modalFichiers" class="modalFichiersOverlay">
+    <div class="modalFichiersBoite">
+      <div class="modalFichiersEntete">
+        <button id="modalFichiersRetour" type="button" title="Dossier parent">⬅</button>
+        <span id="modalFichiersChemin" class="modalFichiersChemin"></span>
+      </div>
+      <div id="modalFichiersListe" class="modalFichiersListe"></div>
+      <div id="modalFichiersNomLigne" class="modalFichiersNomLigne">
+        <span>Nom du fichier :</span>
+        <input id="modalFichiersNom" type="text" spellcheck="false">
+        <span class="modalFichiersExtension">.mlg</span>
+      </div>
+      <div class="modalFichiersActions">
+        <button id="modalFichiersAnnuler" type="button" class="annuler">ANNULER</button>
+        <button id="modalFichiersValider" type="button"></button>
+      </div>
+    </div>
+  </div>
+
 <script>
 /* ===================== ETAT GLOBAL ===================== */
               let scopes = [{}];   // pile de portees pour les variables (globale + fonctions)
@@ -4652,23 +4671,5 @@ initialiserOnglets();
 clearConsole();
 printInvite();
 </script>
-  <div id="modalFichiers" class="modalFichiersOverlay">
-    <div class="modalFichiersBoite">
-      <div class="modalFichiersEntete">
-        <button id="modalFichiersRetour" type="button" title="Dossier parent">⬅</button>
-        <span id="modalFichiersChemin" class="modalFichiersChemin"></span>
-      </div>
-      <div id="modalFichiersListe" class="modalFichiersListe"></div>
-      <div id="modalFichiersNomLigne" class="modalFichiersNomLigne">
-        <span>Nom du fichier :</span>
-        <input id="modalFichiersNom" type="text" spellcheck="false">
-        <span class="modalFichiersExtension">.mlg</span>
-      </div>
-      <div class="modalFichiersActions">
-        <button id="modalFichiersAnnuler" type="button" class="annuler">ANNULER</button>
-        <button id="modalFichiersValider" type="button"></button>
-      </div>
-    </div>
-  </div>
 </body>
 </html>
