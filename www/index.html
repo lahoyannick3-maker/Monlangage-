@@ -113,6 +113,52 @@
     #menuOuvrir button:hover { background: #21262d; }
     #nomFichier { margin-left: auto; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8b949e; font-size: 13px; }
 
+    /* Navigateur de fichiers integre (remplace les selecteurs systeme Android) */
+    .modalFichiersOverlay {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(1,4,9,.72);
+      z-index: 5000;
+      align-items: flex-end;
+      justify-content: center;
+    }
+    .modalFichiersOverlay.ouvert { display: flex; }
+    .modalFichiersBoite {
+      width: 100%; max-width: 640px; max-height: 82vh;
+      background: #161b22; border: 1px solid #30363d; border-radius: 12px 12px 0 0;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .modalFichiersEntete {
+      display: flex; align-items: center; gap: 8px;
+      padding: 12px 14px; border-bottom: 1px solid #30363d; flex-shrink: 0;
+    }
+    .modalFichiersEntete button { background: #21262d; padding: 6px 10px; font-size: 14px; }
+    .modalFichiersChemin { color: #58a6ff; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+    .modalFichiersListe { flex: 1; overflow-y: auto; padding: 4px 0; }
+    .modalFichiersLigne {
+      display: flex; align-items: center; gap: 10px;
+      padding: 11px 14px; color: #c9d1d9; font-size: 14px; cursor: pointer;
+    }
+    .modalFichiersLigne:active { background: #21262d; }
+    .modalFichiersLigne .icone { font-size: 16px; flex-shrink: 0; }
+    .modalFichiersLigne .nom { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .modalFichiersVide { padding: 20px 14px; color: #8b949e; font-size: 13px; text-align: center; }
+    .modalFichiersNomLigne {
+      display: none; align-items: center; gap: 8px;
+      padding: 12px 14px; border-top: 1px solid #30363d; flex-shrink: 0; color: #8b949e; font-size: 13px;
+    }
+    .modalFichiersNomLigne.visible { display: flex; }
+    .modalFichiersNomLigne input {
+      flex: 1; background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+      color: #c9d1d9; padding: 8px 10px; font-family: monospace; font-size: 14px;
+    }
+    .modalFichiersExtension { color: #58a6ff; font-family: monospace; }
+    .modalFichiersActions {
+      display: flex; justify-content: flex-end; gap: 10px;
+      padding: 12px 14px; border-top: 1px solid #30363d; flex-shrink: 0;
+    }
+    .modalFichiersActions button.annuler { background: #21262d; color: #c9d1d9; }
+
     #ongletsBarre {
       background: #0d1117;
       border-bottom: 1px solid #30363d;
@@ -276,11 +322,19 @@ let menuOuvrir = document.getElementById("menuOuvrir");
 let btnMenuNouvelOnglet = document.getElementById("btnMenuNouvelOnglet");
 let btnMenuOuvrirFichier = document.getElementById("btnMenuOuvrirFichier");
 
+let modalFichiers = document.getElementById("modalFichiers");
+let modalFichiersRetour = document.getElementById("modalFichiersRetour");
+let modalFichiersChemin = document.getElementById("modalFichiersChemin");
+let modalFichiersListe = document.getElementById("modalFichiersListe");
+let modalFichiersNomLigne = document.getElementById("modalFichiersNomLigne");
+let modalFichiersNom = document.getElementById("modalFichiersNom");
+let modalFichiersAnnuler = document.getElementById("modalFichiersAnnuler");
+let modalFichiersValider = document.getElementById("modalFichiersValider");
+
 /* ===================== ONGlets DE L'EDITEUR ===================== */
 let onglets = [];
 let ongletActifId = null;
 let prochainIdOnglet = 1;
-let operationSauvegarde = null;
 
 function sauvegarderEtatOnglets() {
   localStorage.setItem("monlangage_onglets", JSON.stringify(onglets));
@@ -403,29 +457,35 @@ function nouvelOnglet() {
 function enregistrerOnglet(onglet, apresSauvegarde) {
   if (!onglet) return;
 
-  let nom = (onglet.nom || "").trim();
-  if (!nom || nom.toLowerCase() === "sans titre") {
-    nom = window.prompt("Nom du fichier :", "monscript") || "";
-    nom = nom.trim().replace(/\.mlg$/i, "");
-    if (!nom) return;
-    onglet.nom = nom + ".mlg";
-  } else if (!/\.mlg$/i.test(nom)) {
-    onglet.nom = nom + ".mlg";
-  }
+  let nomDefaut = (onglet.nom || "").trim().replace(/\.mlg$/i, "");
+  if (!nomDefaut || nomDefaut.toLowerCase() === "sans titre") nomDefaut = "monscript";
 
-  operationSauvegarde = {
-    ongletId: onglet.id,
-    apresSauvegarde: apresSauvegarde || null
-  };
-  mettreAJourBarreOnglets();
-  sauvegarderEtatOnglets();
-
-  if (window.MonLangage && typeof window.MonLangage.saveFile === "function") {
-    window.MonLangage.saveFile(onglet.nom, onglet.contenu);
+  // Navigateur de fichiers integre (choix du nom ET de l'emplacement dans un seul
+  // dialogue, dans le style de l'app) : c'est la voie normale sur l'app native.
+  if (window.MonLangage && typeof window.MonLangage.listerDossier === "function") {
+    ouvrirNavigateurFichiers("enregistrer", {
+      nomDefaut: nomDefaut,
+      onValide: (cheminComplet) => {
+        let ok = window.MonLangage.ecrireFichier(cheminComplet, onglet.contenu);
+        if (ok) {
+          onglet.nom = cheminComplet.substring(cheminComplet.lastIndexOf("/") + 1);
+          onglet.contenuSauvegarde = onglet.contenu;
+          onglet.dirty = false;
+          sauvegarderEtatOnglets();
+          mettreAJourBarreOnglets();
+          if (onglet.id === ongletActifId) afficherNomOngletActif();
+        } else {
+          alert("Impossible d'enregistrer le fichier a cet emplacement.");
+        }
+        if (apresSauvegarde) apresSauvegarde(!!ok);
+      }
+    });
     return;
   }
 
-  // Fallback navigateur.
+  // Fallback navigateur web classique (previsualisation hors app, ou app native
+  // pas encore reconstruite avec le navigateur de fichiers integre).
+  onglet.nom = nomDefaut + ".mlg";
   let blob = new Blob([onglet.contenu], { type: "text/plain;charset=utf-8" });
   let url = URL.createObjectURL(blob);
   let a = document.createElement("a");
@@ -440,13 +500,8 @@ function enregistrerOnglet(onglet, apresSauvegarde) {
   onglet.dirty = false;
   sauvegarderEtatOnglets();
   mettreAJourBarreOnglets();
-  if (operationSauvegarde && operationSauvegarde.apresSauvegarde) {
-    let cb = operationSauvegarde.apresSauvegarde;
-    operationSauvegarde = null;
-    cb(true);
-  } else {
-    operationSauvegarde = null;
-  }
+  if (onglet.id === ongletActifId) afficherNomOngletActif();
+  if (apresSauvegarde) apresSauvegarde(true);
 }
 
 function enregistrerFichierMlg() {
@@ -454,27 +509,6 @@ function enregistrerFichierMlg() {
   let onglet = trouverOnglet(ongletActifId);
   enregistrerOnglet(onglet);
 }
-
-window.monLangageSaveFinished = function(succes) {
-  if (!operationSauvegarde) return;
-
-  let operation = operationSauvegarde;
-  operationSauvegarde = null;
-  let onglet = trouverOnglet(operation.ongletId);
-  if (!onglet) return;
-
-  if (succes) {
-    onglet.contenuSauvegarde = onglet.contenu;
-    onglet.dirty = false;
-    sauvegarderEtatOnglets();
-    mettreAJourBarreOnglets();
-    if (onglet.id === ongletActifId) afficherNomOngletActif();
-  } else {
-    alert("Enregistrement annule ou echoue pour « " + (onglet.nom || "sans titre") + " ».");
-  }
-
-  if (operation.apresSauvegarde) operation.apresSauvegarde(!!succes);
-};
 
 function fermerOnglet(id) {
   let onglet = trouverOnglet(id);
@@ -578,9 +612,10 @@ function afficherEditeur() {
   ecranEditeur.classList.remove("masque");
 }
 btnConsole.addEventListener("click", afficherConsole);
-// Si une execution est en cours, le bouton Retour l'interrompt en plus de
+// Si une execution est en cours, quitter la console l'interrompt en plus de
 // ramener a l'ecran de l'editeur (il faudra rappuyer sur "Executer" pour reprendre).
-btnRetour.addEventListener("click", () => {
+// Fonction partagee entre le bouton "Retour" et le bouton retour materiel Android.
+function quitterConsole() {
   if (executionEnCours) {
     demandeArret = true;
     // Si le script est bloque en attente d'une saisie entr(), personne ne pourra
@@ -591,7 +626,8 @@ btnRetour.addEventListener("click", () => {
     arreterIndicateurAttente();
   }
   afficherEditeur();
-});
+}
+btnRetour.addEventListener("click", quitterConsole);
 /* ===================== INDICATEUR "EXECUTION EN COURS" ===================== */
 // Affiche un petit badge avec spinner, mais seulement si l'execution dure plus
 // que `delaiMs` : la plupart des scripts sont instantanes et n'ont pas besoin
@@ -4209,6 +4245,121 @@ function sauvegarderCode() {
   if (onglet) localStorage.setItem('monlangage_code', onglet.contenu);
 }
 
+/* ===================== NAVIGATEUR DE FICHIERS INTEGRE ===================== */
+// Remplace les selecteurs systeme Android : navigation dans les dossiers du
+// stockage, dans le style de l'app, pour Enregistrer (choisir nom + emplacement)
+// et Ouvrir (choisir un fichier existant).
+let navFichiersChemin = null;
+let navFichiersMode = null; // "enregistrer" | "ouvrir"
+let navFichiersRacine = "/storage/emulated/0";
+let navFichiersOnValide = null;
+
+function ouvrirNavigateurFichiers(mode, options) {
+  options = options || {};
+  if (!(window.MonLangage && typeof window.MonLangage.listerDossier === "function")) {
+    alert("Le navigateur de fichiers integre necessite l'app native (rebuild requis).");
+    return;
+  }
+  if (typeof window.MonLangage.permissionStockageAccordee === "function" &&
+      !window.MonLangage.permissionStockageAccordee()) {
+    alert("MonLangage a besoin de l'acces au stockage pour " +
+      (mode === "enregistrer" ? "enregistrer" : "ouvrir") + " des fichiers.\n\n" +
+      "Sur l'ecran qui va s'ouvrir, active \"Autoriser l'acces a tous les fichiers\", " +
+      "puis reviens dans l'app et reessaie.");
+    if (typeof window.MonLangage.demanderPermissionStockage === "function") {
+      window.MonLangage.demanderPermissionStockage();
+    }
+    return;
+  }
+
+  navFichiersMode = mode;
+  navFichiersOnValide = options.onValide || null;
+  navFichiersRacine = (typeof window.MonLangage.dossierRacine === "function")
+    ? (window.MonLangage.dossierRacine() || navFichiersRacine) : navFichiersRacine;
+
+  modalFichiersNomLigne.classList.toggle("visible", mode === "enregistrer");
+  modalFichiersNom.value = options.nomDefaut || "";
+  modalFichiersValider.style.display = mode === "enregistrer" ? "" : "none";
+  modalFichiersValider.textContent = "ENREGISTRER";
+
+  chargerDossierNavigateur(navFichiersRacine);
+  modalFichiers.classList.add("ouvert");
+}
+
+function fermerNavigateurFichiers() {
+  modalFichiers.classList.remove("ouvert");
+  navFichiersOnValide = null;
+}
+
+function chargerDossierNavigateur(chemin) {
+  navFichiersChemin = chemin;
+  modalFichiersChemin.textContent = chemin;
+
+  let elements = [];
+  try { elements = JSON.parse(window.MonLangage.listerDossier(chemin) || "[]"); } catch (_) { elements = []; }
+
+  modalFichiersListe.innerHTML = "";
+
+  let visibles = elements.filter(el => navFichiersMode === "ouvrir" || el.dossier);
+  if (visibles.length === 0) {
+    let vide = document.createElement("div");
+    vide.className = "modalFichiersVide";
+    vide.textContent = "Dossier vide";
+    modalFichiersListe.appendChild(vide);
+    return;
+  }
+
+  visibles.forEach(el => {
+    let ligne = document.createElement("div");
+    ligne.className = "modalFichiersLigne";
+
+    let icone = document.createElement("span");
+    icone.className = "icone";
+    icone.textContent = el.dossier ? "📁" : "📄";
+
+    let nom = document.createElement("span");
+    nom.className = "nom";
+    nom.textContent = el.nom;
+
+    ligne.appendChild(icone);
+    ligne.appendChild(nom);
+
+    ligne.addEventListener("click", () => {
+      let cheminEnfant = chemin.replace(/\/+$/, "") + "/" + el.nom;
+      if (el.dossier) {
+        chargerDossierNavigateur(cheminEnfant);
+      } else {
+        validerNavigateurFichiers(cheminEnfant);
+      }
+    });
+
+    modalFichiersListe.appendChild(ligne);
+  });
+}
+
+function validerNavigateurFichiers(cheminComplet) {
+  let cb = navFichiersOnValide;
+  fermerNavigateurFichiers();
+  if (cb) cb(cheminComplet);
+}
+
+modalFichiersRetour.addEventListener("click", () => {
+  if (!navFichiersChemin || navFichiersChemin === navFichiersRacine) return;
+  let parent = navFichiersChemin.replace(/\/[^\/]+\/?$/, "");
+  if (!parent || parent.length < navFichiersRacine.length) parent = navFichiersRacine;
+  chargerDossierNavigateur(parent);
+});
+
+modalFichiersAnnuler.addEventListener("click", fermerNavigateurFichiers);
+
+modalFichiersValider.addEventListener("click", () => {
+  if (navFichiersMode !== "enregistrer") return;
+  let nom = (modalFichiersNom.value || "").trim().replace(/\.mlg$/i, "");
+  if (!nom) { alert("Entre un nom de fichier."); return; }
+  let cheminComplet = navFichiersChemin.replace(/\/+$/, "") + "/" + nom + ".mlg";
+  validerNavigateurFichiers(cheminComplet);
+});
+
 function ouvrirFichierMlg(fichier) {
   if (!fichier) return;
   let lecteur = new FileReader();
@@ -4234,6 +4385,20 @@ btnMenuNouvelOnglet.addEventListener("click", () => {
 
 btnMenuOuvrirFichier.addEventListener("click", () => {
   menuOuvrir.classList.remove("ouvert");
+  if (window.MonLangage && typeof window.MonLangage.listerDossier === "function") {
+    ouvrirNavigateurFichiers("ouvrir", {
+      onValide: (cheminComplet) => {
+        let texte = window.MonLangage.lireFichier(cheminComplet);
+        if (texte === null || texte === undefined) {
+          alert("Impossible de lire ce fichier.");
+          return;
+        }
+        let nom = cheminComplet.substring(cheminComplet.lastIndexOf("/") + 1);
+        chargerFichierDansNouvelOnglet(texte, nom);
+      }
+    });
+    return;
+  }
   if (window.MonLangage && typeof window.MonLangage.openFile === "function") {
     window.MonLangage.openFile();
     return;
@@ -4249,6 +4414,29 @@ inputOuvrir.addEventListener("change", () => {
 document.addEventListener("click", (e) => {
   if (!e.target.closest(".menuOuvrir")) menuOuvrir.classList.remove("ouvert");
 });
+
+/* ===================== BOUTON RETOUR MATERIEL ANDROID ===================== */
+// Ordre de priorite : on referme d'abord ce qui est ouvert par-dessus l'editeur
+// (navigateur de fichiers, menu Ouvrir, console), et on ne quitte VRAIMENT l'app
+// que si on est deja sur l'ecran de l'editeur sans aucune fenetre active.
+if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App) {
+  window.Capacitor.Plugins.App.addListener("backButton", () => {
+    if (modalFichiers.classList.contains("ouvert")) {
+      fermerNavigateurFichiers();
+      return;
+    }
+    if (menuOuvrir.classList.contains("ouvert")) {
+      menuOuvrir.classList.remove("ouvert");
+      return;
+    }
+    if (ecranConsole.classList.contains("actif")) {
+      quitterConsole();
+      return;
+    }
+    // Vraiment dans l'editeur, aucune fenetre active : on quitte l'app.
+    window.Capacitor.Plugins.App.exitApp();
+  });
+}
 
 /*
  * Appelee par MainActivity.java quand un fichier est choisi avec le selecteur
@@ -4464,5 +4652,23 @@ initialiserOnglets();
 clearConsole();
 printInvite();
 </script>
+  <div id="modalFichiers" class="modalFichiersOverlay">
+    <div class="modalFichiersBoite">
+      <div class="modalFichiersEntete">
+        <button id="modalFichiersRetour" type="button" title="Dossier parent">⬅</button>
+        <span id="modalFichiersChemin" class="modalFichiersChemin"></span>
+      </div>
+      <div id="modalFichiersListe" class="modalFichiersListe"></div>
+      <div id="modalFichiersNomLigne" class="modalFichiersNomLigne">
+        <span>Nom du fichier :</span>
+        <input id="modalFichiersNom" type="text" spellcheck="false">
+        <span class="modalFichiersExtension">.mlg</span>
+      </div>
+      <div class="modalFichiersActions">
+        <button id="modalFichiersAnnuler" type="button" class="annuler">ANNULER</button>
+        <button id="modalFichiersValider" type="button"></button>
+      </div>
+    </div>
+  </div>
 </body>
 </html>
