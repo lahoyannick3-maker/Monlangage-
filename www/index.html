@@ -358,7 +358,7 @@ let fonctions = {};      // fonctions ~ { nom: {params:[...], corps:[tokens...] 
 let classes = {};        // classes ~ { nom: {methodes: {nomMethode: {params:[...], corps:[tokens...]}}} }
 let fonctionsBase = {};
 let fonctionsExpression = {};   // sous-ensemble de fonctionsBase utilisable directement dans une expression (ex: entr)
-let commandes = ["affi", "pou", "tanqer", "stop", "continu", "si", "sinon", "sision", "fonc", "retour", "entr", "c", "seq", "rep", "matrice", "lon", "dim", "som", "moy", "var", "sd", "max", "min", "suchaq", "det", "trace", "trans", "aide", "base", "effa", "voi", "lettr", "Lettr", "VRAI", "FAUX", "pasdefini"];
+let commandes = ["affi", "pou", "tanqer", "stop", "continu", "si", "sinon", "sision", "fonc", "retour", "entr", "c", "liste", "seq", "rep", "alea", "ralea", "matrice", "lon", "dim", "som", "moy", "var", "sd", "max", "min", "suchaq", "det", "trace", "trans", "aide", "base", "effa", "voi", "lettr", "Lettr", "VRAI", "FAUX", "pasdefini"];
 
 let outputDiv = document.getElementById("output");
 let codeArea = document.getElementById("code");
@@ -963,6 +963,104 @@ function demanderSaisieConsole(message) {
   });
 }
 
+// Comme demanderSaisieConsole, mais pour une saisie secrete (mot de passe / code PIN).
+// styleChar === null : rien n'est JAMAIS affiche a l'ecran pendant la frappe (pas meme un
+// caractere de masquage) -- seul le nombre de caracteres tapes reste invisible aussi.
+// styleChar donne (un seul caractere texte) : affiche autant de styleChar que de
+// caracteres reellement tapes, comme un champ mot de passe classique mais avec le
+// caractere de masquage choisi par le codeur (pas forcement '*').
+// Comme la zone de saisie est un <span contentEditable>, on intercepte nous-memes
+// chaque touche (au lieu de laisser le navigateur l'inserer visiblement) pour garder
+// le texte reellement tape dans une variable JS cachee, jamais dans le DOM affiche.
+function demanderSaisieConsoleSecrete(message, styleChar) {
+  arreterIndicateurAttente();
+  return new Promise((resolve, reject) => {
+    let ligne = document.createElement("div");
+    ligne.className = "ligneCommande";
+    let msg = document.createElement("span");
+    msg.className = "invite";
+    msg.textContent = message ? message + " " : "";
+    msg.contentEditable = "false";
+    let input = document.createElement("span");
+    input.className = "entrInput";
+    input.contentEditable = "true";
+    input.textContent = "\u200B";
+    ligne.appendChild(msg);
+    ligne.appendChild(input);
+    outputDiv.appendChild(ligne);
+    outputDiv.scrollTop = outputDiv.scrollHeight;
+
+    input.focus();
+    let range = document.createRange();
+    range.selectNodeContents(input);
+    range.collapse(false);
+    let sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+
+    let buffer = "";
+    function placerCurseurFin() {
+      let r = document.createRange();
+      r.selectNodeContents(input);
+      r.collapse(false);
+      let s = window.getSelection();
+      s.removeAllRanges();
+      s.addRange(r);
+    }
+    function rafraichirAffichage() {
+      input.textContent = (styleChar ? styleChar.repeat(buffer.length) : "") || "\u200B";
+      placerCurseurFin();
+    }
+    function onKeyDown(e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopPropagation();
+        input.contentEditable = "false";
+        input.removeEventListener("keydown", onKeyDown);
+        input.removeEventListener("paste", onPaste);
+        annulerSaisieEnCours = null;
+        outputDiv.scrollTop = outputDiv.scrollHeight;
+        demarrerIndicateurAttente();
+        resolve(buffer);
+        return;
+      }
+      if (e.key === "Backspace") {
+        e.preventDefault();
+        buffer = buffer.slice(0, -1);
+        rafraichirAffichage();
+        return;
+      }
+      // Une touche de caractere unique (sans Ctrl/Alt/Meta) : on l'ajoute au buffer
+      // cache et on empeche systematiquement le contentEditable natif de l'afficher.
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        buffer += e.key;
+        rafraichirAffichage();
+        return;
+      }
+      // Toute autre touche (fleches, Tab, Delete, ...) : bloquee par prudence, pour ne
+      // jamais laisser le contentEditable natif reprendre la main sur l'affichage.
+      e.preventDefault();
+    }
+    function onPaste(e) {
+      e.preventDefault();
+      let texte = (e.clipboardData || window.clipboardData).getData("text");
+      buffer += texte;
+      rafraichirAffichage();
+    }
+    input.addEventListener("keydown", onKeyDown);
+    input.addEventListener("paste", onPaste);
+
+    annulerSaisieEnCours = () => {
+      input.removeEventListener("keydown", onKeyDown);
+      input.removeEventListener("paste", onPaste);
+      annulerSaisieEnCours = null;
+      reject(new ExecutionInterrompue());
+    };
+  });
+}
+
+
 // Cherche les appels aux fonctions de fonctionsExpression (ex: entr(...)) dans une expression,
 // les execute tout de suite (elles peuvent etre asynchrones / interactives), et remplace
 // chaque appel par une variable temporaire portant la valeur retournee.
@@ -1167,7 +1265,7 @@ function evalExprSansEntreeSync(str, ctx) {
         continue;
       }
       // Indexation sur le resultat d'un attribut/appel precedent : moi.comptes[i], f()[1]...
-      if (peek() && peek().type === '[' && (estVecteur(valeur) || estMatrice(valeur))) {
+      if (peek() && peek().type === '[' && (estVecteur(valeur) || estMatrice(valeur) || estListe(valeur))) {
         next(); // '['
         let idx1 = (peek() && peek().type !== ',' && peek().type !== ']') ? parseOr() : null;
         if (peek() && peek().type === ',') {
@@ -1378,7 +1476,7 @@ async function evalExprSansEntreeAsync(str, ctx) {
         continue;
       }
       // Indexation sur le resultat d'un attribut/appel precedent : moi.comptes[i], f()[1]...
-      if (peek() && peek().type === '[' && (estVecteur(valeur) || estMatrice(valeur))) {
+      if (peek() && peek().type === '[' && (estVecteur(valeur) || estMatrice(valeur) || estListe(valeur))) {
         next(); // '['
         let idx1 = (peek() && peek().type !== ',' && peek().type !== ']') ? await parseOr() : null;
         if (peek() && peek().type === ',') {
@@ -1500,10 +1598,12 @@ let ctxExpr = { getVar: getVar, appelerFonction: (nom, args) => appelerFonction(
 // avec "donnees" toujours stockees en colonne (comme R en interne), quel que soit parlig.
 function estMatrice(v) { return v !== null && typeof v === 'object' && v.__type === 'matrice'; }
 function estVecteur(v) { return Array.isArray(v); }
+function estListe(v) { return v !== null && typeof v === 'object' && v.__type === 'liste'; }
 // Nom (texte) de la nature d'une valeur : "texte", "nombre", "booleen", "vecteur", "matrice" ou "inconnu".
 // Utilise par natu() et par les messages d'erreur de conver.*/est.*.
 function nomNature(v) {
   if (estMatrice(v)) return "matrice";
+  if (estListe(v)) return "liste";
   if (estVecteur(v)) return "vecteur";
   if (typeof v === "boolean") return "booleen";
   if (typeof v === "number") return "nombre";
@@ -1886,15 +1986,24 @@ function ajouterVecteur(v, elements) {
   let coherent = unifierTypeVecteur(v);
   for (let i = 0; i < v.length; i++) v[i] = coherent[i];
 }
-function ajouterMatrice(m, elements) {
-  if (elements.length % m.nlig !== 0) {
-    throw new Error(".ajout(...) sur une matrice : le nombre d'elements ajoutes (" + elements.length + ") doit etre un multiple du nombre de lignes (" + m.nlig + "), car l'ajout se fait par colonne(s) entiere(s)");
-  }
-  m.donnees.push(...elements);
-  m.ncol += elements.length / m.nlig;
-  let coherent = unifierTypeVecteur(m.donnees);
-  for (let i = 0; i < m.donnees.length; i++) m.donnees[i] = coherent[i];
+// nom.ajout(...) sur une liste : chaque argument est pousse TEL QUEL (pas de fusion/
+// aplatissement comme pour un vecteur), pas d'unification de type : c'est tout l'interet
+// de liste() par rapport a c().
+function ajouterListe(li, elements) {
+  li.elements.push(...elements);
 }
+// nom.supri(...) sur une liste : supprime, pour chaque valeur donnee, sa PREMIERE
+// occurrence trouvee (comparaison par egalite simple, comme pour un vecteur).
+function supprimerListe(li, elements) {
+  for (let el of elements) {
+    let idx = li.elements.findIndex(x => x === el);
+    if (idx === -1) {
+      throw new Error(".supri(...) : la valeur " + JSON.stringify(el) + " n'a pas ete trouvee dans la liste");
+    }
+    li.elements.splice(idx, 1);
+  }
+}
+
 
 // nom.supri(...) : supprime des elements d'un vecteur/une matrice EXISTANTS (inverse de .ajout()).
 // Pour un vecteur : supprime, pour chaque valeur donnee, sa PREMIERE occurrence trouvee
@@ -1963,6 +2072,26 @@ function calculerIndiceMax(idx) {
 }
 
 // v[indice] -- indices a partir de 1, comme en R.
+// Tire x elements au hasard, sans remise, parmi un tableau JS plat (melange partiel de
+// Fisher-Yates, sans copier tout le tableau plus d'une fois). Utilise par alea(...).
+function tirerAuHasardSansRemise(tableau, x) {
+  let copie = tableau.slice();
+  let n = copie.length;
+  for (let i = 0; i < x; i++) {
+    let j = i + Math.floor(Math.random() * (n - i));
+    let tmp = copie[i]; copie[i] = copie[j]; copie[j] = tmp;
+  }
+  return copie.slice(0, x);
+}
+
+// Tire x elements au hasard, AVEC remise (chaque tirage est independant, un meme
+// element peut ressortir plusieurs fois). Utilise par ralea(...).
+function tirerAuHasardAvecRemise(tableau, x) {
+  let resultat = [];
+  for (let i = 0; i < x; i++) resultat.push(tableau[Math.floor(Math.random() * tableau.length)]);
+  return resultat;
+}
+
 function verifierIndiceEntier(v, nom) {
   if (typeof v !== 'number' || !Number.isInteger(v)) throw new Error("Indice invalide pour " + nom);
   return v;
@@ -2016,6 +2145,17 @@ function accederVecteur(v, indice, nom) {
 // Indexation a un seul crochet, valable pour un vecteur OU une matrice (traitee "a plat",
 // en ordre colonne, comme en R). Utile pour l'indexation logique : B[B==5].
 function accederUnique(v, indice, nom) {
+  if (estListe(v)) {
+    let elements = v.elements;
+    if (indice === null) return { __type: "liste", elements: elements.slice() };
+    if (typeof indice === 'number') {
+      verifierIndiceEntier(indice, nom);
+      if (indice < 1 || indice > elements.length) throw new Error("Indice " + indice + " hors limites pour " + nom + " (taille " + elements.length + ")");
+      return elements[indice - 1];
+    }
+    let positionsListe = resoudreIndicesVecteur(indice, elements.length, nom);
+    return { __type: "liste", elements: positionsListe.map(p => elements[p]) };
+  }
   let plat = estMatrice(v) ? v.donnees : (estVecteur(v) ? v : null);
   if (plat === null) throw new Error(nom + " n'est pas un vecteur ou une matrice");
   if (indice === null) return plat.slice();
@@ -2060,6 +2200,32 @@ function accederMatrice(m, ligne, colonne, nom) {
 // Ecriture a un seul crochet, valable pour un vecteur OU une matrice (traitee "a plat").
 // Utile pour l'ecriture avec indexation logique : B[B>15] ~ 0.
 function affecterUnique(v, indice, valeur, nom) {
+  if (estListe(v)) {
+    let elements = v.elements;
+    if (indice === null) {
+      if (estListe(valeur)) {
+        if (valeur.elements.length !== elements.length) throw new Error(nom + "[] ~ ... attend une liste de meme taille (" + elements.length + ")");
+        for (let i = 0; i < elements.length; i++) elements[i] = valeur.elements[i];
+      } else {
+        for (let i = 0; i < elements.length; i++) elements[i] = valeur;
+      }
+      return;
+    }
+    if (typeof indice === 'number') {
+      verifierIndiceEntier(indice, nom);
+      if (indice < 1) throw new Error("Indice " + indice + " invalide pour " + nom);
+      while (elements.length < indice) elements.push(undefined);
+      elements[indice - 1] = valeur;
+      return;
+    }
+    let positionsListe = resoudreIndicesVecteur(indice, elements.length, nom);
+    let valeursListe = estListe(valeur) ? valeur.elements : [valeur];
+    if (valeursListe.length !== positionsListe.length && valeursListe.length !== 1) {
+      throw new Error(nom + "[...] ~ ... attend " + positionsListe.length + " valeur(s) (ou une seule repetee), recu " + valeursListe.length);
+    }
+    for (let i = 0; i < positionsListe.length; i++) elements[positionsListe[i]] = valeursListe[i % valeursListe.length];
+    return;
+  }
   if (estMatrice(v)) {
     let positions;
     if (indice === null) { positions = []; for (let i = 0; i < v.donnees.length; i++) positions.push(i); }
@@ -2156,6 +2322,7 @@ function pad(texte, largeur) {
 function formatValeur(v) {
   if (v === undefined) return "pasdefini";
   if (estMatrice(v)) return formatMatrice(v);
+  if (estListe(v)) return formatListe(v);
   if (estVecteur(v)) return formatVecteur(v);
   if (v === true) return "VRAI";
   if (v === false) return "FAUX";
@@ -2204,6 +2371,20 @@ function formatVecteur(v) {
     let label = "[" + pad(String(i + 1), largeurIndice) + "]";
     let morceaux = textes.slice(i, i + parLigne).map(t => pad(t, largeurElem));
     lignes.push(label + " " + morceaux.join(" "));
+  }
+  return lignes.join("\n");
+}
+
+// Affiche une liste comme R : chaque element sur sa propre section, precede de son
+// indice entre double-crochets ([[i]]), avec le type reel de chaque element preserve
+// (contrairement a un vecteur, pas de conversion vers un type commun).
+function formatListe(li) {
+  let n = li.elements.length;
+  if (n === 0) return "liste(0)";
+  let lignes = [];
+  for (let i = 0; i < n; i++) {
+    lignes.push("[[" + (i + 1) + "]]");
+    lignes.push(formatValeur(li.elements[i]));
   }
   return lignes.join("\n");
 }
@@ -2520,6 +2701,33 @@ let aideCommandes = [
       "Renvoie ce que l'utilisateur a tape.",
       "Convertit automatiquement en nombre si possible, sinon renvoie du texte."
     ], exemple: "age ~ entr(|Quel age as-tu, |, prenom, |?|)" },
+  { noms: ["entr.secret"], categorie: "Base", syntaxe: "entr.secret(|texte|, sty~|*|)", description: [
+      "Comme entr(), mais la frappe n'est jamais affichee en clair (utile pour un mot de passe ou un code PIN).",
+      "Sans sty~... : rien n'est affiche du tout pendant la frappe (pas meme un caractere de masquage).",
+      "Avec sty~... : affiche ce caractere (choisi par le codeur, ex: |*| ou |.|) autant de fois que de caracteres deja tapes.",
+      "Convertit automatiquement en nombre si possible, sinon renvoie du texte (comme entr())."
+    ], exemple: "pin ~ entr.secret(|Code secret:|, sty~|*|)\nsecret ~ entr.secret(|Mot de passe:|)   ** rien affiche du tout **" },
+  { noms: ["entr.nombr"], categorie: "Base", syntaxe: "entr.nombr(...)", description: [
+      "Comme entr(), mais sans masquer la frappe : redemande automatiquement en boucle tant que la saisie n'est pas un nombre valide.",
+      "Renvoie toujours un nombre."
+    ], exemple: "montant ~ entr.nombr(|Montant:|)" },
+  { noms: ["entr.text"], categorie: "Base", syntaxe: "entr.text(...)", description: [
+      "Comme entr(), mais sans masquer la frappe et sans jamais convertir en nombre : renvoie toujours du texte tel quel.",
+      "Utile pour un code avec des zeros en tete (ex: |0123|), qui deviendrait sinon le nombre 123 avec entr()."
+    ], exemple: "code ~ entr.text(|Code postal:|)" },
+  { noms: ["entr.oui"], categorie: "Base", syntaxe: "entr.oui(...)", description: [
+      "Question fermee oui/non : redemande en boucle tant que la reponse n'est pas reconnue.",
+      "Accepte oui/o/ok/non/n, insensible a la casse et aux espaces.",
+      "Renvoie directement VRAI ou FAUX, pas besoin de comparer le texte tape."
+    ], exemple: "si(entr.oui(|Confirmer le virement ?|)){ ... }" },
+  { noms: ["entr.Nsecret"], categorie: "Base", syntaxe: "entr.Nsecret(|texte|, sty~|*|)", description: [
+      "entr.secret() + validation : redemande en boucle tant que la saisie masquee n'est pas un nombre valide.",
+      "Renvoie toujours un nombre."
+    ], exemple: "pin ~ entr.Nsecret(|Code (4 chiffres):|, sty~|*|)" },
+  { noms: ["entr.Tsecret"], categorie: "Base", syntaxe: "entr.Tsecret(|texte|, sty~|*|)", description: [
+      "entr.secret(), mais renvoie TOUJOURS du texte, jamais converti en nombre.",
+      "Utile pour un code avec des zeros en tete (ex: |0123|), qui deviendrait sinon le nombre 123."
+    ], exemple: "code ~ entr.Tsecret(|Code:|, sty~|*|)" },
   { noms: ["~"], categorie: "Base", syntaxe: "nom ~ valeur", description: [
       "Cree la variable si elle n'existe pas encore.",
       "Remplace sa valeur si elle existe deja.",
@@ -2650,8 +2858,15 @@ let aideCommandes = [
 
   { noms: ["c"], categorie: "Creer un vecteur/une matrice", syntaxe: "c(a, b, c, ...)", description: [
       "Construit un vecteur a partir des valeurs donnees.",
-      "Si on lui donne un vecteur ou une matrice en argument, il en reprend tous les elements."
+      "Si on lui donne un vecteur ou une matrice en argument, il en reprend tous les elements.",
+      "Unifie tout vers un seul type (texte > nombre > booleen) : pas de melange de types, contrairement a liste()."
     ], exemple: "c(1,2,3)          ->   [1] 1 2 3\nc(|a|,|b|)        ->   [1] \"a\" \"b\"" },
+  { noms: ["liste"], categorie: "Creer un vecteur/une matrice", syntaxe: "liste(a, b, c, ...)", description: [
+      "Construit une liste a partir des valeurs donnees, accessible par indice comme un vecteur (maliste[i]).",
+      "Contrairement a c(), ne fusionne pas les vecteurs/matrices/listes donnes en argument et n'unifie PAS les types : chaque element garde son type d'origine (nombre, texte, booleen, vecteur, instance...).",
+      "Ecriture indexee possible : maliste[i]~valeur (ou moi.maliste[i]~valeur pour un attribut).",
+      "maliste.ajout(...) et maliste.supri(...) fonctionnent comme sur un vecteur, sans fusion ni unification."
+    ], exemple: "l ~ liste(1, |bonjour|, VRAI, c(1,2,3))\naffi(l[1])   ->   1\naffi(l[2])   ->   bonjour\nl[1] ~ |change|" },
   { noms: ["seq"], categorie: "Creer un vecteur/une matrice", syntaxe: "seq(debut, fin, pas)", description: [
       "Construit une suite de nombres, de debut a fin.",
       "pas est facultatif : +1 par defaut (ou -1 si fin est plus petit que debut)."
@@ -2660,6 +2875,16 @@ let aideCommandes = [
       "Repete des elements a la suite, nombre fois.",
       "elements peut etre une seule valeur ou un vecteur entier."
     ], exemple: "rep(c(1,2),3)   ->   [1] 1 2 1 2 1 2" },
+  { noms: ["alea"], categorie: "Creer un vecteur/une matrice", syntaxe: "alea(var, x)  ou  alea(debut, fin, x)", description: [
+      "alea(var, x) : choisit x elements au hasard, sans remise, parmi un vecteur ou une matrice.",
+      "alea(debut, fin, x) : choisit x nombres entiers au hasard, sans remise, dans l'intervalle [debut, fin] (bornes incluses).",
+      "Renvoie toujours un vecteur, meme pour x~1.",
+      "x ne peut pas depasser le nombre d'elements disponibles (pas de remise = jamais deux fois la meme valeur)."
+    ], exemple: "alea(1,49,6)         ->   6 numeros distincts entre 1 et 49\nalea(c(10,20,30),2)  ->   2 valeurs distinctes parmi le vecteur" },
+  { noms: ["ralea"], categorie: "Creer un vecteur/une matrice", syntaxe: "ralea(var, x)  ou  ralea(debut, fin, x)", description: [
+      "Comme alea(...), mais AVEC remise : un meme element/nombre peut sortir plusieurs fois.",
+      "x peut donc depasser le nombre d'elements disponibles (contrairement a alea())."
+    ], exemple: "ralea(1,6,10)          ->   10 lancers de de a 6 faces (repetitions possibles)\nralea(c(|pile|,|face|),5)  ->   5 tirages a pile ou face" },
   { noms: [":"], categorie: "Creer un vecteur/une matrice", syntaxe: "debut:fin", description: [
       "Raccourci rapide pour creer une suite de nombres entiers, avec un pas de 1.",
       "Si fin est plus petit que debut, compte a l'envers (pas de -1)."
@@ -2918,12 +3143,25 @@ function enregistrerFonctionsBase() {
         let resultat = [];
         for (let a of args) {
             let v = await evaluerElementBrut(a, ctxExpr);
+            if (estListe(v)) throw new Error("c() ne prend pas de liste (types melanges) : utilise liste() pour combiner des types differents, ou [i] pour extraire un element avant de le passer a c()");
             if (estVecteur(v)) resultat.push(...v);
             else if (estMatrice(v)) resultat.push(...v.donnees);
             else resultat.push(v);
         }
         return unifierTypeVecteur(resultat);
     };
+
+    // liste(...) : comme c(), mais SANS unifier vers un type commun et SANS aplatir les
+    // vecteurs/matrices/listes donnes en argument -- chaque argument devient un element,
+    // tel quel, avec son type d'origine preserve. C'est le conteneur a utiliser quand on
+    // veut melanger nombre/texte/booleen/vecteur/instance dans une seule collection
+    // accessible par indice (contrairement a une instance de classe, accessible par nom).
+    fonctionsBase["liste"] = fonctionsExpression["liste"] = async function(args, ctxExpr) {
+        let elements = [];
+        for (let a of args) elements.push(await evaluerElementBrut(a, ctxExpr));
+        return { __type: "liste", elements: elements };
+    };
+
 
     // seq(debut, fin, pas) : sequence numerique. pas est optionnel (defaut +1 ou -1).
     fonctionsBase["seq"] = fonctionsExpression["seq"] = async function(args, ctxExpr) {
@@ -2944,6 +3182,63 @@ function enregistrerFonctionsBase() {
         let resultat = [];
         for (let k = 0; k < nombre; k++) resultat.push(...base);
         return resultat;
+    };
+
+    // alea(var, x) : choisit x elements au hasard, SANS remise (jamais deux fois le meme
+    // element), parmi les elements d'un vecteur ou d'une matrice (traitee "a plat", comme
+    // accederUnique/c()).
+    // alea(debut, fin, x) : choisit x nombres entiers au hasard, SANS remise, dans
+    // l'intervalle [debut, fin] (bornes incluses).
+    // Dans les deux cas, renvoie toujours un vecteur, meme pour x~1.
+    fonctionsBase["alea"] = fonctionsExpression["alea"] = async function(args, ctxExpr) {
+        if (args.length === 2) {
+            let v = await evaluerElementBrut(args[0], ctxExpr);
+            let x = Math.trunc(await evalExpr(args[1], ctxExpr));
+            let plat = estMatrice(v) ? v.donnees : (estVecteur(v) ? v : null);
+            if (plat === null) throw new Error("alea(var, x) : var doit etre un vecteur ou une matrice");
+            if (x < 0) throw new Error("alea(...) : x doit etre positif");
+            if (x > plat.length) throw new Error("alea(...) : impossible de choisir " + x + " element(s) au hasard sans remise parmi seulement " + plat.length);
+            return tirerAuHasardSansRemise(plat, x);
+        }
+        if (args.length === 3) {
+            let debut = Math.trunc(await evalExpr(args[0], ctxExpr));
+            let fin = Math.trunc(await evalExpr(args[1], ctxExpr));
+            let x = Math.trunc(await evalExpr(args[2], ctxExpr));
+            if (fin < debut) throw new Error("alea(debut, fin, x) : fin doit etre superieur ou egal a debut");
+            let taille = fin - debut + 1;
+            if (x < 0) throw new Error("alea(...) : x doit etre positif");
+            if (x > taille) throw new Error("alea(...) : impossible de choisir " + x + " nombre(s) au hasard sans remise dans un intervalle de seulement " + taille + " valeur(s)");
+            let plage = [];
+            for (let n = debut; n <= fin; n++) plage.push(n);
+            return tirerAuHasardSansRemise(plage, x);
+        }
+        throw new Error("alea(...) attend soit alea(var, x), soit alea(debut, fin, x)");
+    };
+
+    // ralea(var, x) : comme alea(var, x), mais AVEC remise (un meme element peut sortir
+    // plusieurs fois) -- x peut donc depasser le nombre d'elements disponibles.
+    // ralea(debut, fin, x) : comme alea(debut, fin, x), mais AVEC remise.
+    fonctionsBase["ralea"] = fonctionsExpression["ralea"] = async function(args, ctxExpr) {
+        if (args.length === 2) {
+            let v = await evaluerElementBrut(args[0], ctxExpr);
+            let x = Math.trunc(await evalExpr(args[1], ctxExpr));
+            let plat = estMatrice(v) ? v.donnees : (estVecteur(v) ? v : null);
+            if (plat === null) throw new Error("ralea(var, x) : var doit etre un vecteur ou une matrice");
+            if (x < 0) throw new Error("ralea(...) : x doit etre positif");
+            if (plat.length === 0) throw new Error("ralea(...) : impossible de tirer dans un vecteur/une matrice vide");
+            return tirerAuHasardAvecRemise(plat, x);
+        }
+        if (args.length === 3) {
+            let debut = Math.trunc(await evalExpr(args[0], ctxExpr));
+            let fin = Math.trunc(await evalExpr(args[1], ctxExpr));
+            let x = Math.trunc(await evalExpr(args[2], ctxExpr));
+            if (fin < debut) throw new Error("ralea(debut, fin, x) : fin doit etre superieur ou egal a debut");
+            if (x < 0) throw new Error("ralea(...) : x doit etre positif");
+            let plage = [];
+            for (let n = debut; n <= fin; n++) plage.push(n);
+            return tirerAuHasardAvecRemise(plage, x);
+        }
+        throw new Error("ralea(...) attend soit ralea(var, x), soit ralea(debut, fin, x)");
     };
 
     // lettr et Lettr sont geres comme des identifiants constants directement dans l'evaluateur
@@ -3018,7 +3313,10 @@ function enregistrerFonctionsBase() {
     // entr() : fonction native utilisable dans une expression (ex: nom ~ entr(|...|)).
     // Enregistree aussi dans fonctionsExpression car elle doit etre extraite avant
     // le decoupage normal de l'expression (syntaxe |texte| + attente asynchrone).
-    fonctionsBase["entr"] = fonctionsExpression["entr"] = async function(args, ctxExpr) {
+    // Construit le message affiche par entr()/entr.secret()/entr.nombr()/... a partir des
+    // arguments bruts (non evalues) : meme logique de concatenation que affi() (avec |texte|
+    // et saulig), factorisee ici pour etre reutilisee par toutes les variantes de entr.
+    async function construireMessageEntr(args, ctxExpr) {
         let parties = [];
         for (let elem of args) {
             let elemTrim = (elem || "").trim();
@@ -3032,7 +3330,29 @@ function enregistrerFonctionsBase() {
                 catch (e) { parties.push(elemTrim); }
             }
         }
-        let message = parties.join(" ").replace(/ {2,}/g, " ").replace(/ *\n */g, "\n");
+        return parties.join(" ").replace(/ {2,}/g, " ").replace(/ *\n */g, "\n");
+    }
+    // Separe, parmi les arguments bruts d'un entr.secret()/entr.Nsecret()/entr.Tsecret(),
+    // le parametre nomme sty~... (le caractere de masquage) du reste (le message a afficher).
+    // Pas de sty~... fourni : styleChar reste null, ce qui veut dire "rien affiche du tout
+    // pendant la frappe" (pas meme un caractere de masquage).
+    async function extraireStyleEtMessageEntr(args, ctxExpr) {
+        let styleChar = null, messageParts = [];
+        for (let a of args) {
+            let m = a.trim().match(/^sty\s*~\s*(.*)$/);
+            if (m) {
+                let v = await evalExpr(m[1], ctxExpr);
+                if (typeof v !== 'string' || v.length !== 1) throw new Error("sty~... doit etre un seul caractere texte, ex: sty~|*|");
+                styleChar = v;
+            } else {
+                messageParts.push(a);
+            }
+        }
+        return { message: await construireMessageEntr(messageParts, ctxExpr), styleChar };
+    }
+
+    fonctionsBase["entr"] = fonctionsExpression["entr"] = async function(args, ctxExpr) {
+        let message = await construireMessageEntr(args, ctxExpr);
         let saisie = await demanderSaisieConsole(message);
         if (saisie === null || saisie === undefined) saisie = "";
         let asTrim = saisie.trim();
@@ -3041,10 +3361,88 @@ function enregistrerFonctionsBase() {
         return estNombre ? nombre : saisie;
     };
 
+    // entr.secret(|texte|, sty~|*|) : comme entr(), mais la frappe n'est jamais affichee en
+    // clair. Sans sty~... : rien n'est affiche du tout (pas meme un caractere de masquage).
+    // Avec sty~... : affiche ce caractere autant de fois que de caracteres tapes.
+    // Detecte nombre/texte automatiquement, comme entr().
+    fonctionsBase["entr.secret"] = fonctionsExpression["entr.secret"] = async function(args, ctxExpr) {
+        let { message, styleChar } = await extraireStyleEtMessageEntr(args, ctxExpr);
+        let saisie = await demanderSaisieConsoleSecrete(message, styleChar);
+        if (saisie === null || saisie === undefined) saisie = "";
+        let asTrim = saisie.trim();
+        let nombre = parseFloat(asTrim);
+        let estNombre = asTrim !== "" && !isNaN(nombre) && String(nombre) === asTrim;
+        return estNombre ? nombre : saisie;
+    };
+
+    // entr.nombr(...) : comme entr(), mais SANS masquer la frappe -- redemande en boucle
+    // tant que la saisie n'est pas un nombre valide, et renvoie toujours un nombre.
+    fonctionsBase["entr.nombr"] = fonctionsExpression["entr.nombr"] = async function(args, ctxExpr) {
+        let message = await construireMessageEntr(args, ctxExpr);
+        while (true) {
+            let saisie = await demanderSaisieConsole(message);
+            if (saisie === null || saisie === undefined) saisie = "";
+            let asTrim = saisie.trim();
+            let nombre = Number(asTrim);
+            if (asTrim !== "" && !isNaN(nombre)) return nombre;
+            print("Merci d'entrer un nombre valide.", "erreur");
+        }
+    };
+
+    // entr.text(...) : comme entr(), mais SANS masquer la frappe et SANS jamais convertir
+    // en nombre -- renvoie toujours du texte tel quel (utile pour un code/numero avec des
+    // zeros en tete, ex: |0123|, qui deviendrait sinon le nombre 123 avec entr()).
+    fonctionsBase["entr.text"] = fonctionsExpression["entr.text"] = async function(args, ctxExpr) {
+        let message = await construireMessageEntr(args, ctxExpr);
+        let saisie = await demanderSaisieConsole(message);
+        if (saisie === null || saisie === undefined) saisie = "";
+        return saisie;
+    };
+
+    // entr.oui(...) : question fermee oui/non. Redemande en boucle tant que la reponse
+    // n'est pas reconnue (oui/o/non/n, insensible a la casse et aux espaces), et renvoie
+    // directement VRAI ou FAUX -- pas besoin de comparer le texte tape a la main.
+    fonctionsBase["entr.oui"] = fonctionsExpression["entr.oui"] = async function(args, ctxExpr) {
+        let message = await construireMessageEntr(args, ctxExpr);
+        while (true) {
+            let saisie = await demanderSaisieConsole(message);
+            if (saisie === null || saisie === undefined) saisie = "";
+            let asTrim = saisie.trim().toLowerCase();
+            if (asTrim === "oui" || asTrim === "o" || asTrim === "ok") return true;
+            if (asTrim === "non" || asTrim === "n") return false;
+            print("Reponds par oui ou non (ou juste o/n).", "erreur");
+        }
+    };
+
+    // entr.Nsecret(|texte|, sty~|*|) : entr.secret() + validation, redemande en boucle tant
+    // que la saisie masquee n'est pas un nombre valide, et renvoie toujours un nombre.
+    fonctionsBase["entr.Nsecret"] = fonctionsExpression["entr.Nsecret"] = async function(args, ctxExpr) {
+        let { message, styleChar } = await extraireStyleEtMessageEntr(args, ctxExpr);
+        while (true) {
+            let saisie = await demanderSaisieConsoleSecrete(message, styleChar);
+            if (saisie === null || saisie === undefined) saisie = "";
+            let asTrim = saisie.trim();
+            let nombre = Number(asTrim);
+            if (asTrim !== "" && !isNaN(nombre)) return nombre;
+            print("Merci d'entrer un nombre valide.", "erreur");
+        }
+    };
+
+    // entr.Tsecret(|texte|, sty~|*|) : entr.secret(), mais renvoie TOUJOURS du texte, jamais
+    // converti en nombre (utile pour un code/numero avec des zeros en tete, ex: |0123|).
+    fonctionsBase["entr.Tsecret"] = fonctionsExpression["entr.Tsecret"] = async function(args, ctxExpr) {
+        let { message, styleChar } = await extraireStyleEtMessageEntr(args, ctxExpr);
+        let saisie = await demanderSaisieConsoleSecrete(message, styleChar);
+        if (saisie === null || saisie === undefined) saisie = "";
+        return saisie;
+    };
+
+
     // lon(...) : longueur d'un vecteur/matrice (nombre total d'elements). Un scalaire vaut 1.
     fonctionsBase["lon"] = fonctionsExpression["lon"] = async function(args, ctxExpr) {
         if (args.length < 1) throw new Error("lon(...) attend un argument");
         let v = await evalExpr(args[0], ctxExpr);
+        if (estListe(v)) return v.elements.length;
         if (estVecteur(v)) return v.length;
         if (estMatrice(v)) return v.donnees.length;
         return 1;
@@ -3278,6 +3676,10 @@ function enregistrerFonctionsBase() {
     fonctionsBase["est.matric"] = fonctionsExpression["est.matric"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("est.matric(...) attend exactement 1 argument");
         return estMatrice(await evalExpr(args[0], ctxExpr));
+    };
+    fonctionsBase["est.liste"] = fonctionsExpression["est.liste"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("est.liste(...) attend exactement 1 argument");
+        return estListe(await evalExpr(args[0], ctxExpr));
     };
     // est.instance(objet, NomClasse) : VRAI si objet est une instance de NomClasse, ou d'une
     // classe qui en herite (comme isinstance(objet, NomClasse) en Python). Le 2e argument est
@@ -3977,6 +4379,12 @@ async function executerCommandeSimple(ligne) {
 
     if (methode === "ajout") {
       let cible = resoudreCheminCible(nomVar);
+      if (estListe(cible)) {
+        let elementsListe = [];
+        for (let a of argExprs) elementsListe.push(await evaluerElementBrut(a, ctxExpr));
+        ajouterListe(cible, elementsListe);
+        return;
+      }
       let elements = [];
       for (let a of argExprs) {
         let v = await evaluerElementBrut(a, ctxExpr);
@@ -3986,12 +4394,18 @@ async function executerCommandeSimple(ligne) {
       }
       if (estVecteur(cible)) ajouterVecteur(cible, elements);
       else if (estMatrice(cible)) ajouterMatrice(cible, elements);
-      else throw new Error(nomVar + " n'est pas un vecteur ou une matrice");
+      else throw new Error(nomVar + " n'est pas un vecteur, une matrice ou une liste");
       return;
     }
 
     if (methode === "supri") {
       let cible = resoudreCheminCible(nomVar);
+      if (estListe(cible)) {
+        let elementsListe = [];
+        for (let a of argExprs) elementsListe.push(await evaluerElementBrut(a, ctxExpr));
+        supprimerListe(cible, elementsListe);
+        return;
+      }
       let elements = [];
       for (let a of argExprs) {
         let v = await evaluerElementBrut(a, ctxExpr);
@@ -4001,7 +4415,7 @@ async function executerCommandeSimple(ligne) {
       }
       if (estVecteur(cible)) supprimerVecteur(cible, elements);
       else if (estMatrice(cible)) supprimerMatrice(cible, elements);
-      else throw new Error(nomVar + " n'est pas un vecteur ou une matrice");
+      else throw new Error(nomVar + " n'est pas un vecteur, une matrice ou une liste");
       return;
     }
 
