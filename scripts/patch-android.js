@@ -175,6 +175,19 @@ public class MainActivity extends BridgeActivity {
             }
         }
 
+        // VRAI si un fichier (pas un dossier) existe deja a cet emplacement. Utilise par
+        // existe.fichier(...) et par ecrire.fichier(..., ecra~FAUX) pour eviter d'ecraser
+        // un fichier existant sans que le codeur l'ait explicitement demande.
+        @JavascriptInterface
+        public boolean existeFichier(String cheminComplet) {
+            try {
+                File fichier = new File(cheminComplet);
+                return fichier.exists() && fichier.isFile();
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
         // Lit un fichier texte directement depuis le stockage. null si echec.
         @JavascriptInterface
         public String lireFichier(String cheminComplet) {
