@@ -342,7 +342,7 @@ affi(|Bonjour |, nom)</textarea>
       <div id="modalFichiersNomLigne" class="modalFichiersNomLigne">
         <span>Nom du fichier :</span>
         <input id="modalFichiersNom" type="text" spellcheck="false">
-        <span class="modalFichiersExtension">.mlg</span>
+        <span id="modalFichiersExtension" class="modalFichiersExtension">.mlg</span>
       </div>
       <div class="modalFichiersActions">
         <button id="modalFichiersAnnuler" type="button" class="annuler">ANNULER</button>
@@ -384,6 +384,7 @@ let modalFichiersChemin = document.getElementById("modalFichiersChemin");
 let modalFichiersListe = document.getElementById("modalFichiersListe");
 let modalFichiersNomLigne = document.getElementById("modalFichiersNomLigne");
 let modalFichiersNom = document.getElementById("modalFichiersNom");
+let modalFichiersExtension = document.getElementById("modalFichiersExtension");
 let modalFichiersAnnuler = document.getElementById("modalFichiersAnnuler");
 let modalFichiersValider = document.getElementById("modalFichiersValider");
 let toastEnregistrement = document.getElementById("toastEnregistrement");
@@ -1093,7 +1094,7 @@ function demanderFichierConsole() {
   return new Promise((resolve, reject) => {
     let input = document.createElement("input");
     input.type = "file";
-    input.accept = ".json,application/json,text/plain";
+    input.accept = ".mld,application/json,text/plain";
     input.style.display = "none";
     document.body.appendChild(input);
     let termine = false;
@@ -1132,6 +1133,35 @@ function demanderFichierConsole() {
       reject(new ExecutionInterrompue());
     };
     input.click();
+  });
+}
+
+// Choisit l'emplacement (chemin complet) ou ecrire un vrai fichier, via le navigateur de
+// fichiers integre de l'app native (window.MonLangage) : demande un nom + un dossier dans
+// le style de l'app, plutot qu'un telechargement de navigateur classique. Utilise par
+// ecrire.fichier(...). N'est appelee que quand window.MonLangage est disponible.
+function demanderEmplacementEcritureFichier(nomDefaut, extension) {
+  arreterIndicateurAttente();
+  return new Promise((resolve, reject) => {
+    ouvrirNavigateurFichiers("enregistrer", {
+      nomDefaut: nomDefaut,
+      extension: extension,
+      onValide: (cheminComplet) => { demarrerIndicateurAttente(); resolve(cheminComplet); },
+      onAnnule: () => { demarrerIndicateurAttente(); reject(new ExecutionInterrompue()); }
+    });
+  });
+}
+
+// Choisit un fichier existant a lire, via le meme navigateur de fichiers integre. Renvoie
+// le CHEMIN COMPLET choisi (la lecture elle-meme se fait ensuite via
+// window.MonLangage.lireFichier). Utilise par lire.fichier(...).
+function demanderEmplacementLectureFichier() {
+  arreterIndicateurAttente();
+  return new Promise((resolve, reject) => {
+    ouvrirNavigateurFichiers("ouvrir", {
+      onValide: (cheminComplet) => { demarrerIndicateurAttente(); resolve(cheminComplet); },
+      onAnnule: () => { demarrerIndicateurAttente(); reject(new ExecutionInterrompue()); }
+    });
   });
 }
 
@@ -2812,14 +2842,18 @@ let aideCommandes = [
       "Recupere une valeur sauvegardee avec ecrire(...).",
       "Renvoie pasdefini si la cle n'existe pas."
     ], exemple: "c ~ lire(|mon_compte|)" },
-  { noms: ["ecrire.fichier"], categorie: "Sauvegarde", syntaxe: "ecrire.fichier(nom, valeur)", description: [
-      "Export REEL : declenche le telechargement d'un vrai fichier .json contenant la valeur.",
+  { noms: ["ecrire.fichier"], categorie: "Sauvegarde", syntaxe: "ecrire.fichier(nom, valeur)  ou  ecrire.fichier(chemin, valeur)", description: [
+      "ecrire.fichier(nom, valeur) : ouvre le navigateur de fichiers integre pour choisir ou enregistrer un vrai fichier .mld.",
+      "ecrire.fichier(chemin, valeur) : si nom contient un '/', ecriture DIRECTE a cet emplacement, sans rien afficher a l'ecran.",
+      "Le chemin direct ne fonctionne que dans l'app installee (pas en previsualisation navigateur).",
       "Contrairement a ecrire(), le fichier peut ensuite etre partage, copie, deplace hors de l'app."
-    ], exemple: "ecrire.fichier(|sauvegarde_banque|, moi)" },
-  { noms: ["lire.fichier"], categorie: "Sauvegarde", syntaxe: "lire.fichier()", description: [
-      "Ouvre le selecteur de fichiers du telephone et attend que l'utilisateur choisisse un fichier sauvegarde avec ecrire.fichier(...).",
+    ], exemple: "ecrire.fichier(|sauvegarde_banque|, moi)\necrire.fichier(|/storage/emulated/0/Download/banque.mld|, moi)" },
+  { noms: ["lire.fichier"], categorie: "Sauvegarde", syntaxe: "lire.fichier()  ou  lire.fichier(chemin)", description: [
+      "lire.fichier() : ouvre le navigateur de fichiers du telephone et attend que l'utilisateur choisisse un fichier sauvegarde avec ecrire.fichier(...).",
+      "lire.fichier(chemin) : lit DIRECTEMENT le fichier a ce chemin, sans rien afficher a l'ecran.",
+      "Le chemin direct ne fonctionne que dans l'app installee (pas en previsualisation navigateur).",
       "Renvoie la valeur sauvegardee dans ce fichier."
-    ], exemple: "c ~ lire.fichier()" },
+    ], exemple: "c ~ lire.fichier()\nc ~ lire.fichier(|/storage/emulated/0/Download/banque.mld|)" },
   { noms: ["~"], categorie: "Base", syntaxe: "nom ~ valeur", description: [
       "Cree la variable si elle n'existe pas encore.",
       "Remplace sa valeur si elle existe deja.",
@@ -3559,9 +3593,13 @@ function enregistrerFonctionsBase() {
         catch (e) { throw new Error("lire(...) : la sauvegarde pour '" + cle + "' est corrompue"); }
     };
 
-    // ecrire.fichier(nom, valeur) : export REEL -- declenche le telechargement d'un vrai
-    // fichier .json contenant la valeur, que l'utilisateur peut ensuite partager, copier,
-    // deplacer... contrairement a ecrire() qui reste invisible dans l'app.
+    // ecrire.fichier(nom, valeur) : export REEL -- sur l'app native (Android), ecrit
+    // directement un vrai fichier .mld a l'emplacement choisi par l'utilisateur dans le
+    // navigateur de fichiers integre de l'app (pas de selecteur systeme). En previsualisation
+    // navigateur (pas d'app native), repli sur un telechargement classique.
+    // ecrire.fichier(chemin, valeur) : si "chemin" contient un "/", il est traite comme un
+    // CHEMIN COMPLET -- ecriture DIRECTE a cet emplacement, sans rien afficher a l'ecran
+    // (symetrique de lire.fichier(chemin)). Necessite l'app native.
     fonctionsBase["ecrire.fichier"] = fonctionsExpression["ecrire.fichier"] = async function(args, ctxExpr) {
         if (args.length !== 2) throw new Error("ecrire.fichier(nom, valeur) attend 2 arguments");
         let nom = await evalExpr(args[0], ctxExpr);
@@ -3570,7 +3608,27 @@ function enregistrerFonctionsBase() {
         let texte;
         try { texte = JSON.stringify(valeur); }
         catch (e) { throw new Error("ecrire.fichier(...) : cette valeur ne peut pas etre sauvegardee"); }
-        let nomFichier = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".json";
+
+        if (nom.indexOf("/") !== -1) {
+            if (!(window.MonLangage && typeof window.MonLangage.ecrireFichier === "function")) {
+                throw new Error("ecrire.fichier(chemin, valeur) : l'ecriture directe par chemin n'est possible que dans l'app installee (utilise ecrire.fichier(nom, valeur) sans '/' en previsualisation navigateur)");
+            }
+            let cheminDirect = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".mld";
+            let ok = window.MonLangage.ecrireFichier(cheminDirect, texte);
+            if (!ok) throw new Error("ecrire.fichier(...) : echec de l'ecriture sur '" + cheminDirect + "'");
+            return true;
+        }
+
+        if (window.MonLangage && typeof window.MonLangage.ecrireFichier === "function") {
+            let nomSansExt = nom.replace(/\.[a-zA-Z0-9]+$/, "");
+            let cheminComplet = await demanderEmplacementEcritureFichier(nomSansExt, ".mld");
+            let ok = window.MonLangage.ecrireFichier(cheminComplet, texte);
+            if (!ok) throw new Error("ecrire.fichier(...) : echec de l'ecriture sur le telephone");
+            return true;
+        }
+
+        // Repli navigateur web (previsualisation hors app) : telechargement classique.
+        let nomFichier = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".mld";
         let blob = new Blob([texte], { type: "application/json" });
         let url = URL.createObjectURL(blob);
         let a = document.createElement("a");
@@ -3583,10 +3641,33 @@ function enregistrerFonctionsBase() {
         return true;
     };
 
-    // lire.fichier() : ouvre le selecteur de fichiers du telephone/navigateur, attend que
-    // l'utilisateur choisisse un fichier sauvegarde avec ecrire.fichier(...), et renvoie sa
-    // valeur. Interactif comme entr() : peut etre annule via le bouton "Retour".
+    // lire.fichier() : sur l'app native, ouvre le navigateur de fichiers integre puis lit
+    // directement le fichier choisi sur le stockage. En previsualisation navigateur, repli
+    // sur le selecteur de fichiers classique. Interactif comme entr() : annulable.
+    // lire.fichier(chemin) : lit DIRECTEMENT le fichier a ce chemin, sans rien afficher --
+    // uniquement possible dans l'app native (le chemin direct necessite window.MonLangage ;
+    // un navigateur web ne peut pas lire un fichier arbitraire sans selecteur, par securite).
     fonctionsBase["lire.fichier"] = fonctionsExpression["lire.fichier"] = async function(args, ctxExpr) {
+        if (args.length >= 1) {
+            let chemin = await evalExpr(args[0], ctxExpr);
+            if (typeof chemin !== 'string') throw new Error("lire.fichier(chemin) : chemin doit etre du texte");
+            if (!(window.MonLangage && typeof window.MonLangage.lireFichier === "function")) {
+                throw new Error("lire.fichier(chemin) : la lecture directe par chemin n'est possible que dans l'app installee (utilise lire.fichier() sans argument en previsualisation navigateur)");
+            }
+            let texte = window.MonLangage.lireFichier(chemin);
+            if (texte === null || texte === undefined) throw new Error("lire.fichier(...) : impossible de lire '" + chemin + "'");
+            try { return JSON.parse(texte); }
+            catch (e) { throw new Error("lire.fichier(...) : le fichier '" + chemin + "' n'est pas une sauvegarde valide"); }
+        }
+
+        if (window.MonLangage && typeof window.MonLangage.lireFichier === "function") {
+            let cheminComplet = await demanderEmplacementLectureFichier();
+            let texte = window.MonLangage.lireFichier(cheminComplet);
+            if (texte === null || texte === undefined) throw new Error("lire.fichier(...) : impossible de lire ce fichier");
+            try { return JSON.parse(texte); }
+            catch (e) { throw new Error("lire.fichier(...) : le fichier choisi n'est pas une sauvegarde valide"); }
+        }
+
         let texte = await demanderFichierConsole();
         try { return JSON.parse(texte); }
         catch (e) { throw new Error("lire.fichier(...) : le fichier choisi n'est pas une sauvegarde valide"); }
@@ -5018,11 +5099,20 @@ let navFichiersChemin = null;
 let navFichiersMode = null; // "enregistrer" | "ouvrir"
 let navFichiersRacine = "/storage/emulated/0";
 let navFichiersOnValide = null;
+// Callback appele UNIQUEMENT si l'utilisateur annule (bouton ANNULER), jamais apres une
+// validation reussie -- permet a un appelant comme ecrire.fichier()/lire.fichier() (des
+// promesses) de rejeter proprement au lieu de rester bloque indefiniment.
+let navFichiersOnAnnule = null;
+// Extension ajoutee automatiquement au nom de fichier en mode "enregistrer" (".mlg" pour
+// les scripts, mais ecrire.fichier() par exemple utilise ".mld") -- affichee a cote du
+// champ de saisie du nom.
+let navFichiersExtension = ".mlg";
 
 function ouvrirNavigateurFichiers(mode, options) {
   options = options || {};
   if (!(window.MonLangage && typeof window.MonLangage.listerDossier === "function")) {
     alert("Le navigateur de fichiers integre necessite l'app native (rebuild requis).");
+    if (options.onAnnule) options.onAnnule();
     return;
   }
   if (typeof window.MonLangage.permissionStockageAccordee === "function" &&
@@ -5034,16 +5124,20 @@ function ouvrirNavigateurFichiers(mode, options) {
     if (typeof window.MonLangage.demanderPermissionStockage === "function") {
       window.MonLangage.demanderPermissionStockage();
     }
+    if (options.onAnnule) options.onAnnule();
     return;
   }
 
   navFichiersMode = mode;
   navFichiersOnValide = options.onValide || null;
+  navFichiersOnAnnule = options.onAnnule || null;
+  navFichiersExtension = options.extension || ".mlg";
   navFichiersRacine = (typeof window.MonLangage.dossierRacine === "function")
     ? (window.MonLangage.dossierRacine() || navFichiersRacine) : navFichiersRacine;
 
   modalFichiersNomLigne.classList.toggle("visible", mode === "enregistrer");
   modalFichiersNom.value = options.nomDefaut || "";
+  modalFichiersExtension.textContent = navFichiersExtension;
   modalFichiersValider.style.display = mode === "enregistrer" ? "" : "none";
   modalFichiersValider.textContent = "ENREGISTRER";
 
@@ -5054,6 +5148,7 @@ function ouvrirNavigateurFichiers(mode, options) {
 function fermerNavigateurFichiers() {
   modalFichiers.classList.remove("ouvert");
   navFichiersOnValide = null;
+  navFichiersOnAnnule = null;
 }
 
 function chargerDossierNavigateur(chemin) {
@@ -5115,13 +5210,19 @@ modalFichiersRetour.addEventListener("click", () => {
   chargerDossierNavigateur(parent);
 });
 
-modalFichiersAnnuler.addEventListener("click", fermerNavigateurFichiers);
+modalFichiersAnnuler.addEventListener("click", () => {
+  let cbAnnule = navFichiersOnAnnule;
+  fermerNavigateurFichiers();
+  if (cbAnnule) cbAnnule();
+});
 
 modalFichiersValider.addEventListener("click", () => {
   if (navFichiersMode !== "enregistrer") return;
-  let nom = (modalFichiersNom.value || "").trim().replace(/\.mlg$/i, "");
+  let ext = navFichiersExtension || "";
+  let regexExt = new RegExp(ext.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$", "i");
+  let nom = (modalFichiersNom.value || "").trim().replace(regexExt, "");
   if (!nom) { alert("Entre un nom de fichier."); return; }
-  let cheminComplet = navFichiersChemin.replace(/\/+$/, "") + "/" + nom + ".mlg";
+  let cheminComplet = navFichiersChemin.replace(/\/+$/, "") + "/" + nom + ext;
   validerNavigateurFichiers(cheminComplet);
 });
 
