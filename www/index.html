@@ -358,7 +358,7 @@ let fonctions = {};      // fonctions ~ { nom: {params:[...], corps:[tokens...] 
 let classes = {};        // classes ~ { nom: {methodes: {nomMethode: {params:[...], corps:[tokens...]}}} }
 let fonctionsBase = {};
 let fonctionsExpression = {};   // sous-ensemble de fonctionsBase utilisable directement dans une expression (ex: entr)
-let commandes = ["affi", "pou", "tanqer", "stop", "continu", "si", "sinon", "sision", "fonc", "retour", "entr", "c", "liste", "seq", "rep", "alea", "ralea", "matrice", "lon", "dim", "som", "moy", "var", "sd", "max", "min", "suchaq", "det", "trace", "trans", "aide", "base", "effa", "voi", "lettr", "Lettr", "VRAI", "FAUX", "pasdefini"];
+let commandes = ["affi", "pou", "tanqer", "stop", "continu", "si", "sinon", "sision", "fonc", "retour", "entr", "c", "liste", "seq", "rep", "alea", "ralea", "matrice", "lon", "dim", "som", "moy", "var", "sd", "max", "min", "suchaq", "det", "trace", "trans", "aide", "base", "effa", "voi", "lettr", "Lettr", "VRAI", "FAUX", "pasdefini", "ecrire", "lire"];
 
 let outputDiv = document.getElementById("output");
 let codeArea = document.getElementById("code");
@@ -970,8 +970,16 @@ function demanderSaisieConsole(message) {
 // caracteres reellement tapes, comme un champ mot de passe classique mais avec le
 // caractere de masquage choisi par le codeur (pas forcement '*').
 // Comme la zone de saisie est un <span contentEditable>, on intercepte nous-memes
-// chaque touche (au lieu de laisser le navigateur l'inserer visiblement) pour garder
-// le texte reellement tape dans une variable JS cachee, jamais dans le DOM affiche.
+// la saisie (au lieu de laisser le navigateur l'inserer visiblement) pour garder le
+// texte reellement tape dans une variable JS cachee, jamais dans le DOM affiche.
+// IMPORTANT : sur mobile (clavier virtuel/IME, ex. Gboard), l'insertion de caractere
+// ne passe PAS par un keydown classique annulable -- e.preventDefault() sur keydown
+// est ignore et le vrai texte s'affiche quand meme. Le seul evenement fiable et
+// annulable pour intercepter la saisie AVANT affichage, sur mobile comme sur desktop,
+// est "beforeinput" : on s'appuie donc dessus pour le texte tape/compose et les
+// suppressions, et on ne garde keydown que comme filet de securite pour la touche
+// Entree physique (deja annulee par beforeinput sur la plupart des navigateurs, mais
+// pas garanti partout).
 function demanderSaisieConsoleSecrete(message, styleChar) {
   arreterIndicateurAttente();
   return new Promise((resolve, reject) => {
@@ -999,6 +1007,7 @@ function demanderSaisieConsoleSecrete(message, styleChar) {
     sel.addRange(range);
 
     let buffer = "";
+    let termine = false;
     function placerCurseurFin() {
       let r = document.createRange();
       r.selectNodeContents(input);
@@ -1011,36 +1020,50 @@ function demanderSaisieConsoleSecrete(message, styleChar) {
       input.textContent = (styleChar ? styleChar.repeat(buffer.length) : "") || "\u200B";
       placerCurseurFin();
     }
-    function onKeyDown(e) {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        e.stopPropagation();
-        input.contentEditable = "false";
-        input.removeEventListener("keydown", onKeyDown);
-        input.removeEventListener("paste", onPaste);
-        annulerSaisieEnCours = null;
-        outputDiv.scrollTop = outputDiv.scrollHeight;
-        demarrerIndicateurAttente();
-        resolve(buffer);
+    function detacherEcouteurs() {
+      input.removeEventListener("beforeinput", onBeforeInput);
+      input.removeEventListener("keydown", onKeyDown);
+      input.removeEventListener("paste", onPaste);
+    }
+    function soumettre() {
+      if (termine) return;
+      termine = true;
+      input.contentEditable = "false";
+      detacherEcouteurs();
+      annulerSaisieEnCours = null;
+      outputDiv.scrollTop = outputDiv.scrollHeight;
+      demarrerIndicateurAttente();
+      resolve(buffer);
+    }
+    function onBeforeInput(e) {
+      e.preventDefault();
+      let type = e.inputType || "";
+      if (type === "insertLineBreak" || type === "insertParagraph") {
+        soumettre();
         return;
       }
-      if (e.key === "Backspace") {
-        e.preventDefault();
+      if (type.indexOf("delete") === 0) {
         buffer = buffer.slice(0, -1);
         rafraichirAffichage();
         return;
       }
-      // Une touche de caractere unique (sans Ctrl/Alt/Meta) : on l'ajoute au buffer
-      // cache et on empeche systematiquement le contentEditable natif de l'afficher.
-      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        e.preventDefault();
-        buffer += e.key;
-        rafraichirAffichage();
-        return;
+      let texte = e.data;
+      if (texte === null || texte === undefined) {
+        texte = e.dataTransfer ? e.dataTransfer.getData("text") : "";
       }
-      // Toute autre touche (fleches, Tab, Delete, ...) : bloquee par prudence, pour ne
-      // jamais laisser le contentEditable natif reprendre la main sur l'affichage.
-      e.preventDefault();
+      if (texte) {
+        buffer += texte;
+        rafraichirAffichage();
+      }
+    }
+    function onKeyDown(e) {
+      // Filet de securite pour clavier physique : la plupart des navigateurs annulent
+      // deja l'Entree via beforeinput ci-dessus, mais on la traite aussi ici au cas ou.
+      if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopPropagation();
+        soumettre();
+      }
     }
     function onPaste(e) {
       e.preventDefault();
@@ -1048,15 +1071,67 @@ function demanderSaisieConsoleSecrete(message, styleChar) {
       buffer += texte;
       rafraichirAffichage();
     }
+    input.addEventListener("beforeinput", onBeforeInput);
     input.addEventListener("keydown", onKeyDown);
     input.addEventListener("paste", onPaste);
 
     annulerSaisieEnCours = () => {
-      input.removeEventListener("keydown", onKeyDown);
-      input.removeEventListener("paste", onPaste);
+      detacherEcouteurs();
       annulerSaisieEnCours = null;
       reject(new ExecutionInterrompue());
     };
+  });
+}
+
+// Ouvre le selecteur de fichiers natif du telephone/navigateur et attend que l'utilisateur
+// choisisse un fichier (ou l'annule via le bouton "Retour"). Renvoie le CONTENU TEXTE du
+// fichier choisi. Utilise par lire.fichier(...) -- meme logique d'indicateur d'attente et
+// d'annulation que demanderSaisieConsole/demanderSaisieConsoleSecrete.
+function demanderFichierConsole() {
+  arreterIndicateurAttente();
+  print("Choisir un fichier a charger...", "invite");
+  return new Promise((resolve, reject) => {
+    let input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".json,application/json,text/plain";
+    input.style.display = "none";
+    document.body.appendChild(input);
+    let termine = false;
+    function nettoyer() {
+      if (input.parentNode) document.body.removeChild(input);
+      annulerSaisieEnCours = null;
+    }
+    input.addEventListener("change", () => {
+      if (termine) return;
+      let fichier = input.files && input.files[0];
+      if (!fichier) {
+        termine = true;
+        nettoyer();
+        demarrerIndicateurAttente();
+        reject(new Error("lire.fichier(...) : aucun fichier selectionne"));
+        return;
+      }
+      let lecteur = new FileReader();
+      lecteur.onload = () => {
+        termine = true;
+        nettoyer();
+        demarrerIndicateurAttente();
+        resolve(lecteur.result);
+      };
+      lecteur.onerror = () => {
+        termine = true;
+        nettoyer();
+        demarrerIndicateurAttente();
+        reject(new Error("lire.fichier(...) : impossible de lire le fichier selectionne"));
+      };
+      lecteur.readAsText(fichier);
+    });
+    annulerSaisieEnCours = () => {
+      termine = true;
+      nettoyer();
+      reject(new ExecutionInterrompue());
+    };
+    input.click();
   });
 }
 
@@ -2728,6 +2803,23 @@ let aideCommandes = [
       "entr.secret(), mais renvoie TOUJOURS du texte, jamais converti en nombre.",
       "Utile pour un code avec des zeros en tete (ex: |0123|), qui deviendrait sinon le nombre 123."
     ], exemple: "code ~ entr.Tsecret(|Code:|, sty~|*|)" },
+  { noms: ["ecrire"], categorie: "Sauvegarde", syntaxe: "ecrire(cle, valeur)", description: [
+      "Sauvegarde silencieuse et immediate : reste dans l'app, aucune interaction utilisateur.",
+      "N'importe quelle valeur peut etre sauvegardee : nombre, texte, booleen, vecteur, matrice, liste, instance de classe.",
+      "cle doit etre du texte. Ecraser une cle deja utilisee remplace l'ancienne sauvegarde."
+    ], exemple: "ecrire(|mon_compte|, moi)" },
+  { noms: ["lire"], categorie: "Sauvegarde", syntaxe: "lire(cle)", description: [
+      "Recupere une valeur sauvegardee avec ecrire(...).",
+      "Renvoie pasdefini si la cle n'existe pas."
+    ], exemple: "c ~ lire(|mon_compte|)" },
+  { noms: ["ecrire.fichier"], categorie: "Sauvegarde", syntaxe: "ecrire.fichier(nom, valeur)", description: [
+      "Export REEL : declenche le telechargement d'un vrai fichier .json contenant la valeur.",
+      "Contrairement a ecrire(), le fichier peut ensuite etre partage, copie, deplace hors de l'app."
+    ], exemple: "ecrire.fichier(|sauvegarde_banque|, moi)" },
+  { noms: ["lire.fichier"], categorie: "Sauvegarde", syntaxe: "lire.fichier()", description: [
+      "Ouvre le selecteur de fichiers du telephone et attend que l'utilisateur choisisse un fichier sauvegarde avec ecrire.fichier(...).",
+      "Renvoie la valeur sauvegardee dans ce fichier."
+    ], exemple: "c ~ lire.fichier()" },
   { noms: ["~"], categorie: "Base", syntaxe: "nom ~ valeur", description: [
       "Cree la variable si elle n'existe pas encore.",
       "Remplace sa valeur si elle existe deja.",
@@ -3385,7 +3477,7 @@ function enregistrerFonctionsBase() {
             let asTrim = saisie.trim();
             let nombre = Number(asTrim);
             if (asTrim !== "" && !isNaN(nombre)) return nombre;
-            print("Merci d'entrer un nombre valide.", "erreur");
+            print("Cette saisie attend un nombre, pas du texte. Merci de reessayer.", "erreur");
         }
     };
 
@@ -3424,7 +3516,7 @@ function enregistrerFonctionsBase() {
             let asTrim = saisie.trim();
             let nombre = Number(asTrim);
             if (asTrim !== "" && !isNaN(nombre)) return nombre;
-            print("Merci d'entrer un nombre valide.", "erreur");
+            print("Cette saisie attend un nombre, pas du texte. Merci de reessayer.", "erreur");
         }
     };
 
@@ -3435,6 +3527,69 @@ function enregistrerFonctionsBase() {
         let saisie = await demanderSaisieConsoleSecrete(message, styleChar);
         if (saisie === null || saisie === undefined) saisie = "";
         return saisie;
+    };
+
+    // ecrire(cle, valeur) : sauvegarde silencieuse et immediate dans localStorage (reste
+    // dans l'app, aucune interaction utilisateur). N'importe quelle valeur de monlangage
+    // peut etre sauvegardee (nombre, texte, booleen, vecteur, matrice, liste, instance de
+    // classe) car toutes se representent en JS comme des donnees simples (les instances
+    // sont de simples {__classe:..., attributs...}, sans methodes attachees).
+    fonctionsBase["ecrire"] = fonctionsExpression["ecrire"] = async function(args, ctxExpr) {
+        if (args.length !== 2) throw new Error("ecrire(cle, valeur) attend 2 arguments");
+        let cle = await evalExpr(args[0], ctxExpr);
+        if (typeof cle !== 'string') throw new Error("ecrire(cle, valeur) : cle doit etre du texte");
+        let valeur = await evaluerElementBrut(args[1], ctxExpr);
+        let texte;
+        try { texte = JSON.stringify(valeur); }
+        catch (e) { throw new Error("ecrire(...) : cette valeur ne peut pas etre sauvegardee"); }
+        try { localStorage.setItem("monlangage:" + cle, texte); }
+        catch (e) { throw new Error("ecrire(...) : sauvegarde impossible (" + e.message + ")"); }
+        return true;
+    };
+
+    // lire(cle) : recupere une valeur sauvegardee avec ecrire(...). Renvoie pasdefini si
+    // la cle n'existe pas.
+    fonctionsBase["lire"] = fonctionsExpression["lire"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("lire(cle) attend 1 argument");
+        let cle = await evalExpr(args[0], ctxExpr);
+        if (typeof cle !== 'string') throw new Error("lire(cle) : cle doit etre du texte");
+        let brut = localStorage.getItem("monlangage:" + cle);
+        if (brut === null) return undefined;
+        try { return JSON.parse(brut); }
+        catch (e) { throw new Error("lire(...) : la sauvegarde pour '" + cle + "' est corrompue"); }
+    };
+
+    // ecrire.fichier(nom, valeur) : export REEL -- declenche le telechargement d'un vrai
+    // fichier .json contenant la valeur, que l'utilisateur peut ensuite partager, copier,
+    // deplacer... contrairement a ecrire() qui reste invisible dans l'app.
+    fonctionsBase["ecrire.fichier"] = fonctionsExpression["ecrire.fichier"] = async function(args, ctxExpr) {
+        if (args.length !== 2) throw new Error("ecrire.fichier(nom, valeur) attend 2 arguments");
+        let nom = await evalExpr(args[0], ctxExpr);
+        if (typeof nom !== 'string') throw new Error("ecrire.fichier(nom, valeur) : nom doit etre du texte");
+        let valeur = await evaluerElementBrut(args[1], ctxExpr);
+        let texte;
+        try { texte = JSON.stringify(valeur); }
+        catch (e) { throw new Error("ecrire.fichier(...) : cette valeur ne peut pas etre sauvegardee"); }
+        let nomFichier = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".json";
+        let blob = new Blob([texte], { type: "application/json" });
+        let url = URL.createObjectURL(blob);
+        let a = document.createElement("a");
+        a.href = url;
+        a.download = nomFichier;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        return true;
+    };
+
+    // lire.fichier() : ouvre le selecteur de fichiers du telephone/navigateur, attend que
+    // l'utilisateur choisisse un fichier sauvegarde avec ecrire.fichier(...), et renvoie sa
+    // valeur. Interactif comme entr() : peut etre annule via le bouton "Retour".
+    fonctionsBase["lire.fichier"] = fonctionsExpression["lire.fichier"] = async function(args, ctxExpr) {
+        let texte = await demanderFichierConsole();
+        try { return JSON.parse(texte); }
+        catch (e) { throw new Error("lire.fichier(...) : le fichier choisi n'est pas une sauvegarde valide"); }
     };
 
 
