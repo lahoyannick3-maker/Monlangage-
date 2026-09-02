@@ -358,7 +358,7 @@ let fonctions = {};      // fonctions ~ { nom: {params:[...], corps:[tokens...] 
 let classes = {};        // classes ~ { nom: {methodes: {nomMethode: {params:[...], corps:[tokens...]}}} }
 let fonctionsBase = {};
 let fonctionsExpression = {};   // sous-ensemble de fonctionsBase utilisable directement dans une expression (ex: entr)
-let commandes = ["affi", "pou", "tanqer", "stop", "continu", "si", "sinon", "sision", "fonc", "retour", "entr", "c", "liste", "seq", "rep", "alea", "ralea", "matrice", "lon", "dim", "som", "moy", "var", "sd", "max", "min", "suchaq", "det", "trace", "trans", "aide", "base", "effa", "voi", "lettr", "Lettr", "VRAI", "FAUX", "pasdefini", "ecrire", "lire"];
+let commandes = ["affi", "pou", "tanqer", "stop", "continu", "si", "sinon", "sision", "essai", "attrape", "fonc", "retour", "entr", "c", "liste", "seq", "rep", "alea", "ralea", "matrice", "lon", "dim", "som", "moy", "var", "sd", "max", "min", "suchaq", "det", "trace", "trans", "aide", "base", "effa", "voi", "lettr", "Lettr", "VRAI", "FAUX", "pasdefini", "ecrire", "lire", "ajout"];
 
 let outputDiv = document.getElementById("output");
 let codeArea = document.getElementById("code");
@@ -2833,27 +2833,49 @@ let aideCommandes = [
       "entr.secret(), mais renvoie TOUJOURS du texte, jamais converti en nombre.",
       "Utile pour un code avec des zeros en tete (ex: |0123|), qui deviendrait sinon le nombre 123."
     ], exemple: "code ~ entr.Tsecret(|Code:|, sty~|*|)" },
-  { noms: ["ecrire"], categorie: "Sauvegarde", syntaxe: "ecrire(cle, valeur)", description: [
+  { noms: ["ecrire"], categorie: "Sauvegarde", syntaxe: "ecrire(cle, valeur)  ou  ecrire(cle, val1, val2, ...)", description: [
       "Sauvegarde silencieuse et immediate : reste dans l'app, aucune interaction utilisateur.",
       "N'importe quelle valeur peut etre sauvegardee : nombre, texte, booleen, vecteur, matrice, liste, instance de classe.",
+      "Avec plusieurs valeurs, elles sont regroupees et sauvegardees comme une liste() (types conserves, pas de fusion).",
       "cle doit etre du texte. Ecraser une cle deja utilisee remplace l'ancienne sauvegarde."
-    ], exemple: "ecrire(|mon_compte|, moi)" },
+    ], exemple: "ecrire(|mon_compte|, moi)\necrire(|scores|, 12, |bravo|, VRAI)   ** sauvegarde une liste() **" },
   { noms: ["lire"], categorie: "Sauvegarde", syntaxe: "lire(cle)", description: [
       "Recupere une valeur sauvegardee avec ecrire(...).",
       "Renvoie pasdefini si la cle n'existe pas."
     ], exemple: "c ~ lire(|mon_compte|)" },
-  { noms: ["ecrire.fichier"], categorie: "Sauvegarde", syntaxe: "ecrire.fichier(nom, valeur)  ou  ecrire.fichier(chemin, valeur)", description: [
+  { noms: ["ecrire.fichier"], categorie: "Sauvegarde", syntaxe: "ecrire.fichier(nom, valeur, ecra~FAUX)  ou  ecrire.fichier(chemin, val1, val2, ..., ecra~FAUX)", description: [
       "ecrire.fichier(nom, valeur) : ouvre le navigateur de fichiers integre pour choisir ou enregistrer un vrai fichier .mld.",
       "ecrire.fichier(chemin, valeur) : si nom contient un '/', ecriture DIRECTE a cet emplacement, sans rien afficher a l'ecran.",
-      "Le chemin direct ne fonctionne que dans l'app installee (pas en previsualisation navigateur).",
+      "Avec plusieurs valeurs, elles sont regroupees comme une liste() (meme regle que ecrire()).",
+      "ecra~FAUX par defaut : si le fichier existe deja, l'ecriture est REFUSEE (erreur, a intercepter avec essai/attrape). ecra~VRAI ecrase sans verifier.",
+      "Le chemin direct et la verification ecra ne fonctionnent que dans l'app installee (pas en previsualisation navigateur).",
       "Contrairement a ecrire(), le fichier peut ensuite etre partage, copie, deplace hors de l'app."
-    ], exemple: "ecrire.fichier(|sauvegarde_banque|, moi)\necrire.fichier(|/storage/emulated/0/Download/banque.mld|, moi)" },
+    ], exemple: "ecrire.fichier(|sauvegarde_banque|, moi, ecra~VRAI)\nsi(existe.fichier(|/storage/emulated/0/Download/banque.mld|)) { affi(|deja present|) }\nsinon { ecrire.fichier(|/storage/emulated/0/Download/banque.mld|, moi) }" },
+  { noms: ["existe.fichier"], categorie: "Sauvegarde", syntaxe: "existe.fichier(chemin)", description: [
+      "Renvoie VRAI si un fichier existe deja a ce CHEMIN COMPLET (avec '/'), FAUX sinon.",
+      "A utiliser typiquement avant ecrire.fichier(chemin, valeur) pour decider d'ecraser ou non.",
+      "Disponible uniquement dans l'app installee (pas en previsualisation navigateur)."
+    ], exemple: "si(existe.fichier(|/storage/emulated/0/Download/banque.mld|)) { affi(|Fichier deja present|) }" },
   { noms: ["lire.fichier"], categorie: "Sauvegarde", syntaxe: "lire.fichier()  ou  lire.fichier(chemin)", description: [
       "lire.fichier() : ouvre le navigateur de fichiers du telephone et attend que l'utilisateur choisisse un fichier sauvegarde avec ecrire.fichier(...).",
       "lire.fichier(chemin) : lit DIRECTEMENT le fichier a ce chemin, sans rien afficher a l'ecran.",
       "Le chemin direct ne fonctionne que dans l'app installee (pas en previsualisation navigateur).",
       "Renvoie la valeur sauvegardee dans ce fichier."
     ], exemple: "c ~ lire.fichier()\nc ~ lire.fichier(|/storage/emulated/0/Download/banque.mld|)" },
+  { noms: ["ajout"], categorie: "Sauvegarde", syntaxe: "ajout(cle, valeur, ...)", description: [
+      "Ajoute une ou plusieurs valeurs a une cle DEJA SAUVEGARDEE avec ecrire(...), sans rien ecraser.",
+      "Erreur si la cle n'existe pas encore : utiliser ecrire(...) pour la creer d'abord.",
+      "Si la cle contient un vecteur, il est etendu directement (comme .ajout() dessus), sans devenir une liste().",
+      "Si la cle contient deja une liste(), les nouvelles valeurs s'y ajoutent simplement.",
+      "Sinon (nombre, texte, booleen, matrice, instance), l'ancienne valeur devient le premier element d'une nouvelle liste()."
+    ], exemple: "ecrire(|notes|, c(12,15))\najout(|notes|, 9, 18)   ** notes reste un vecteur : 12 15 9 18 **\necrire(|score|, 12)\najout(|score|, 15, 9)   ** score devient une liste() : 12, 15, 9 **" },
+  { noms: ["ajout.fichier"], categorie: "Sauvegarde", syntaxe: "ajout.fichier(nom, valeur, ...)  ou  ajout.fichier(chemin, valeur, ...)", description: [
+      "Ajoute une ou plusieurs valeurs a un fichier DEJA SAUVEGARDE avec ecrire.fichier(...), sans l'ecraser.",
+      "ajout.fichier(nom, ...) : ouvre le navigateur de fichiers integre pour choisir le fichier existant a completer.",
+      "ajout.fichier(chemin, ...) : si nom contient un '/', le fichier doit deja exister exactement a cet emplacement.",
+      "Meme logique de fusion que ajout(cle, ...) ci-dessus.",
+      "Disponible uniquement dans l'app installee (pas de repli en previsualisation navigateur, contrairement a ecrire.fichier())."
+    ], exemple: "ajout.fichier(|/storage/emulated/0/Download/scores.mld|, 15, 9)" },
   { noms: ["~"], categorie: "Base", syntaxe: "nom ~ valeur", description: [
       "Cree la variable si elle n'existe pas encore.",
       "Remplace sa valeur si elle existe deja.",
@@ -2941,6 +2963,14 @@ let aideCommandes = [
       "valeurSiVrai et valeurSiFaux peuvent etre des scalaires ou des vecteurs (recycles si plus courts que condition, comme les autres operations vectorielles).",
       "Si condition est un simple scalaire, renvoie directement valeurSiVrai ou valeurSiFaux."
     ], exemple: "x ~ seq(-2,2,1)\naffi(sision(x>=0, x, x*-1))   ->   [1] 2 1 0 1 2" },
+  { noms: ["essai"], categorie: "Controle", syntaxe: "essai{ ... } attrape(msg){ ... }  /  essai{ ... } attrape{ ... }", description: [
+      "Intercepte une erreur levee dans le bloc essai au lieu de planter tout le script.",
+      "Si une erreur survient dans essai, l'execution du bloc s'arrete et le bloc attrape s'execute a la place.",
+      "Si aucune erreur ne survient, le bloc attrape est entierement ignore.",
+      "attrape(msg){...} recupere le message d'erreur (texte) dans la variable msg. attrape{...} (sans parametre) l'ignore.",
+      "Toujours place juste apres un essai{...}, jamais seul.",
+      "Ne peut pas empecher un arret manuel du script (bouton Retour pendant l'execution) : cela remonte toujours en dehors de essai/attrape."
+    ], exemple: "essai {\n    ecrire.fichier(|/storage/emulated/0/Download/save.mld|, moi)\n} attrape(msg) {\n    affi(|Echec de sauvegarde :|, msg)\n}" },
   { noms: ["fonc"], categorie: "Controle", syntaxe: "fonc nom(param1, param2){ ... }", description: [
       "Definit une fonction reutilisable, avec un nom et des parametres.",
       "Le bloc entre accolades s'execute a chaque appel de la fonction."
@@ -3563,16 +3593,24 @@ function enregistrerFonctionsBase() {
         return saisie;
     };
 
-    // ecrire(cle, valeur) : sauvegarde silencieuse et immediate dans localStorage (reste
-    // dans l'app, aucune interaction utilisateur). N'importe quelle valeur de monlangage
-    // peut etre sauvegardee (nombre, texte, booleen, vecteur, matrice, liste, instance de
-    // classe) car toutes se representent en JS comme des donnees simples (les instances
-    // sont de simples {__classe:..., attributs...}, sans methodes attachees).
+    // ecrire(cle, valeur) ou ecrire(cle, val1, val2, ...) : sauvegarde silencieuse et
+    // immediate dans localStorage (reste dans l'app, aucune interaction utilisateur).
+    // N'importe quelle valeur de monlangage peut etre sauvegardee (nombre, texte, booleen,
+    // vecteur, matrice, liste, instance de classe) car toutes se representent en JS comme
+    // des donnees simples (les instances sont de simples {__classe:..., attributs...}, sans
+    // methodes attachees).
+    // Avec UNE seule valeur : comportement inchange, lire(cle) renvoie cette valeur telle
+    // quelle (type conserve).
+    // Avec PLUSIEURS valeurs : stockees ensemble comme une liste() (pas un vecteur), pour
+    // ne pas forcer un type unique sur des valeurs de natures differentes -- lire(cle)
+    // renvoie alors une liste(), accessible par indice (l[1], l[2]...).
     fonctionsBase["ecrire"] = fonctionsExpression["ecrire"] = async function(args, ctxExpr) {
-        if (args.length !== 2) throw new Error("ecrire(cle, valeur) attend 2 arguments");
+        if (args.length < 2) throw new Error("ecrire(cle, valeur, ...) attend au moins 2 arguments");
         let cle = await evalExpr(args[0], ctxExpr);
-        if (typeof cle !== 'string') throw new Error("ecrire(cle, valeur) : cle doit etre du texte");
-        let valeur = await evaluerElementBrut(args[1], ctxExpr);
+        if (typeof cle !== 'string') throw new Error("ecrire(cle, valeur, ...) : cle doit etre du texte");
+        let valeurs = [];
+        for (let i = 1; i < args.length; i++) valeurs.push(await evaluerElementBrut(args[i], ctxExpr));
+        let valeur = valeurs.length === 1 ? valeurs[0] : { __type: "liste", elements: valeurs };
         let texte;
         try { texte = JSON.stringify(valeur); }
         catch (e) { throw new Error("ecrire(...) : cette valeur ne peut pas etre sauvegardee"); }
@@ -3593,27 +3631,75 @@ function enregistrerFonctionsBase() {
         catch (e) { throw new Error("lire(...) : la sauvegarde pour '" + cle + "' est corrompue"); }
     };
 
-    // ecrire.fichier(nom, valeur) : export REEL -- sur l'app native (Android), ecrit
-    // directement un vrai fichier .mld a l'emplacement choisi par l'utilisateur dans le
-    // navigateur de fichiers integre de l'app (pas de selecteur systeme). En previsualisation
-    // navigateur (pas d'app native), repli sur un telechargement classique.
-    // ecrire.fichier(chemin, valeur) : si "chemin" contient un "/", il est traite comme un
+    // existe.fichier(chemin) : VRAI/FAUX selon qu'un fichier existe deja a cet emplacement.
+    // Demande un CHEMIN COMPLET (comme ecrire.fichier(chemin, valeur) avec un "/") : sans
+    // emplacement fixe, il n'y a rien a verifier avant l'ouverture du navigateur de fichiers
+    // interactif. A utiliser typiquement avant ecrire.fichier(chemin, valeur) pour decider
+    // d'ecraser ou non, sans passer par essai/attrape.
+    fonctionsBase["existe.fichier"] = fonctionsExpression["existe.fichier"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("existe.fichier(chemin) attend 1 argument");
+        let chemin = await evalExpr(args[0], ctxExpr);
+        if (typeof chemin !== 'string') throw new Error("existe.fichier(chemin) : chemin doit etre du texte");
+        if (chemin.indexOf("/") === -1) {
+            throw new Error("existe.fichier(chemin) : il faut un chemin complet (avec '/'), comme pour ecrire.fichier(chemin, valeur) -- un simple nom n'a pas d'emplacement fixe a verifier avant l'ouverture du navigateur de fichiers");
+        }
+        if (!(window.MonLangage && typeof window.MonLangage.existeFichier === "function")) {
+            throw new Error("existe.fichier(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        let cheminFinal = /\.[a-zA-Z0-9]+$/.test(chemin) ? chemin : chemin + ".mld";
+        return window.MonLangage.existeFichier(cheminFinal);
+    };
+
+    // ecrire.fichier(nom, valeur) ou ecrire.fichier(nom, val1, val2, ..., ecra~FAUX) :
+    // export REEL -- sur l'app native (Android), ecrit directement un vrai fichier .mld a
+    // l'emplacement choisi par l'utilisateur dans le navigateur de fichiers integre de l'app
+    // (pas de selecteur systeme). En previsualisation navigateur (pas d'app native), repli
+    // sur un telechargement classique.
+    // ecrire.fichier(chemin, valeur) : si "nom" contient un "/", il est traite comme un
     // CHEMIN COMPLET -- ecriture DIRECTE a cet emplacement, sans rien afficher a l'ecran
     // (symetrique de lire.fichier(chemin)). Necessite l'app native.
+    // PLUSIEURS valeurs (val1, val2, ...) : stockees ensemble comme une liste(), meme
+    // logique que pour ecrire(cle, val1, val2, ...) -- voir plus haut.
+    // ecra~FAUX (par defaut) : si le fichier cible existe deja, l'ecriture est REFUSEE et
+    // une erreur est levee (a intercepter avec essai/attrape, ou a eviter en verifiant
+    // d'abord avec existe.fichier(...)). ecra~VRAI ecrase sans verifier, comme avant.
+    // Ce refus par defaut ne s'applique qu'aux deux chemins qui passent par le stockage
+    // reel de l'app (chemin direct et navigateur de fichiers integre) : en repli navigateur
+    // web (pas d'app native), il n'existe aucun moyen de verifier un fichier existant depuis
+    // la page, donc ecra n'a pas d'effet dans ce cas precis (le navigateur gere lui-meme les
+    // doublons de nom au telechargement).
     fonctionsBase["ecrire.fichier"] = fonctionsExpression["ecrire.fichier"] = async function(args, ctxExpr) {
-        if (args.length !== 2) throw new Error("ecrire.fichier(nom, valeur) attend 2 arguments");
+        if (args.length < 2) throw new Error("ecrire.fichier(nom, valeur, ...) attend au moins 2 arguments");
         let nom = await evalExpr(args[0], ctxExpr);
-        if (typeof nom !== 'string') throw new Error("ecrire.fichier(nom, valeur) : nom doit etre du texte");
-        let valeur = await evaluerElementBrut(args[1], ctxExpr);
+        if (typeof nom !== 'string') throw new Error("ecrire.fichier(nom, valeur, ...) : nom doit etre du texte");
+
+        let ecra = false, valeursBrutes = [];
+        for (let i = 1; i < args.length; i++) {
+            let argStr = args[i].trim();
+            let mParam = argStr.match(/^(\w+)\s*~\s*(.*)$/);
+            if (mParam) {
+                let paramNom = mParam[1];
+                if (paramNom !== "ecra") throw new Error("Parametre inconnu pour ecrire.fichier(...) : " + paramNom);
+                ecra = estVrai(await evalExpr(mParam[2], ctxExpr));
+            } else {
+                valeursBrutes.push(await evaluerElementBrut(argStr, ctxExpr));
+            }
+        }
+        if (valeursBrutes.length === 0) throw new Error("ecrire.fichier(nom, valeur, ...) : au moins une valeur est attendue");
+        let valeur = valeursBrutes.length === 1 ? valeursBrutes[0] : { __type: "liste", elements: valeursBrutes };
+
         let texte;
         try { texte = JSON.stringify(valeur); }
         catch (e) { throw new Error("ecrire.fichier(...) : cette valeur ne peut pas etre sauvegardee"); }
 
         if (nom.indexOf("/") !== -1) {
             if (!(window.MonLangage && typeof window.MonLangage.ecrireFichier === "function")) {
-                throw new Error("ecrire.fichier(chemin, valeur) : l'ecriture directe par chemin n'est possible que dans l'app installee (utilise ecrire.fichier(nom, valeur) sans '/' en previsualisation navigateur)");
+                throw new Error("ecrire.fichier(chemin, valeur, ...) : l'ecriture directe par chemin n'est possible que dans l'app installee (utilise ecrire.fichier(nom, valeur, ...) sans '/' en previsualisation navigateur)");
             }
             let cheminDirect = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".mld";
+            if (!ecra && typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminDirect)) {
+                throw new Error("ecrire.fichier(...) : le fichier '" + cheminDirect + "' existe deja (utilise ecra~VRAI pour l'ecraser, ou existe.fichier(...) pour verifier avant)");
+            }
             let ok = window.MonLangage.ecrireFichier(cheminDirect, texte);
             if (!ok) throw new Error("ecrire.fichier(...) : echec de l'ecriture sur '" + cheminDirect + "'");
             return true;
@@ -3622,12 +3708,17 @@ function enregistrerFonctionsBase() {
         if (window.MonLangage && typeof window.MonLangage.ecrireFichier === "function") {
             let nomSansExt = nom.replace(/\.[a-zA-Z0-9]+$/, "");
             let cheminComplet = await demanderEmplacementEcritureFichier(nomSansExt, ".mld");
+            if (!ecra && typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminComplet)) {
+                throw new Error("ecrire.fichier(...) : le fichier '" + cheminComplet + "' existe deja (utilise ecra~VRAI pour l'ecraser, ou existe.fichier(...) pour verifier avant)");
+            }
             let ok = window.MonLangage.ecrireFichier(cheminComplet, texte);
             if (!ok) throw new Error("ecrire.fichier(...) : echec de l'ecriture sur le telephone");
             return true;
         }
 
         // Repli navigateur web (previsualisation hors app) : telechargement classique.
+        // Pas de verification d'existence possible ici (voir commentaire plus haut) : ecra
+        // est ignore dans ce cas precis.
         let nomFichier = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".mld";
         let blob = new Blob([texte], { type: "application/json" });
         let url = URL.createObjectURL(blob);
@@ -3638,6 +3729,101 @@ function enregistrerFonctionsBase() {
         a.click();
         document.body.removeChild(a);
         setTimeout(() => URL.revokeObjectURL(url), 1000);
+        return true;
+    };
+
+    // Fusionne une nouvelle serie de valeurs avec ce qui est deja stocke sous une cle/un
+    // fichier (ecrire()/ecrire.fichier()), sans jamais rien ecraser -- utilise par ajout()
+    // et ajout.fichier(). Trois cas, du plus specifique au plus general :
+    // - L'existant est un VECTEUR : etendu directement, exactement comme .ajout() sur ce
+    //   vecteur (unification de type incluse) -- reste un vecteur, pas transforme en liste().
+    // - L'existant est deja une liste() : les nouvelles valeurs y sont simplement ajoutees
+    //   (types conserves, sans unification, comme .ajout() sur une liste()).
+    // - Sinon (nombre, texte, booleen, matrice, instance...) : l'existant devient le PREMIER
+    //   element d'une nouvelle liste() -- rien n'est perdu, mais une matrice deja stockee
+    //   n'est pas etendue colonne par colonne (pas d'equivalent clair a "ajouter une colonne"
+    //   sans info supplementaire) ; utilise .ajout() sur la matrice elle-meme avant de la
+    //   re-sauvegarder si c'est le comportement voulu.
+    function fusionnerPourAjout(existant, nouvelles) {
+        if (estVecteur(existant)) {
+            let v = existant.slice();
+            ajouterVecteur(v, nouvelles);
+            return v;
+        }
+        if (existant !== null && typeof existant === 'object' && existant.__type === "liste") {
+            return { __type: "liste", elements: existant.elements.concat(nouvelles) };
+        }
+        return { __type: "liste", elements: [existant].concat(nouvelles) };
+    }
+
+    // ajout(cle, valeur, ...) : ajoute une ou plusieurs valeurs a une cle DEJA EXISTANTE
+    // (sauvegardee avec ecrire(...)), sans rien ecraser -- contrairement a ecrire(cle, ...)
+    // qui remplace toujours le contenu. Erreur si la cle n'existe pas encore : utiliser
+    // ecrire(...) pour la creer d'abord. Voir fusionnerPourAjout(...) ci-dessus pour la
+    // logique de fusion exacte.
+    fonctionsBase["ajout"] = fonctionsExpression["ajout"] = async function(args, ctxExpr) {
+        if (args.length < 2) throw new Error("ajout(cle, valeur, ...) attend au moins 2 arguments");
+        let cle = await evalExpr(args[0], ctxExpr);
+        if (typeof cle !== 'string') throw new Error("ajout(cle, valeur, ...) : cle doit etre du texte");
+        let brut = localStorage.getItem("monlangage:" + cle);
+        if (brut === null) throw new Error("ajout(...) : la cle '" + cle + "' n'existe pas encore (utilise ecrire(...) pour la creer)");
+        let existant;
+        try { existant = JSON.parse(brut); }
+        catch (e) { throw new Error("ajout(...) : la sauvegarde pour '" + cle + "' est corrompue"); }
+
+        let nouvelles = [];
+        for (let i = 1; i < args.length; i++) nouvelles.push(await evaluerElementBrut(args[i], ctxExpr));
+        let fusion = fusionnerPourAjout(existant, nouvelles);
+
+        let texte;
+        try { texte = JSON.stringify(fusion); }
+        catch (e) { throw new Error("ajout(...) : cette valeur ne peut pas etre sauvegardee"); }
+        try { localStorage.setItem("monlangage:" + cle, texte); }
+        catch (e) { throw new Error("ajout(...) : sauvegarde impossible (" + e.message + ")"); }
+        return true;
+    };
+
+    // ajout.fichier(nom, valeur, ...) ou ajout.fichier(chemin, valeur, ...) : ajoute une ou
+    // plusieurs valeurs a un fichier DEJA EXISTANT (sauvegarde avec ecrire.fichier(...)),
+    // sans l'ecraser -- meme logique de fusion que ajout() (voir fusionnerPourAjout(...)).
+    // nom sans '/' : ouvre le navigateur de fichiers integre en mode "ouvrir" pour choisir le
+    // fichier existant a completer (comme lire.fichier()). nom avec '/' : chemin complet,
+    // le fichier doit deja exister a cet emplacement exact (verifie avec existe.fichier()).
+    // Necessite l'app native (lecture + reecriture reelles sur le stockage) : pas de repli
+    // navigateur web, contrairement a ecrire.fichier().
+    fonctionsBase["ajout.fichier"] = fonctionsExpression["ajout.fichier"] = async function(args, ctxExpr) {
+        if (args.length < 2) throw new Error("ajout.fichier(nom, valeur, ...) attend au moins 2 arguments");
+        let nom = await evalExpr(args[0], ctxExpr);
+        if (typeof nom !== 'string') throw new Error("ajout.fichier(nom, valeur, ...) : nom doit etre du texte");
+        if (!(window.MonLangage && typeof window.MonLangage.lireFichier === "function" && typeof window.MonLangage.ecrireFichier === "function")) {
+            throw new Error("ajout.fichier(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+
+        let nouvelles = [];
+        for (let i = 1; i < args.length; i++) nouvelles.push(await evaluerElementBrut(args[i], ctxExpr));
+
+        let cheminComplet;
+        if (nom.indexOf("/") !== -1) {
+            cheminComplet = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".mld";
+            if (!(typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminComplet))) {
+                throw new Error("ajout.fichier(...) : le fichier '" + cheminComplet + "' n'existe pas (utilise ecrire.fichier(...) pour le creer)");
+            }
+        } else {
+            cheminComplet = await demanderEmplacementLectureFichier();
+        }
+
+        let texteExistant = window.MonLangage.lireFichier(cheminComplet);
+        if (texteExistant === null || texteExistant === undefined) throw new Error("ajout.fichier(...) : impossible de lire '" + cheminComplet + "'");
+        let existant;
+        try { existant = JSON.parse(texteExistant); }
+        catch (e) { throw new Error("ajout.fichier(...) : le fichier '" + cheminComplet + "' n'est pas une sauvegarde valide"); }
+
+        let fusion = fusionnerPourAjout(existant, nouvelles);
+        let texteFinal;
+        try { texteFinal = JSON.stringify(fusion); }
+        catch (e) { throw new Error("ajout.fichier(...) : cette valeur ne peut pas etre sauvegardee"); }
+        let ok = window.MonLangage.ecrireFichier(cheminComplet, texteFinal);
+        if (!ok) throw new Error("ajout.fichier(...) : echec de l'ecriture sur '" + cheminComplet + "'");
         return true;
     };
 
@@ -4842,6 +5028,9 @@ if (Object.prototype.hasOwnProperty.call(fonctionsBase, nom)) {
   if (/^sinon\b/.test(ligne)) {
     throw new Error("sinon doit suivre directement un bloc si(...){...} ou sinon si(...){...}, sans instruction entre les deux : " + ligne);
   }
+  if (/^attrape\b/.test(ligne)) {
+    throw new Error("attrape doit suivre directement un bloc essai{...}, sans instruction entre les deux : " + ligne);
+  }
   if (/^[a-zA-Z_][a-zA-Z0-9_.]*\(/.test(ligne)) {
     throw new Error("Appel de fonction mal forme (parenthese fermante manquante ou en trop) : " + ligne);
   }
@@ -4968,6 +5157,49 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
           break;
         }
         index = curseur;
+        continue;
+      }
+
+      // essai{...} attrape(msg){...} : intercepte une erreur levee dans le bloc essai (ex:
+      // ecrire.fichier(...) avec ecra~FAUX sur un fichier existant) sans planter tout le
+      // script. Comme sinon apres si, attrape doit suivre IMMEDIATEMENT le "}" de essai (pas
+      // d'instruction entre les deux). "attrape(msg){...}" recupere le message d'erreur (texte)
+      // dans la variable msg ; "attrape{...}" (sans parametre) ignore le message. Le bloc
+      // attrape n'est execute QUE si une erreur a ete levee ; sinon il est simplement saute.
+      // ExecutionInterrompue (retour force a l'editeur pendant l'execution) n'est JAMAIS
+      // interceptee ici : elle doit toujours remonter jusqu'en haut, essai/attrape ne doit
+      // pas pouvoir empecher l'utilisateur d'arreter un script.
+      if (token === 'essai') {
+        if (!tokens[index+1] || tokens[index+1].texte !== "{") throw new Error("Manque { apres essai");
+        let finBlocEssai = trouverFinBloc(tokens, index + 2, ligneActuelle);
+
+        let curseurAttrape = finBlocEssai;
+        let tokAttrape = tokens[curseurAttrape];
+        let mAttrape = tokAttrape ? tokAttrape.texte.match(/^attrape(?:\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\))?$/) : null;
+        if (!mAttrape) throw new Error("essai{...} doit etre suivi directement de attrape{...} ou attrape(msg){...}, sans instruction entre les deux");
+        if (!tokens[curseurAttrape+1] || tokens[curseurAttrape+1].texte !== "{") throw new Error("Manque { apres attrape");
+        let finBlocAttrape = trouverFinBloc(tokens, curseurAttrape + 2, ligneActuelle);
+        let nomVarErreur = mAttrape[1] || null;
+
+        let messageErreur = null, resEssai = null;
+        try {
+          resEssai = await executerTokens(tokens, index + 2, finBlocEssai - 1);
+        } catch (e) {
+          if (e instanceof ExecutionInterrompue) throw e;
+          messageErreur = e.message;
+        }
+
+        if (messageErreur === null) {
+          // Pas d'erreur : le bloc attrape est saute integralement.
+          if (resEssai && resEssai.signal) return resEssai;
+          index = finBlocAttrape;
+          continue;
+        }
+
+        if (nomVarErreur) setVar(nomVarErreur, messageErreur);
+        let resAttrape = await executerTokens(tokens, curseurAttrape + 2, finBlocAttrape - 1);
+        if (resAttrape.signal) return resAttrape;
+        index = finBlocAttrape;
         continue;
       }
 
