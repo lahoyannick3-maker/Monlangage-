@@ -358,7 +358,7 @@ let fonctions = {};      // fonctions ~ { nom: {params:[...], corps:[tokens...] 
 let classes = {};        // classes ~ { nom: {methodes: {nomMethode: {params:[...], corps:[tokens...]}}} }
 let fonctionsBase = {};
 let fonctionsExpression = {};   // sous-ensemble de fonctionsBase utilisable directement dans une expression (ex: entr)
-let commandes = ["affi", "pou", "tanqer", "stop", "continu", "si", "sinon", "sision", "essai", "attrape", "fonc", "retour", "entr", "c", "liste", "seq", "rep", "alea", "ralea", "matrice", "lon", "dim", "som", "moy", "var", "sd", "max", "min", "suchaq", "det", "trace", "trans", "aide", "base", "effa", "voi", "lettr", "Lettr", "VRAI", "FAUX", "pasdefini", "ecrire", "lire", "ajout"];
+let commandes = ["affi", "pou", "tanqer", "stop", "continu", "si", "sinon", "sision", "essai", "attrape", "fonc", "retour", "entr", "c", "liste", "texte", "seq", "rep", "alea", "ralea", "matrice", "lon", "dim", "som", "moy", "var", "sd", "max", "min", "suchaq", "det", "trace", "trans", "aide", "base", "effa", "voi", "lettr", "Lettr", "VRAI", "FAUX", "pasdefini", "ecrire", "lire", "ajout"];
 
 let outputDiv = document.getElementById("output");
 let codeArea = document.getElementById("code");
@@ -1758,8 +1758,15 @@ function verifierTexteLitteralFerme(s) {
   }
 }
 
+// Evalue un argument brut en une valeur (utilise partout ou une liste d'arguments peut
+// contenir n'importe quel type : c(...), liste(...), matrice(...), ecrire(...),
+// ecrire.fichier(...), ajout(...), ajout.fichier(...), etc.).
+// "saulig" (l'argument tel quel, sans rien autour) est reconnu ICI comme valeur generale
+// -- un simple texte contenant un retour a la ligne -- et pas seulement dans affi()/entr()
+// comme avant : utilisable partout ou une valeur brute est attendue.
 async function evaluerElementBrut(argStr, ctxExpr) {
   let s = (argStr || "").trim();
+  if (s === "saulig") return "\n";
   if (/^\|[\s\S]*\|$/.test(s)) return s.slice(1, -1);
   verifierTexteLitteralFerme(s);
   return await evalExpr(s, ctxExpr);
@@ -2876,6 +2883,27 @@ let aideCommandes = [
       "Meme logique de fusion que ajout(cle, ...) ci-dessus.",
       "Disponible uniquement dans l'app installee (pas de repli en previsualisation navigateur, contrairement a ecrire.fichier())."
     ], exemple: "ajout.fichier(|/storage/emulated/0/Download/scores.mld|, 15, 9)" },
+  { noms: ["voir.cle"], categorie: "Sauvegarde", syntaxe: "voir.cle()", description: [
+      "Renvoie un vecteur avec les NOMS de toutes les cles actuellement sauvegardees avec ecrire(...) (pas leur contenu).",
+      "Permet de savoir ce qui existe sans devoir tout effacer via 'Effacer donnees utilisateur' de l'app (qui vide TOUTES les cles a la fois).",
+      "Vecteur vide si aucune cle n'est sauvegardee."
+    ], exemple: "affi(voir.cle())" },
+  { noms: ["supri.cle"], categorie: "Sauvegarde", syntaxe: "supri.cle(cle)", description: [
+      "Supprime UNE cle precise sauvegardee avec ecrire(...), sans toucher aux autres.",
+      "Erreur si la cle n'existe pas -- verifiable avant avec voir.cle()."
+    ], exemple: "supri.cle(|scores|)" },
+  { noms: ["voir.fichier"], categorie: "Sauvegarde", syntaxe: "voir.fichier()  ou  voir.fichier(dossier)", description: [
+      "Renvoie un vecteur avec les NOMS des fichiers .mld presents dans un dossier (pas leur contenu).",
+      "Sans argument, utilise le dossier racine du stockage de l'appareil.",
+      "L'app ne tient pas de registre central de tous les fichiers crees avec ecrire.fichier() (ils peuvent etre ecrits a n'importe quel chemin) : voir.fichier() liste le contenu d'UN dossier donne, comme le navigateur de fichiers integre.",
+      "Disponible uniquement dans l'app installee (pas en previsualisation navigateur)."
+    ], exemple: "affi(voir.fichier(|/storage/emulated/0/Download|))" },
+  { noms: ["supri.fichier"], categorie: "Sauvegarde", syntaxe: "supri.fichier(nom)  ou  supri.fichier(chemin)", description: [
+      "Supprime UN fichier precis, sans toucher aux autres.",
+      "Sans '/' : ouvre le navigateur de fichiers integre en mode 'ouvrir' pour choisir le fichier a supprimer.",
+      "Avec un chemin complet (avec '/') : suppression DIRECTE a cet emplacement, sans rien afficher a l'ecran -- erreur si le fichier n'existe pas (verifiable avant avec existe.fichier(...)).",
+      "Disponible uniquement dans l'app installee (pas en previsualisation navigateur)."
+    ], exemple: "supri.fichier(|/storage/emulated/0/Download/scores.mld|)" },
   { noms: ["~"], categorie: "Base", syntaxe: "nom ~ valeur", description: [
       "Cree la variable si elle n'existe pas encore.",
       "Remplace sa valeur si elle existe deja.",
@@ -3224,11 +3252,19 @@ let aideCommandes = [
       "Utilisable dans une comparaison : si(x == pasdefini){ ... }."
     ], exemple: "fonc f(){ retour }\nf()   ->   pasdefini" },
 
-  { noms: ["saulig"], categorie: "Constantes", syntaxe: "affi(..., saulig, ...)", description: [
-      "Saut de ligne, utilisable uniquement dans la liste d'arguments de affi() ou entr() (pas tout seul).",
-      "Insere un retour a la ligne a cet endroit precis dans le message affiche ou demande.",
-      "Pour une ligne vide toute seule, on peut aussi ecrire affi(||) ou affi( | |)."
-    ], exemple: "affi(|Programme de calcul|, saulig, |----------|)" },
+  { noms: ["saulig"], categorie: "Constantes", syntaxe: "affi(..., saulig, ...)  /  ecrire(cle, ..., saulig, ...)  /  c(..., saulig, ...)", description: [
+      "Saut de ligne : un texte contenant un seul caractere retour a la ligne.",
+      "Dans affi()/entr(), insere un retour a la ligne a cet endroit dans le message affiche/demande.",
+      "Utilisable aussi comme valeur ordinaire partout ou une valeur brute est attendue : ecrire(...), ecrire.fichier(...), ajout(...), ajout.fichier(...), c(...), liste(...), matrice(...).",
+      "Doit toujours apparaitre SEUL comme argument (jamais colle a l'interieur d'un |texte|, sinon ce n'est plus reconnu -- ce serait alors juste le mot 'saulig' litteral).",
+      "Pour une ligne vide toute seule dans affi(), on peut aussi ecrire affi(||) ou affi( | |)."
+    ], exemple: "affi(|Programme de calcul|, saulig, |----------|)\necrire(|notes|, |Titre|, saulig, |Sous-titre|)   ** liste() : \"Titre\", \"\\n\", \"Sous-titre\" **" },
+
+  { noms: ["texte"], categorie: "Texte", syntaxe: "texte(a, b, ...)", description: [
+      "Concatene plusieurs parties en UN SEUL texte, exactement comme les arguments de affi()/entr()/~ (avec |texte| et saulig pour un saut de ligne).",
+      "Contrairement a affi(), ne s'affiche pas : renvoie le texte concatene comme une valeur, utilisable dans une expression.",
+      "Utile pour construire un texte a passer en UN SEUL argument a ecrire(...), ecrire.fichier(...) ou ajout(...) -- qui, eux, rangent chaque argument separe par une virgule comme un element distinct d'une liste() plutot que de les coller ensemble."
+    ], exemple: "ligne ~ texte(|+ Depot: |, montant, | F|, saulig)\necrire.fichier(|/sdcard/historique.mld|, h + ligne)" },
 
   { noms: ["miniscul", "majuscul", "suprespac"], categorie: "Texte", syntaxe: "var.miniscul()  /  var.majuscul()  /  var.suprespac()", description: [
       "miniscul() convertit le texte contenu dans var en minuscules.",
@@ -3275,8 +3311,9 @@ function enregistrerFonctionsBase() {
         for (let elem of args) {
             let elemTrim = elem.trim();
             if (elemTrim === "saulig") {
-                // saulig : saut de ligne, reconnu uniquement ici (dans la liste d'arguments
-                // de affi/entr), pas comme une valeur d'expression generale.
+                // saulig : saut de ligne. Reconnu de facon generale par evaluerElementBrut(),
+                // mais traite ici directement (sans repasser par elle) pour rester coherent
+                // avec le formatage d'affichage (formatPourAffichage) plutot que formatValeur.
                 parties.push("\n");
             } else if (/^\|[\s\S]*\|$/.test(elemTrim)) {
                 parties.push(elemTrim.slice(1, -1));
@@ -3292,6 +3329,28 @@ function enregistrerFonctionsBase() {
         // Force l'affichage immediat de ce resultat avant de poursuivre l'execution,
         // au lieu de tout accumuler et de ne peindre l'ecran qu'a la toute fin.
         await respirer(true);
+    };
+
+    // texte(a, b, ...) : concatene plusieurs parties (comme les arguments de affi()/entr()/~)
+    // en UN SEUL texte, saulig compris pour un saut de ligne -- mais renvoie ce texte comme
+    // une VALEUR au lieu de l'afficher. Utile pour obtenir un texte concatene a passer
+    // directement en un seul argument a ecrire(...)/ecrire.fichier(...)/ajout(...), qui sinon
+    // rangeraient chaque partie separee par une virgule comme un element distinct d'une
+    // liste() plutot que de les coller ensemble.
+    fonctionsBase["texte"] = fonctionsExpression["texte"] = async function(args, ctxExpr) {
+        let parties = [];
+        for (let elem of args) {
+            let elemTrim = elem.trim();
+            if (elemTrim === "saulig") {
+                parties.push("\n");
+            } else if (/^\|[\s\S]*\|$/.test(elemTrim)) {
+                parties.push(elemTrim.slice(1, -1));
+            } else {
+                verifierTexteLitteralFerme(elemTrim);
+                parties.push(formatValeur(await evalExpr(elemTrim, ctxExpr)));
+            }
+        }
+        return parties.join(" ").replace(/ {2,}/g, " ").replace(/ *\n */g, "\n");
     };
 
     // c(...) : combine des valeurs (et aplatit les vecteurs/matrices donnes en argument) en un vecteur.
@@ -3824,6 +3883,90 @@ function enregistrerFonctionsBase() {
         catch (e) { throw new Error("ajout.fichier(...) : cette valeur ne peut pas etre sauvegardee"); }
         let ok = window.MonLangage.ecrireFichier(cheminComplet, texteFinal);
         if (!ok) throw new Error("ajout.fichier(...) : echec de l'ecriture sur '" + cheminComplet + "'");
+        return true;
+    };
+
+    // voir.cle() : liste les NOMS de toutes les cles actuellement sauvegardees avec
+    // ecrire(...) (pas leur contenu). Permet de savoir ce qui existe sans devoir tout
+    // effacer via "Effacer donnees utilisateur" de l'app (qui viderait TOUTES les cles
+    // d'un coup). Renvoie un vecteur de texte, vide si aucune cle n'est sauvegardee.
+    fonctionsBase["voir.cle"] = fonctionsExpression["voir.cle"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("voir.cle() n'attend aucun argument");
+        let noms = [];
+        for (let i = 0; i < localStorage.length; i++) {
+            let clePrefixee = localStorage.key(i);
+            if (clePrefixee && clePrefixee.indexOf("monlangage:") === 0) {
+                noms.push(clePrefixee.slice("monlangage:".length));
+            }
+        }
+        return noms;
+    };
+
+    // supri.cle(cle) : supprime UNE cle precise sauvegardee avec ecrire(...), sans toucher
+    // aux autres (contrairement a "Effacer donnees utilisateur" de l'app). Erreur si la cle
+    // n'existe pas.
+    fonctionsBase["supri.cle"] = fonctionsExpression["supri.cle"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("supri.cle(cle) attend 1 argument");
+        let cle = await evalExpr(args[0], ctxExpr);
+        if (typeof cle !== 'string') throw new Error("supri.cle(cle) : cle doit etre du texte");
+        if (localStorage.getItem("monlangage:" + cle) === null) {
+            throw new Error("supri.cle(...) : la cle '" + cle + "' n'existe pas");
+        }
+        localStorage.removeItem("monlangage:" + cle);
+        return true;
+    };
+
+    // voir.fichier() ou voir.fichier(dossier) : liste les NOMS des fichiers .mld presents
+    // dans un dossier (pas leur contenu). Sans argument, utilise le dossier racine du
+    // stockage de l'appareil. Contrairement aux cles ecrire()/lire(), l'app ne tient pas de
+    // registre central des fichiers crees avec ecrire.fichier() (ils peuvent etre ecrits a
+    // n'importe quel chemin) : voir.fichier() liste donc le CONTENU D'UN DOSSIER donne,
+    // comme le navigateur de fichiers integre, plutot que "tous les fichiers jamais crees".
+    // Necessite l'app native.
+    fonctionsBase["voir.fichier"] = fonctionsExpression["voir.fichier"] = async function(args, ctxExpr) {
+        if (args.length > 1) throw new Error("voir.fichier(dossier) attend 0 ou 1 argument");
+        if (!(window.MonLangage && typeof window.MonLangage.listerDossier === "function")) {
+            throw new Error("voir.fichier(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        let dossier;
+        if (args.length === 1) {
+            dossier = await evalExpr(args[0], ctxExpr);
+            if (typeof dossier !== 'string') throw new Error("voir.fichier(dossier) : dossier doit etre du texte");
+        } else {
+            dossier = (typeof window.MonLangage.dossierRacine === "function") ? window.MonLangage.dossierRacine() : null;
+            if (!dossier) throw new Error("voir.fichier(...) : impossible de determiner le dossier par defaut, precise un dossier");
+        }
+        let elements;
+        try { elements = JSON.parse(window.MonLangage.listerDossier(dossier) || "[]"); }
+        catch (e) { elements = []; }
+        return elements.filter(el => !el.dossier && /\.mld$/i.test(el.nom)).map(el => el.nom);
+    };
+
+    // supri.fichier(nom) ou supri.fichier(chemin) : supprime UN fichier precis, sans toucher
+    // aux autres. nom sans '/' : ouvre le navigateur de fichiers integre en mode "ouvrir"
+    // pour choisir le fichier a supprimer. chemin avec '/' : suppression DIRECTE a cet
+    // emplacement exact, sans rien afficher a l'ecran (erreur si le fichier n'existe pas,
+    // verifiable avant avec existe.fichier(...)). Necessite l'app native.
+    fonctionsBase["supri.fichier"] = fonctionsExpression["supri.fichier"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("supri.fichier(nom) attend 1 argument");
+        let nom = await evalExpr(args[0], ctxExpr);
+        if (typeof nom !== 'string') throw new Error("supri.fichier(nom) : nom doit etre du texte");
+        if (!(window.MonLangage && typeof window.MonLangage.supprimerFichier === "function")) {
+            throw new Error("supri.fichier(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+
+        let cheminComplet;
+        if (nom.indexOf("/") !== -1) {
+            cheminComplet = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".mld";
+            if (!(typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminComplet))) {
+                throw new Error("supri.fichier(...) : le fichier '" + cheminComplet + "' n'existe pas");
+            }
+        } else {
+            cheminComplet = await demanderEmplacementLectureFichier();
+        }
+
+        let ok = window.MonLangage.supprimerFichier(cheminComplet);
+        if (!ok) throw new Error("supri.fichier(...) : echec de la suppression de '" + cheminComplet + "'");
         return true;
     };
 
