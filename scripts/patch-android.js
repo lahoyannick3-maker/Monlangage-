@@ -188,6 +188,20 @@ public class MainActivity extends BridgeActivity {
             }
         }
 
+        // Supprime un fichier (pas un dossier) a cet emplacement. Renvoie VRAI en cas de
+        // succes (ou si le fichier n'existait deja pas). Utilise par supri.fichier(...).
+        @JavascriptInterface
+        public boolean supprimerFichier(String cheminComplet) {
+            try {
+                File fichier = new File(cheminComplet);
+                if (!fichier.exists()) return true;
+                if (fichier.isDirectory()) return false;
+                return fichier.delete();
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
         // Lit un fichier texte directement depuis le stockage. null si echec.
         @JavascriptInterface
         public String lireFichier(String cheminComplet) {
