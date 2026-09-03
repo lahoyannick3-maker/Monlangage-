@@ -2883,6 +2883,13 @@ let aideCommandes = [
       "Meme logique de fusion que ajout(cle, ...) ci-dessus.",
       "Disponible uniquement dans l'app installee (pas de repli en previsualisation navigateur, contrairement a ecrire.fichier())."
     ], exemple: "ajout.fichier(|/storage/emulated/0/Download/scores.mld|, 15, 9)" },
+  { noms: ["ajout.Tfichier"], categorie: "Sauvegarde", syntaxe: "ajout.Tfichier(nom, valeur, ...)  ou  ajout.Tfichier(chemin, valeur, ...)", description: [
+      "Variante de ajout.fichier(...) reservee aux fichiers dont le contenu sauvegarde est du TEXTE (cree avec ecrire.fichier(chemin, |...|)).",
+      "Concatene directement le texte a la suite de l'existant (comme le ferait toi-meme lire.fichier()+concatenation+ecrire.fichier(ecra~VRAI)), sans jamais transformer le contenu en liste().",
+      "ajout.fichier(...) classique ne sait pas faire ca : sur un texte, il transforme l'existant en 1er element d'une liste() au lieu de le prolonger -- ajout.Tfichier() comble ce cas precis.",
+      "Erreur si le fichier n'existe pas encore, ou si son contenu sauvegarde n'est pas du texte (utiliser ajout.fichier() dans ce cas).",
+      "Meme regle nom/chemin que ajout.fichier(...) : sans '/' ouvre le navigateur integre, avec '/' chemin direct."
+    ], exemple: "ecrire.fichier(|/sdcard/historique.mld|, ||)\najout.Tfichier(|/sdcard/historique.mld|, texte(|# Depot: |, 500, saulig))" },
   { noms: ["voir.cle"], categorie: "Sauvegarde", syntaxe: "voir.cle()", description: [
       "Renvoie un vecteur avec les NOMS de toutes les cles actuellement sauvegardees avec ecrire(...) (pas leur contenu).",
       "Permet de savoir ce qui existe sans devoir tout effacer via 'Effacer donnees utilisateur' de l'app (qui vide TOUTES les cles a la fois).",
@@ -3883,6 +3890,58 @@ function enregistrerFonctionsBase() {
         catch (e) { throw new Error("ajout.fichier(...) : cette valeur ne peut pas etre sauvegardee"); }
         let ok = window.MonLangage.ecrireFichier(cheminComplet, texteFinal);
         if (!ok) throw new Error("ajout.fichier(...) : echec de l'ecriture sur '" + cheminComplet + "'");
+        return true;
+    };
+
+    // ajout.Tfichier(nom, valeur, ...) : variante de ajout.fichier(...) reservee au cas ou le
+    // fichier contient du TEXTE (cree avec ecrire.fichier(chemin, |...|)). fusionnerPourAjout()
+    // ne sait pas prolonger un texte (elle le transforme en 1er element d'une liste()) -- cette
+    // commande gere ce cas precis en concatenant reellement, comme le ferait a la main
+    // lire.fichier() + concatenation + ecrire.fichier(ecra~VRAI), mais en un seul appel.
+    // Meme contrat que ajout.fichier() sinon : fichier deja existant obligatoire, app native
+    // obligatoire, meme regle nom (navigateur integre) / chemin (acces direct avec '/').
+    fonctionsBase["ajout.Tfichier"] = fonctionsExpression["ajout.Tfichier"] = async function(args, ctxExpr) {
+        if (args.length < 2) throw new Error("ajout.Tfichier(nom, valeur, ...) attend au moins 2 arguments");
+        let nom = await evalExpr(args[0], ctxExpr);
+        if (typeof nom !== 'string') throw new Error("ajout.Tfichier(nom, valeur, ...) : nom doit etre du texte");
+        if (!(window.MonLangage && typeof window.MonLangage.lireFichier === "function" && typeof window.MonLangage.ecrireFichier === "function")) {
+            throw new Error("ajout.Tfichier(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+
+        let nouvelles = [];
+        for (let i = 1; i < args.length; i++) nouvelles.push(await evaluerElementBrut(args[i], ctxExpr));
+
+        let cheminComplet;
+        if (nom.indexOf("/") !== -1) {
+            cheminComplet = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".mld";
+            if (!(typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminComplet))) {
+                throw new Error("ajout.Tfichier(...) : le fichier '" + cheminComplet + "' n'existe pas (utilise ecrire.fichier(...) pour le creer)");
+            }
+        } else {
+            cheminComplet = await demanderEmplacementLectureFichier();
+        }
+
+        let texteExistantBrut = window.MonLangage.lireFichier(cheminComplet);
+        if (texteExistantBrut === null || texteExistantBrut === undefined) throw new Error("ajout.Tfichier(...) : impossible de lire '" + cheminComplet + "'");
+        let existant;
+        try { existant = JSON.parse(texteExistantBrut); }
+        catch (e) { throw new Error("ajout.Tfichier(...) : le fichier '" + cheminComplet + "' n'est pas une sauvegarde valide"); }
+        if (typeof existant !== 'string') {
+            throw new Error("ajout.Tfichier(...) : le fichier '" + cheminComplet + "' ne contient pas du texte (utilise ajout.fichier() pour ce type de contenu)");
+        }
+
+        // Meme concatenation que texte()/affi() : |texte| brut, valeurs non-texte formatees,
+        // espaces multiples fusionnes, espaces autour d'un saut de ligne nettoyes.
+        let ajoutTexte = nouvelles.map(v => typeof v === 'string' ? v : formatValeur(v))
+                                   .join(" ")
+                                   .replace(/ {2,}/g, " ")
+                                   .replace(/ *\n */g, "\n");
+
+        let texteFinal;
+        try { texteFinal = JSON.stringify(existant + ajoutTexte); }
+        catch (e) { throw new Error("ajout.Tfichier(...) : cette valeur ne peut pas etre sauvegardee"); }
+        let ok = window.MonLangage.ecrireFichier(cheminComplet, texteFinal);
+        if (!ok) throw new Error("ajout.Tfichier(...) : echec de l'ecriture sur '" + cheminComplet + "'");
         return true;
     };
 
