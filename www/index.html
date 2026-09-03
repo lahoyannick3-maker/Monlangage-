@@ -2991,7 +2991,7 @@ let aideCommandes = [
       "valeurSiVrai et valeurSiFaux peuvent etre des scalaires ou des vecteurs (recycles si plus courts que condition, comme les autres operations vectorielles).",
       "Si condition est un simple scalaire, renvoie directement valeurSiVrai ou valeurSiFaux."
     ], exemple: "x ~ seq(-2,2,1)\naffi(sision(x>=0, x, x*-1))   ->   [1] 2 1 0 1 2" },
-  { noms: ["essai"], categorie: "Controle", syntaxe: "essai{ ... } attrape(msg){ ... }  /  essai{ ... } attrape{ ... }", description: [
+  { noms: ["essai", "attrape"], categorie: "Controle", syntaxe: "essai{ ... } attrape(msg){ ... }  /  essai{ ... } attrape{ ... }", description: [
       "Intercepte une erreur levee dans le bloc essai au lieu de planter tout le script.",
       "Si une erreur survient dans essai, l'execution du bloc s'arrete et le bloc attrape s'execute a la place.",
       "Si aucune erreur ne survient, le bloc attrape est entierement ignore.",
@@ -4451,7 +4451,9 @@ let categorieCouleurs = {
   "Console": "#e3b341",
   "Graphique": "#56d4dd",
   "Fonctions mathematiques": "#f2a65a",
-  "Texte": "#79c0ff"
+  "Texte": "#79c0ff",
+  "Sauvegarde": "#a5d6ff",
+  "Constantes": "#56d4dd"
 };
 // Construit nom -> couleur a partir de aideCommandes (uniquement les noms "mots", pas
 // les symboles comme +, -, [, ], qui restent geres a part).
@@ -4462,10 +4464,13 @@ for (let e of aideCommandes) {
     if (/^[a-zA-Z_]\w*$/.test(nom)) commandeCouleur[nom] = categorieCouleurs[e.categorie];
   }
 }
-// conver.nombr, est.text, etc. contiennent un '.' : ils ne passent pas le test ci-dessus.
-// On colore au moins le prefixe (conver / est) avec la couleur "Base".
+// conver.nombr, est.text, existe.fichier, voir.cle, supri.cle, etc. contiennent un '.' :
+// ils ne passent pas le test ci-dessus. On colore au moins le prefixe.
 commandeCouleur["conver"] = categorieCouleurs["Base"];
 commandeCouleur["est"] = categorieCouleurs["Base"];
+commandeCouleur["existe"] = categorieCouleurs["Sauvegarde"];
+commandeCouleur["voir"] = categorieCouleurs["Sauvegarde"];
+commandeCouleur["supri"] = categorieCouleurs["Sauvegarde"];
 let regexCommandeCouleur = Object.keys(commandeCouleur).length
   ? new RegExp('\\b(' + Object.keys(commandeCouleur).join('|') + ')\\b', 'g')
   : null;
@@ -4910,7 +4915,8 @@ async function executerCommandeSimple(ligne) {
 
   // Methode sur vecteur/matrice : nom.ajout(elements)
   let mMethode = ligne.match(/^([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\.(\w+)\((.*)\)$/);
-  if (mMethode && mMethode[1] !== "base" && mMethode[1] !== "conver" && mMethode[1] !== "est") {
+  if (mMethode && mMethode[1] !== "base" && mMethode[1] !== "conver" && mMethode[1] !== "est"
+      && !Object.prototype.hasOwnProperty.call(fonctionsBase, mMethode[1] + "." + mMethode[2])) {
     let nomVar = mMethode[1], methode = mMethode[2], argsStr = mMethode[3].trim();
     let argExprs = argsStr === "" ? [] : splitTopLevelComma(argsStr);
 
