@@ -358,6 +358,12 @@ let fonctions = {};      // fonctions ~ { nom: {params:[...], corps:[tokens...] 
 let classes = {};        // classes ~ { nom: {methodes: {nomMethode: {params:[...], corps:[tokens...]}}} }
 let fonctionsBase = {};
 let fonctionsExpression = {};   // sous-ensemble de fonctionsBase utilisable directement dans une expression (ex: entr)
+// Numero de la ligne source EN COURS D'EXECUTION, mis a jour par executerTokens a chaque
+// instruction. Sert a donner un numero de ligne correct aux erreurs qui surviennent a
+// l'interieur d'une fonction anonyme (fonc(params) expr) : son corps synthetique n'a pas de
+// numero de ligne propre (il est fabrique a partir de tokens d'expression, qui n'en portent
+// pas), donc on reutilise la derniere ligne source reellement executee.
+let ligneExpressionCourante = 0;
 let commandes = ["affi", "pou", "tanqer", "stop", "continu", "si", "sinon", "sision", "essai", "attrape", "fonc", "retour", "entr", "c", "liste", "texte", "seq", "rep", "alea", "ralea", "matrice", "lon", "dim", "som", "moy", "var", "sd", "max", "min", "suchaq", "det", "trace", "trans", "aide", "base", "effa", "voi", "lettr", "Lettr", "VRAI", "FAUX", "pasdefini", "ecrire", "lire", "ajout"];
 
 let outputDiv = document.getElementById("output");
@@ -779,11 +785,35 @@ async function respirer(forcer = false) {
 }
 
 /* ===================== VARIABLES / PORTEES ===================== */
+// Enveloppe une fonction perso deja declaree (fonc nom(params){...}) dans une VALEUR que le
+// langage peut faire circuler (stocker dans une variable, passer en argument, retourner) :
+// c'est ce qui permet a "f ~ doubler" puis "f(5)" de fonctionner, ainsi que
+// "mapper(vecteur, doubler)" ou mapper() recoit doubler comme une vraie valeur appelable.
+function estValeurFonction(v) {
+  return v !== null && typeof v === 'object' && v.__fonction === true;
+}
+function valeurFonctionDepuisNom(nom) {
+  let f = fonctions[nom];
+  return { __fonction: true, nom: nom, params: f.params, corps: f.corps };
+}
 function getVar(nom) {
   for (let i = scopes.length - 1; i >= 0; i--) {
     if (Object.prototype.hasOwnProperty.call(scopes[i], nom)) return scopes[i][nom];
   }
+  // Pas trouve comme variable : si c'est le nom d'une fonction perso deja declaree, on la
+  // renvoie comme valeur-fonction plutot que d'echouer (permet "f ~ doubler", "retour doubler",
+  // ou de passer "doubler" tel quel en argument a une autre fonction).
+  if (Object.prototype.hasOwnProperty.call(fonctions, nom)) return valeurFonctionDepuisNom(nom);
   throw new Error("Variable non definie: " + nom);
+}
+// Comme getVar, mais ne cherche QUE parmi les variables (jamais dans fonctions{}) et ne leve
+// jamais d'erreur : sert a appelerFonction() pour savoir si "nom(...)" designe une variable qui
+// contient une valeur-fonction (prioritaire) avant de retomber sur une fonction/classe nommee.
+function chercherVariable(nom) {
+  for (let i = scopes.length - 1; i >= 0; i--) {
+    if (Object.prototype.hasOwnProperty.call(scopes[i], nom)) return { trouve: true, valeur: scopes[i][nom] };
+  }
+  return { trouve: false };
 }
 function setVar(nom, valeur) {
   for (let i = scopes.length - 1; i >= 0; i--) {
@@ -901,6 +931,154 @@ function tokenizerExpr(str) {
   }
   __cacheTokenizerExpr.set(str, tokens);
   return tokens;
+}
+
+// Reconstruit un texte d'expression equivalent a partir d'une TRANCHE de jetons deja produite
+// par tokenizerExpr (utilise pour recuperer le corps d'une fonction anonyme, voir plus bas).
+// Un espace separe systematiquement chaque jeton : ca ne change jamais le sens (tokenizerExpr
+// ignore les espaces), et ca evite tout risque que deux jetons collent et fusionnent en un seul
+// une fois retokenises (ex: un identifiant suivi d'un nombre).
+function detokeniserExpr(tokens) {
+  return tokens.map(t => {
+    switch (t.type) {
+      case '(': return '(';
+      case ')': return ')';
+      case ',': return ',';
+      case '[': return '[';
+      case ']': return ']';
+      case 'deuxpoints': return ':';
+      case 'cmp': return t.v;
+      case 'op': return t.v;
+      case 'num': return String(t.v);
+      case 'ident': return t.v;
+      case 'and': return 'et';
+      case 'or': return 'ou';
+      case 'dan': return 'dan';
+      case 'str': return '|' + t.v + '|';
+      default: throw new Error("Jeton inattendu dans le corps d'une fonction anonyme");
+    }
+  }).join(' ');
+}
+
+// Repere la fin (index EXCLUS) d'UNE SEULE expression a partir de tokens[debut], en suivant la
+// meme precedence que le vrai evaluateur (parseOr > parseAnd > parseDan > parseCmp > parseAdd >
+// parseMul > parseColon > parseUnary > parsePow > parsePrimary, plus la chaine de suffixes
+// .attr / .methode(args) / [idx]) -- mais SANS RIEN EVALUER. Sert uniquement, au moment ou une
+// fonction anonyme fonc(params) expr est rencontree au milieu d'une expression plus large, a
+// savoir ou s'arrete son corps -- a un instant ou ses parametres n'ont encore aucune valeur
+// (on ne peut donc pas se contenter d'appeler le vrai evaluateur, qui a besoin d'evaluer au fur
+// et a mesure pour avancer).
+// Remarque importante : a l'execution reelle, un "." rencontre apres un resultat peut etre
+// interprete soit comme un produit scalaire (parseMul), soit comme un acces a un attribut ou
+// une methode d'instance (suffixes de parsePrimary) -- selon le TYPE de la valeur a gauche, que
+// l'on ne connait pas ici. Mais dans les deux cas, le nombre de jetons consommes est identique
+// (un identifiant, un ".", un identifiant, et eventuellement des parentheses/crochets) : ce
+// reperage n'a donc jamais besoin de trancher entre les deux pour trouver la bonne fin.
+function trouverFinCorpsAnonyme(tokens, debut) {
+  let pos = debut;
+  const peek = () => tokens[pos];
+  const next = () => tokens[pos++];
+  function attendre(type, quoi) {
+    if (!peek() || peek().type !== type) throw new Error("Corps de fonction anonyme incomplet ou mal forme (" + quoi + " attendu)");
+    next();
+  }
+  function listeArgs() {
+    if (!(peek() && peek().type === ')')) {
+      or_();
+      while (peek() && peek().type === ',') { next(); or_(); }
+    }
+    attendre(')', "parenthese fermante");
+  }
+  function or_() { and_(); while (peek() && peek().type === 'or') { next(); and_(); } }
+  function and_() { dan_(); while (peek() && peek().type === 'and') { next(); dan_(); } }
+  function dan_() { cmp_(); while (peek() && peek().type === 'dan') { next(); cmp_(); } }
+  function cmp_() { add_(); if (peek() && peek().type === 'cmp') { next(); add_(); } }
+  function add_() { mul_(); while (peek() && peek().type === 'op' && (peek().v === '+' || peek().v === '-')) { next(); mul_(); } }
+  function mul_() {
+    colon_();
+    while (peek() && peek().type === 'op' && ['*', '/', '%', 'enti', '.', '..', '×'].includes(peek().v)) { next(); colon_(); }
+  }
+  function colon_() { unary_(); if (peek() && peek().type === 'deuxpoints') { next(); unary_(); } }
+  function unary_() {
+    if (peek() && peek().type === 'op' && peek().v === '-') { next(); unary_(); return; }
+    pow_();
+  }
+  function pow_() { primaire_(); if (peek() && peek().type === 'op' && peek().v === '^') { next(); unary_(); } }
+  function primaire_() {
+    let t = peek();
+    if (!t) throw new Error("Corps de fonction anonyme incomplet");
+    if (t.type === 'num' || t.type === 'str') { next(); suffixes_(); return; }
+    if (t.type === '(') { next(); or_(); attendre(')', "parenthese fermante"); suffixes_(); return; }
+    if (t.type === 'ident') {
+      next();
+      if (peek() && peek().type === '(') { next(); listeArgs(); suffixes_(); return; }
+      if (peek() && peek().type === '[') {
+        next();
+        if (!(peek() && (peek().type === ',' || peek().type === ']'))) or_();
+        if (peek() && peek().type === ',') { next(); if (!(peek() && peek().type === ']')) or_(); }
+        attendre(']', "crochet fermant");
+        suffixes_(); return;
+      }
+      suffixes_(); return;
+    }
+    throw new Error("Corps de fonction anonyme invalide (jeton inattendu)");
+  }
+  function suffixes_() {
+    while (true) {
+      if (peek() && peek().type === 'op' && peek().v === '.' && tokens[pos + 1] && tokens[pos + 1].type === 'ident') {
+        next(); next();
+        if (peek() && peek().type === '(') { next(); listeArgs(); }
+        continue;
+      }
+      if (peek() && peek().type === '[') {
+        next();
+        if (!(peek() && (peek().type === ',' || peek().type === ']'))) or_();
+        if (peek() && peek().type === ',') { next(); if (!(peek() && peek().type === ']')) or_(); }
+        attendre(']', "crochet fermant");
+        continue;
+      }
+      break;
+    }
+  }
+  or_();
+  return pos;
+}
+
+// Construit une fonction anonyme (fonc(params) expr) rencontree au milieu d'une expression :
+// tokens[pos] doit designer le '(' des parametres (le mot-cle "fonc" a deja ete consomme par
+// l'appelant, voir parsePrimaryBrute). Ne mute jamais "pos" directement : le renvoie dans le
+// resultat, a l'appelant (sync ou async, chacun gere sa propre variable pos) de l'appliquer.
+function construireFonctionAnonyme(tokens, pos) {
+  if (!tokens[pos] || tokens[pos].type !== '(') throw new Error("fonc(...) attend une liste de parametres entre parentheses");
+  pos++; // '('
+  let params = [];
+  if (tokens[pos] && tokens[pos].type !== ')') {
+    if (!tokens[pos] || tokens[pos].type !== 'ident') throw new Error("Parametre invalide dans fonc(...) : un nom de parametre est attendu");
+    params.push(tokens[pos].v); pos++;
+    while (tokens[pos] && tokens[pos].type === ',') {
+      pos++;
+      if (!tokens[pos] || tokens[pos].type !== 'ident') throw new Error("Parametre invalide dans fonc(...) : un nom de parametre est attendu");
+      params.push(tokens[pos].v); pos++;
+    }
+  }
+  if (!tokens[pos] || tokens[pos].type !== ')') throw new Error("Parenthese fermante manquante pour les parametres de fonc(...)");
+  pos++; // ')'
+  let debutCorps = pos;
+  let finCorps = trouverFinCorpsAnonyme(tokens, debutCorps);
+  if (finCorps === debutCorps) throw new Error("fonc(...) attend une expression apres les parametres (son corps ne peut pas etre vide) : ecris par exemple fonc(x) x*2");
+  let corpsTexte = detokeniserExpr(tokens.slice(debutCorps, finCorps));
+  // Corps synthetique : une seule instruction "retour <expression>", au format attendu par
+  // executerCorpsFonction (une liste de "lignes", chacune avec son texte et son numero de
+  // ligne). Le numero de ligne reutilise la derniere ligne source reellement executee
+  // (ligneExpressionCourante) : le corps n'a pas de numero de ligne propre puisqu'il est
+  // fabrique a partir de jetons d'expression, qui n'en portent jamais.
+  let valeur = {
+    __fonction: true,
+    nom: null,
+    params: params,
+    corps: [{ texte: "retour " + corpsTexte, ligne: ligneExpressionCourante }]
+  };
+  return { valeur: valeur, pos: finCorps };
 }
 
 // Affiche, sur une NOUVELLE ligne de la console, le message eventuel de entr(...) suivi d'une
@@ -1402,6 +1580,11 @@ function evalExprSansEntreeSync(str, ctx) {
     }
     if (t.type === 'ident') {
       next();
+      if (t.v === 'fonc' && peek() && peek().type === '(') {
+        let r = construireFonctionAnonyme(tokens, pos);
+        pos = r.pos;
+        return r.valeur;
+      }
       if (t.v === 'VRAI') return true;
       if (t.v === 'FAUX') return false;
       if (t.v === 'pasdefini') {
@@ -1613,6 +1796,11 @@ async function evalExprSansEntreeAsync(str, ctx) {
     }
     if (t.type === 'ident') {
       next();
+      if (t.v === 'fonc' && peek() && peek().type === '(') {
+        let r = construireFonctionAnonyme(tokens, pos);
+        pos = r.pos;
+        return r.valeur;
+      }
       if (t.v === 'VRAI') return true;
       if (t.v === 'FAUX') return false;
       if (t.v === 'pasdefini') {
@@ -1713,6 +1901,7 @@ function nomNature(v) {
   if (typeof v === "boolean") return "booleen";
   if (typeof v === "number") return "nombre";
   if (typeof v === "string") return "texte";
+  if (estValeurFonction(v)) return "fonction";
   // Instance de classe : natu(a) renvoie le nom de sa classe (comme type(a).__name__ en Python),
   // pas juste "inconnu" — pour une instance de "Chien", natu(a) -> "Chien".
   if (v !== null && typeof v === 'object' && v.__classe !== undefined) return v.__classe;
@@ -2439,6 +2628,10 @@ function formatValeur(v) {
   if (v === true) return "VRAI";
   if (v === false) return "FAUX";
   if (typeof v === 'string') return v;
+  if (estValeurFonction(v)) {
+    let listeParams = v.params.map(p => p.defautExpr !== null ? (p.nom + "~" + p.defautExpr) : p.nom).join(", ");
+    return v.nom ? ("fonction " + v.nom + "(" + listeParams + ")") : ("fonction anonyme(" + listeParams + ")");
+  }
   if (v !== null && typeof v === 'object' && v.__classe !== undefined) return formatInstance(v);
   return String(v);
 }
@@ -2526,19 +2719,40 @@ function formatMatrice(m) {
 // une methode de classe, la classe qui DEFINIT reellement le corps execute (utile pour
 // parent.methode(...) : voir getClasseCourante ci-dessous).
 async function executerCorpsFonction(params, corps, argsVals, nomPourErreur, classeCourante) {
-  if (argsVals.length !== params.length) {
-    throw new Error((nomPourErreur || "Cette fonction") + " attend " + params.length + " argument(s), " + argsVals.length + " fourni(s)");
+  // Un parametre AVEC valeur par defaut (nom~expr dans la declaration, ex: fonc trier(x,
+  // ordre~|croissant|){...}) peut etre omis a l'appel -- seuls les parametres SANS valeur
+  // par defaut sont obligatoires. analyserListeParametres() garantit deja, a la
+  // declaration, que les parametres avec defaut viennent tous apres ceux sans, donc "nombre
+  // de parametres obligatoires" = position du premier parametre avec defaut.
+  let nbRequis = params.filter(p => p.defautExpr === null).length;
+  if (argsVals.length < nbRequis || argsVals.length > params.length) {
+    let attendu = (nbRequis === params.length) ? String(params.length) : (nbRequis + " a " + params.length);
+    throw new Error((nomPourErreur || "Cette fonction") + " attend " + attendu + " argument(s), " + argsVals.length + " fourni(s)");
   }
   let scope = {};
-  params.forEach((p, idx) => scope[p] = argsVals[idx]);
+  params.forEach((p, idx) => { if (idx < argsVals.length) scope[p.nom] = argsVals[idx]; });
   if (classeCourante) scope['__classeCourante'] = classeCourante;
-  scopes.push(scope);
+  // PORTEE LEXICALE : on isole completement la pile pour cet appel. On ne garde QUE le
+  // scope global (scopes[0]) + ce nouveau scope local — jamais les scopes intermediaires
+  // des fonctions actuellement en cours d'execution plus haut dans la chaine d'appel.
+  // Avant ce correctif, "scopes.push(scope)" empilait par-dessus TOUTE la pile active,
+  // ce qui rendait visible aux fonctions appelees les variables locales de leurs
+  // appelantes (portee dynamique) — un appel de fonction pouvait donc "voir" par
+  // accident une variable qu'on avait oublie de lui passer en parametre.
+  let pilePrecedente = scopes;
+  scopes = [pilePrecedente[0], scope];
   let resultat;
   try {
+    // Valeurs par defaut des parametres NON fournis a l'appel : evaluees maintenant, DANS
+    // le scope de la fonction (deja empile ci-dessus), ce qui permet a une valeur par
+    // defaut de referencer un parametre precedent deja affecte (ex: fonc f(a, b~a){...}).
+    for (let idx = argsVals.length; idx < params.length; idx++) {
+      scope[params[idx].nom] = await evalExpr(params[idx].defautExpr, ctxExpr);
+    }
     let res = await executerTokens(corps, 0, corps.length);
     resultat = (res.signal && res.signal.type === 'retour') ? res.signal.valeur : undefined;
   } finally {
-    scopes.pop();
+    scopes = pilePrecedente;
   }
   return resultat;
 }
@@ -2555,6 +2769,17 @@ function getClasseCourante() {
 }
 
 async function appelerFonction(nom, argsVals) {
+  // Priorite a une VARIABLE nommee "nom" si elle contient une valeur-fonction : c'est ce qui
+  // permet d'appeler "f(...)" quand f a ete recue en parametre (callback) ou stockee via
+  // "f ~ doubler". Une variable non-fonction (nombre, texte...) portant ce nom est une erreur
+  // claire plutot que de retomber silencieusement sur une fonction/classe globale du meme nom.
+  let rVar = chercherVariable(nom);
+  if (rVar.trouve) {
+    if (estValeurFonction(rVar.valeur)) {
+      return await executerCorpsFonction(rVar.valeur.params, rVar.valeur.corps, argsVals, "La fonction " + nom);
+    }
+    throw new Error("'" + nom + "' n'est pas une fonction (c'est un(e) " + nomNature(rVar.valeur) + "), impossible de l'appeler avec (...)");
+  }
   if (Object.prototype.hasOwnProperty.call(classes, nom)) {
     return await instancierClasse(nom, argsVals);
   }
@@ -2642,6 +2867,30 @@ function estRetourVideDansCorps(corps) {
   return corps.some(t => estTokenRetourVide(t.texte));
 }
 
+// Analyse la liste de parametres d'une declaration de fonction/methode (ex: "x, ordre~|croissant|")
+// en une liste d'objets {nom, defautExpr}. Un parametre AVEC valeur par defaut (nom~expr,
+// meme syntaxe ~ que pour une affectation) devient facultatif a l'appel -- s'il est omis,
+// defautExpr est evalue au moment de l'appel (voir executerCorpsFonction). splitTopLevelComma
+// est reutilise pour ne pas couper une virgule presente a l'interieur d'un texte litteral
+// |...| utilise comme valeur par defaut (ex: ordre~|valeur, avec virgule|). Les parametres
+// avec defaut doivent tous venir apres ceux sans, comme en Python.
+function analyserListeParametres(str, contexteErreur, ligneErreur) {
+  if (str.trim() === "") return [];
+  let parties = splitTopLevelComma(str);
+  let params = parties.map(part => {
+    let mDefaut = part.match(/^(\w+)\s*~\s*(.+)$/);
+    if (mDefaut) return { nom: mDefaut[1], defautExpr: mDefaut[2].trim() };
+    if (!/^\w+$/.test(part)) throw new ErreurLangage("Parametre invalide dans " + contexteErreur + " : \"" + part + "\"", ligneErreur);
+    return { nom: part, defautExpr: null };
+  });
+  let vuDefaut = false;
+  for (let p of params) {
+    if (p.defautExpr !== null) vuDefaut = true;
+    else if (vuDefaut) throw new ErreurLangage("Dans " + contexteErreur + " : le parametre \"" + p.nom + "\" (sans valeur par defaut) ne peut pas venir apres un parametre qui en a une", ligneErreur);
+  }
+  return params;
+}
+
 function preRegistrerFonctions(tokens) {
   fonctions = {};
   let i = 0;
@@ -2659,7 +2908,7 @@ function preRegistrerFonctions(tokens) {
     let m = t.texte.match(/^fonc\s+(\w+)\(([^)]*)\)$/);
     if (m) {
       let nom = m[1];
-      let params = m[2].trim() === "" ? [] : m[2].split(',').map(s => s.trim());
+      let params = analyserListeParametres(m[2], "fonc " + nom + "(...)", t.ligne);
       if (!tokens[i+1] || tokens[i+1].texte !== "{") throw new ErreurLangage("Manque { apres la definition de fonction " + nom, t.ligne);
       let finBloc = trouverFinBloc(tokens, i + 2, t.ligne);
       let corps = tokens.slice(i + 2, finBloc - 1);
@@ -2682,8 +2931,8 @@ function extraireMethodes(tokens, debut, fin, nomClasse) {
     let m = t.texte.match(/^fonc\s+(\w+)\(([^)]*)\)$/);
     if (m) {
       let nomMethode = m[1];
-      let params = m[2].trim() === "" ? [] : m[2].split(',').map(s => s.trim());
-      if (params.length === 0 || params[0] !== "moi") {
+      let params = analyserListeParametres(m[2], "la methode " + nomClasse + "." + nomMethode + "(...)", t.ligne);
+      if (params.length === 0 || params[0].nom !== "moi") {
         throw new ErreurLangage("La methode " + nomClasse + "." + nomMethode + "(...) doit prendre \"moi\" comme premier parametre (comme self en Python)", t.ligne);
       }
       if (!tokens[i+1] || tokens[i+1].texte !== "{") throw new ErreurLangage("Manque { apres la methode " + nomMethode, t.ligne);
@@ -2945,6 +3194,12 @@ let aideCommandes = [
       "est.vecteu(var) : VRAI si var est un vecteur.",
       "est.matric(var) : VRAI si var est une matrice."
     ], exemple: "est.nombr(3)        ->   VRAI\nest.text(|bonjour|) ->   VRAI\nest.vecteu(c(1,2))  ->   VRAI\nsi(est.nombr(x)){ affi(|x est un nombre|) }" },
+  { noms: ["est.fonction"], categorie: "Base", syntaxe: "est.fonction(var)", description: [
+      "VRAI si var contient une fonction (recue en parametre, ou stockee avec f ~ nomFonction).",
+      "Une fonction perso deja declaree (fonc nom(...){...}) peut etre utilisee comme une valeur : stockee dans une variable (f ~ doubler), passee en argument a une autre fonction, ou renvoyee avec retour.",
+      "Une fois stockee, elle s'appelle comme n'importe quelle fonction : f(5).",
+      "Limite actuelle : pas encore de fonction anonyme (lambda) ecrite directement dans une expression -- il faut d'abord la declarer avec fonc nom(...){...}, puis la faire circuler par son nom."
+    ], exemple: "fonc doubler(x){ retour x * 2 }\nf ~ doubler\naffi(f(5))          ->   10\naffi(est.fonction(f))   ->   VRAI\n\nfonc mapper(vecteur, f){\n    resultat ~ c()\n    pou(x dan vecteur){ resultat.ajout(f(x)) }\n    retour resultat\n}\naffi(mapper(c(1,2,3), doubler))   ->   2 4 6" },
   { noms: ["est.instance"], categorie: "Base", syntaxe: "est.instance(objet, NomClasse)", description: [
       "Verifie si objet est une instance de la classe NomClasse (comme isinstance(...) en Python).",
       "Renvoie aussi VRAI si objet est une instance d'une classe qui HERITE de NomClasse.",
@@ -4305,6 +4560,10 @@ function enregistrerFonctionsBase() {
         if (args.length !== 1) throw new Error("est.liste(...) attend exactement 1 argument");
         return estListe(await evalExpr(args[0], ctxExpr));
     };
+    fonctionsBase["est.fonction"] = fonctionsExpression["est.fonction"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("est.fonction(...) attend exactement 1 argument");
+        return estValeurFonction(await evalExpr(args[0], ctxExpr));
+    };
     // est.instance(objet, NomClasse) : VRAI si objet est une instance de NomClasse, ou d'une
     // classe qui en herite (comme isinstance(objet, NomClasse) en Python). Le 2e argument est
     // le NOM de la classe tel quel (pas evalue comme une expression : ce n'est pas une variable).
@@ -5176,9 +5435,12 @@ if (nomBase !== null) {
     if (modeConsoleCommande && val !== undefined) printValeur(formatValeur(val));
     return;
 }
-  // Si une fonction utilisateur (ou une classe, pour l'instancier) porte ce nom,
-  // elle masque complètement la commande intégrée.
-  if (Object.prototype.hasOwnProperty.call(fonctions, nom) || Object.prototype.hasOwnProperty.call(classes, nom)) {
+  // Si une fonction utilisateur (ou une classe, pour l'instancier) porte ce nom, ou qu'une
+  // VARIABLE de ce nom contient une valeur-fonction (recue en parametre, ou stockee avec
+  // f ~ nomFonction), elle masque complètement la commande intégrée.
+  let varAppelDirect = chercherVariable(nom);
+  let estAppelVariableFonction = varAppelDirect.trouve && estValeurFonction(varAppelDirect.valeur);
+  if (Object.prototype.hasOwnProperty.call(fonctions, nom) || Object.prototype.hasOwnProperty.call(classes, nom) || varAppelDirect.trouve) {
     let argsStr = matchAppel[2].trim();
     let argExprs = argsStr === "" ? [] : splitTopLevelComma(argsStr);
     let argsVals = [];
@@ -5188,10 +5450,13 @@ if (nomBase !== null) {
     // ligne (ex: "nomfonction(x)"), que ce soit dans la console OU en executant
     // un script (RUN) : plus besoin d'ecrire obligatoirement affi(nomfonction(x)).
     // Si la fonction ne renvoie rien (pasdefini), on ne l'affiche que si un "retour"
-    // vide figure EXPLICITEMENT dans son corps (fonctions[nom].aRetourVide) : sinon
-    // c'est juste une procedure sans valeur de retour, et on reste silencieux.
+    // vide figure EXPLICITEMENT dans son corps (fonctions[nom].aRetourVide, ou le corps
+    // de la valeur-fonction si l'appel se fait via une variable) : sinon c'est juste une
+    // procedure sans valeur de retour, et on reste silencieux.
     // (L'instanciation d'une classe renvoie toujours une instance, jamais pasdefini.)
-    let aRetourVide = Object.prototype.hasOwnProperty.call(fonctions, nom) ? fonctions[nom].aRetourVide : true;
+    let aRetourVide = Object.prototype.hasOwnProperty.call(fonctions, nom)
+      ? fonctions[nom].aRetourVide
+      : (estAppelVariableFonction ? estRetourVideDansCorps(varAppelDirect.valeur.corps) : true);
     if (doitAfficherResultatAppel(val, aRetourVide)) printValeur(await formatPourAffichage(val));
     return;
   }
@@ -5304,14 +5569,31 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
     let tokObj = tokens[index];
     let token = tokObj.texte;
     let ligneActuelle = tokObj.ligne;
+    ligneExpressionCourante = ligneActuelle;
 
     if (token === "}") return { index: index + 1, signal: null };
     if (token === "{") { index++; continue; }
 
     try {
       if (token.startsWith('fonc ')) {
-        // deja pre-enregistree : on saute simplement le bloc
+        // Fonction IMBRIQUEE (declaree a l'interieur d'un si/pou/tanqer/essai/autre fonc) :
+        // preRegistrerFonctions() ne la voit jamais au demarrage, car des qu'elle rencontre
+        // "fonc r(x){...}" au niveau superieur elle saute d'un bloc tout le CORPS de r pour
+        // continuer son scan -- elle ne descend donc jamais dans un fonc imbrique a
+        // l'interieur. Avant ce correctif, on arrivait ici en supposant a tort que la
+        // fonction etait deja enregistree, et on se contentait de sauter le bloc : la
+        // fonction n'existait donc nulle part, et l'appel qui suivait echouait avec
+        // "Fonction inconnue". On l'enregistre donc ici, au moment reel ou l'execution
+        // atteint cette ligne (elle devient alors utilisable, comme une fonction globale
+        // normale, y compris apres ce point dans le script).
+        let mFoncImbrique = token.match(/^fonc\s+(\w+)\(([^)]*)\)$/);
+        if (!mFoncImbrique) throw new ErreurLangage("Declaration de fonction mal formee : " + token, ligneActuelle);
+        let nomFoncImbrique = mFoncImbrique[1];
+        let paramsFoncImbrique = analyserListeParametres(mFoncImbrique[2], "fonc " + nomFoncImbrique + "(...)", ligneActuelle);
+        if (!tokens[index+1] || tokens[index+1].texte !== "{") throw new ErreurLangage("Manque { apres la definition de fonction " + nomFoncImbrique, ligneActuelle);
         let finBloc = trouverFinBloc(tokens, index + 2, ligneActuelle);
+        let corpsFoncImbrique = tokens.slice(index + 2, finBloc - 1);
+        fonctions[nomFoncImbrique] = { params: paramsFoncImbrique, corps: corpsFoncImbrique, aRetourVide: estRetourVideDansCorps(corpsFoncImbrique) };
         index = finBloc;
         continue;
       }
