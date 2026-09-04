@@ -876,7 +876,6 @@ function tokenizerExpr(str) {
     if (c === '[') { tokens.push({ type: '[' }); i++; continue; }
     if (c === ']') { tokens.push({ type: ']' }); i++; continue; }
     if (c === ':') { tokens.push({ type: 'deuxpoints' }); i++; continue; }
-    if (c === '~') { tokens.push({ type: 'tilde' }); i++; continue; }
     if (c === '=' && str[i+1] === '=') { tokens.push({ type: 'cmp', v: '==' }); i += 2; continue; }
     if (c === '!' && str[i+1] === '=') { tokens.push({ type: 'cmp', v: '!=' }); i += 2; continue; }
     if (c === '<' && str[i+1] === '=') { tokens.push({ type: 'cmp', v: '<=' }); i += 2; continue; }
@@ -1648,24 +1647,6 @@ async function evalExprSansEntreeAsync(str, ctx) {
   const peek = () => tokens[pos];
   const next = () => tokens[pos++];
 
-  // Analyse UN argument d'appel de fonction : soit "nom~expr" (argument NOMME, ex:
-  // f(ordre~|decroissant|)), soit une expression positionnelle classique. On ne
-  // reconnait "nom~expr" que si l'identifiant est IMMEDIATEMENT suivi de '~' -- une
-  // expression positionnelle qui commence par un identifiant (ex: une variable seule,
-  // ou un appel imbrique) n'est jamais suivie de '~' a cet endroit, donc aucune
-  // ambiguite. Renvoie soit la valeur brute (positionnel), soit
-  // {__argNomme:true, nom, valeur} (nomme), pour que appelerFonction/executerCorpsFonction
-  // sache lier chaque argument au bon parametre.
-  async function parseArgumentAppel() {
-    if (peek() && peek().type === 'ident' && tokens[pos + 1] && tokens[pos + 1].type === 'tilde') {
-      let nomParam = next().v; // l'identifiant
-      next(); // '~'
-      let valeur = await parseOr();
-      return { __argNomme: true, nom: nomParam, valeur: valeur };
-    }
-    return await parseOr();
-  }
-
   async function parseOr() {
     let g = await parseAnd();
     while (peek() && peek().type === 'or') { next(); let d = await parseAnd(); g = estVrai(g) || estVrai(d); }
@@ -1753,8 +1734,8 @@ async function evalExprSansEntreeAsync(str, ctx) {
           next(); // '('
           let args = [];
           if (!(peek() && peek().type === ')')) {
-            args.push(await parseArgumentAppel());
-            while (peek() && peek().type === ',') { next(); args.push(await parseArgumentAppel()); }
+            args.push(await parseOr());
+            while (peek() && peek().type === ',') { next(); args.push(await parseOr()); }
           }
           if (!peek() || peek().type !== ')') throw new Error("Parenthese fermante manquante pour l'appel de " + nomSuivant);
           next();
@@ -1838,8 +1819,8 @@ async function evalExprSansEntreeAsync(str, ctx) {
         next(); // '('
         let args = [];
         if (!(peek() && peek().type === ')')) {
-          args.push(await parseArgumentAppel());
-          while (peek() && peek().type === ',') { next(); args.push(await parseArgumentAppel()); }
+          args.push(await parseOr());
+          while (peek() && peek().type === ',') { next(); args.push(await parseOr()); }
         }
         if (!peek() || peek().type !== ')') throw new Error("Parenthese fermante manquante pour l'appel de parent." + nomMethode);
         next();
@@ -1858,8 +1839,8 @@ async function evalExprSansEntreeAsync(str, ctx) {
         next();
         let args = [];
         if (!(peek() && peek().type === ')')) {
-          args.push(await parseArgumentAppel());
-          while (peek() && peek().type === ',') { next(); args.push(await parseArgumentAppel()); }
+          args.push(await parseOr());
+          while (peek() && peek().type === ',') { next(); args.push(await parseOr()); }
         }
         if (!peek() || peek().type !== ')') throw new Error("Parenthese fermante manquante pour l'appel de " + t.v);
         next();
@@ -2738,52 +2719,18 @@ function formatMatrice(m) {
 // une methode de classe, la classe qui DEFINIT reellement le corps execute (utile pour
 // parent.methode(...) : voir getClasseCourante ci-dessous).
 async function executerCorpsFonction(params, corps, argsVals, nomPourErreur, classeCourante) {
-  // Separe les arguments NOMMES (nom~valeur a l'appel, ex: f(ordre~|decroissant|), reconnus
-  // par parseArgumentAppel() dans le parseur d'expression et recus ici sous la forme
-  // {__argNomme:true, nom, valeur}) des arguments POSITIONNELS classiques.
-  let argsPositionnels = [], argsNommes = {};
-  for (let a of argsVals) {
-    if (a !== null && typeof a === 'object' && a.__argNomme === true) {
-      if (Object.prototype.hasOwnProperty.call(argsNommes, a.nom)) {
-        throw new Error((nomPourErreur || "Cette fonction") + " : l'argument \"" + a.nom + "\" est fourni plusieurs fois par nom");
-      }
-      argsNommes[a.nom] = a.valeur;
-    } else {
-      argsPositionnels.push(a);
-    }
-  }
-
-  // Un parametre AVEC valeur par defaut (nom~expr dans la declaration) peut etre omis a
-  // l'appel -- seuls les parametres SANS valeur par defaut sont obligatoires. Un parametre
-  // "nomSeul" (place apres "*" dans la declaration, voir analyserListeParametres) ne peut
-  // JAMAIS recevoir de valeur positionnelle : seuls les parametres non-nomSeul comptent
-  // comme "capacite positionnelle".
-  let paramsPositionnels = params.filter(p => !p.nomSeul);
+  // Un parametre AVEC valeur par defaut (nom~expr dans la declaration, ex: fonc trier(x,
+  // ordre~|croissant|){...}) peut etre omis a l'appel -- seuls les parametres SANS valeur
+  // par defaut sont obligatoires. analyserListeParametres() garantit deja, a la
+  // declaration, que les parametres avec defaut viennent tous apres ceux sans, donc "nombre
+  // de parametres obligatoires" = position du premier parametre avec defaut.
   let nbRequis = params.filter(p => p.defautExpr === null).length;
-  if (argsPositionnels.length > paramsPositionnels.length) {
+  if (argsVals.length < nbRequis || argsVals.length > params.length) {
     let attendu = (nbRequis === params.length) ? String(params.length) : (nbRequis + " a " + params.length);
     throw new Error((nomPourErreur || "Cette fonction") + " attend " + attendu + " argument(s), " + argsVals.length + " fourni(s)");
   }
-
   let scope = {};
-  argsPositionnels.forEach((v, idx) => { scope[paramsPositionnels[idx].nom] = v; });
-  for (let nomFourni in argsNommes) {
-    let paramCorrespondant = params.find(p => p.nom === nomFourni);
-    if (!paramCorrespondant) {
-      throw new Error((nomPourErreur || "Cette fonction") + " n'a pas de parametre \"" + nomFourni + "\"");
-    }
-    if (Object.prototype.hasOwnProperty.call(scope, nomFourni)) {
-      throw new Error((nomPourErreur || "Cette fonction") + " : le parametre \"" + nomFourni + "\" est deja fourni positionnellement, impossible de le fournir aussi par nom");
-    }
-    scope[nomFourni] = argsNommes[nomFourni];
-  }
-
-  let manquants = params.filter(p => p.defautExpr === null && !Object.prototype.hasOwnProperty.call(scope, p.nom));
-  if (manquants.length > 0) {
-    let attendu = (nbRequis === params.length) ? String(params.length) : (nbRequis + " a " + params.length);
-    throw new Error((nomPourErreur || "Cette fonction") + " attend " + attendu + " argument(s), " + argsVals.length + " fourni(s) (manque : " + manquants.map(p => p.nom).join(", ") + ")");
-  }
-
+  params.forEach((p, idx) => { if (idx < argsVals.length) scope[p.nom] = argsVals[idx]; });
   if (classeCourante) scope['__classeCourante'] = classeCourante;
   // PORTEE LEXICALE : on isole completement la pile pour cet appel. On ne garde QUE le
   // scope global (scopes[0]) + ce nouveau scope local — jamais les scopes intermediaires
@@ -2796,14 +2743,11 @@ async function executerCorpsFonction(params, corps, argsVals, nomPourErreur, cla
   scopes = [pilePrecedente[0], scope];
   let resultat;
   try {
-    // Valeurs par defaut des parametres NON fournis (ni positionnellement, ni par nom) :
-    // evaluees maintenant, DANS le scope de la fonction (deja empile ci-dessus), ce qui
-    // permet a une valeur par defaut de referencer un parametre precedent deja affecte
-    // (ex: fonc f(a, b~a){...}).
-    for (let p of params) {
-      if (!Object.prototype.hasOwnProperty.call(scope, p.nom)) {
-        scope[p.nom] = await evalExpr(p.defautExpr, ctxExpr);
-      }
+    // Valeurs par defaut des parametres NON fournis a l'appel : evaluees maintenant, DANS
+    // le scope de la fonction (deja empile ci-dessus), ce qui permet a une valeur par
+    // defaut de referencer un parametre precedent deja affecte (ex: fonc f(a, b~a){...}).
+    for (let idx = argsVals.length; idx < params.length; idx++) {
+      scope[params[idx].nom] = await evalExpr(params[idx].defautExpr, ctxExpr);
     }
     let res = await executerTokens(corps, 0, corps.length);
     resultat = (res.signal && res.signal.type === 'retour') ? res.signal.valeur : undefined;
@@ -2924,45 +2868,25 @@ function estRetourVideDansCorps(corps) {
 }
 
 // Analyse la liste de parametres d'une declaration de fonction/methode (ex: "x, ordre~|croissant|")
-// en une liste d'objets {nom, defautExpr, nomSeul}. Un parametre AVEC valeur par defaut
-// (nom~expr, meme syntaxe ~ que pour une affectation) devient facultatif a l'appel -- s'il
-// est omis, defautExpr est evalue au moment de l'appel (voir executerCorpsFonction).
-// splitTopLevelComma est reutilise pour ne pas couper une virgule presente a l'interieur
-// d'un texte litteral |...| utilise comme valeur par defaut (ex: ordre~|valeur, avec virgule|).
-//
-// "*" seul dans la liste (ex: "a, *, b") separe les parametres POSITIONNELS (avant, remplis
-// par position OU par nom a l'appel) des parametres NOMMES UNIQUEMENT (apres : nomSeul=true,
-// ne peuvent JAMAIS etre remplis par position, seulement via nom~valeur a l'appel -- comme
-// apres un "*" en Python). Ca permet a un parametre obligatoire de venir apres un parametre
-// avec defaut sans ambiguite : fonc f(a~1, *, b){...} — b est obligatoire mais seulement
-// accessible par f(b~5), jamais par simple position.
-//
-// Regle d'ordre (defaut avant obligatoire) : ne s'applique qu'aux parametres POSITIONNELS,
-// puisque ce sont les seuls dont la position compte a l'appel.
+// en une liste d'objets {nom, defautExpr}. Un parametre AVEC valeur par defaut (nom~expr,
+// meme syntaxe ~ que pour une affectation) devient facultatif a l'appel -- s'il est omis,
+// defautExpr est evalue au moment de l'appel (voir executerCorpsFonction). splitTopLevelComma
+// est reutilise pour ne pas couper une virgule presente a l'interieur d'un texte litteral
+// |...| utilise comme valeur par defaut (ex: ordre~|valeur, avec virgule|). Les parametres
+// avec defaut doivent tous venir apres ceux sans, comme en Python.
 function analyserListeParametres(str, contexteErreur, ligneErreur) {
   if (str.trim() === "") return [];
   let parties = splitTopLevelComma(str);
-  let params = [], nomSeulActif = false, etoileVue = false;
-  for (let i = 0; i < parties.length; i++) {
-    let part = parties[i];
-    if (part === "*") {
-      if (etoileVue) throw new ErreurLangage("Dans " + contexteErreur + " : \"*\" ne peut apparaitre qu'une seule fois", ligneErreur);
-      if (i === parties.length - 1) throw new ErreurLangage("Dans " + contexteErreur + " : \"*\" doit etre suivi d'au moins un parametre (les parametres places apres * doivent etre fournis par nom a l'appel, ex: f(b~5))", ligneErreur);
-      etoileVue = true; nomSeulActif = true;
-      continue;
-    }
+  let params = parties.map(part => {
     let mDefaut = part.match(/^(\w+)\s*~\s*(.+)$/);
-    if (mDefaut) params.push({ nom: mDefaut[1], defautExpr: mDefaut[2].trim(), nomSeul: nomSeulActif });
-    else {
-      if (!/^\w+$/.test(part)) throw new ErreurLangage("Parametre invalide dans " + contexteErreur + " : \"" + part + "\"", ligneErreur);
-      params.push({ nom: part, defautExpr: null, nomSeul: nomSeulActif });
-    }
-  }
+    if (mDefaut) return { nom: mDefaut[1], defautExpr: mDefaut[2].trim() };
+    if (!/^\w+$/.test(part)) throw new ErreurLangage("Parametre invalide dans " + contexteErreur + " : \"" + part + "\"", ligneErreur);
+    return { nom: part, defautExpr: null };
+  });
   let vuDefaut = false;
   for (let p of params) {
-    if (p.nomSeul) continue; // pas de contrainte d'ordre : jamais rempli par position
     if (p.defautExpr !== null) vuDefaut = true;
-    else if (vuDefaut) throw new ErreurLangage("Dans " + contexteErreur + " : le parametre \"" + p.nom + "\" (sans valeur par defaut) ne peut pas venir apres un parametre qui en a une, sauf apres \"*\" (parametre nomme uniquement)", ligneErreur);
+    else if (vuDefaut) throw new ErreurLangage("Dans " + contexteErreur + " : le parametre \"" + p.nom + "\" (sans valeur par defaut) ne peut pas venir apres un parametre qui en a une", ligneErreur);
   }
   return params;
 }
@@ -3337,13 +3261,10 @@ let aideCommandes = [
       "Toujours place juste apres un essai{...}, jamais seul.",
       "Ne peut pas empecher un arret manuel du script (bouton Retour pendant l'execution) : cela remonte toujours en dehors de essai/attrape."
     ], exemple: "essai {\n    ecrire.fichier(|/storage/emulated/0/Download/save.mld|, moi)\n} attrape(msg) {\n    affi(|Echec de sauvegarde :|, msg)\n}" },
-  { noms: ["fonc"], categorie: "Controle", syntaxe: "fonc nom(param1, param2~defaut, *, param3){ ... }", description: [
+  { noms: ["fonc"], categorie: "Controle", syntaxe: "fonc nom(param1, param2){ ... }", description: [
       "Definit une fonction reutilisable, avec un nom et des parametres.",
-      "Le bloc entre accolades s'execute a chaque appel de la fonction.",
-      "param~valeur : valeur par defaut, rend le parametre facultatif a l'appel.",
-      "A l'appel, un parametre peut aussi etre fourni par NOM : f(param1~5) (dans n'importe quel ordre).",
-      "* dans la liste des parametres : tout ce qui suit doit etre fourni par nom (jamais par position)."
-    ], exemple: "fonc carre(x){ retour x*x }\naffi(carre(5))   ->   25\n\nfonc puis(x, exposant~2){ retour x^exposant }\naffi(puis(3))              ->   9\naffi(puis(3, exposant~3))  ->   27" },
+      "Le bloc entre accolades s'execute a chaque appel de la fonction."
+    ], exemple: "fonc carre(x){ retour x*x }\naffi(carre(5))   ->   25" },
   { noms: ["retour"], categorie: "Controle", syntaxe: "retour valeur", description: [
       "Arrete l'execution de la fonction et renvoie la valeur donnee comme resultat de l'appel.",
       "La valeur renvoyee peut etre un nombre, mais aussi un vecteur ou une matrice (comme en R).",
