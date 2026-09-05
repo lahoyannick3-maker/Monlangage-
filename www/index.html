@@ -354,6 +354,15 @@ affi(|Bonjour |, nom)</textarea>
 <script>
 /* ===================== ETAT GLOBAL ===================== */
               let scopes = [{}];   // pile de portees pour les variables (globale + fonctions)
+let profondeurAppel = 0;   // nombre d'appels de fonction Monlangage actuellement imbriques
+// Limite volontaire pour eviter qu'une recursion infinie (ex: fonc f(n){retour f(n)} oublie
+// son cas d'arret) ne fasse planter tout l'interpreteur avec un "Maximum call stack size
+// exceeded" JS brut, illisible. Cette limite doit rester nettement en dessous de la
+// profondeur JS reelle que le navigateur supporte (chaque appel Monlangage consomme plusieurs
+// niveaux d'appels JS internes : evalExpr, executerTokens, executerCorpsFonction...), pour que
+// l'erreur claire ci-dessous se declenche AVANT le crash JS. Augmentable si besoin.
+const PROFONDEUR_APPEL_MAX_DEFAUT = 500;
+let PROFONDEUR_APPEL_MAX = PROFONDEUR_APPEL_MAX_DEFAUT;   // ajustable via limiteRecursion(n)
 let fonctions = {};      // fonctions ~ { nom: {params:[...], corps:[tokens...] } }
 let classes = {};        // classes ~ { nom: {methodes: {nomMethode: {params:[...], corps:[tokens...]}}} }
 let fonctionsBase = {};
@@ -364,7 +373,7 @@ let fonctionsExpression = {};   // sous-ensemble de fonctionsBase utilisable dir
 // numero de ligne propre (il est fabrique a partir de tokens d'expression, qui n'en portent
 // pas), donc on reutilise la derniere ligne source reellement executee.
 let ligneExpressionCourante = 0;
-let commandes = ["affi", "pou", "tanqer", "stop", "continu", "si", "sinon", "sision", "essai", "attrape", "fonc", "retour", "entr", "c", "liste", "texte", "seq", "rep", "alea", "ralea", "matrice", "lon", "dim", "som", "moy", "var", "sd", "max", "min", "suchaq", "det", "trace", "trans", "aide", "base", "effa", "voi", "lettr", "Lettr", "VRAI", "FAUX", "pasdefini", "ecrire", "lire", "ajout"];
+let commandes = ["affi", "pou", "tanqer", "stop", "continu", "si", "sinon", "sision", "essai", "attrape", "fonc", "retour", "entr", "c", "liste", "texte", "seq", "rep", "alea", "ralea", "matrice", "lon", "dim", "limiteRecursion", "entier", "reel", "som", "moy", "var", "sd", "max", "min", "suchaq", "det", "trace", "trans", "aide", "base", "effa", "voi", "lettr", "Lettr", "VRAI", "FAUX", "pasdefini", "ecrire", "lire", "ajout"];
 
 let outputDiv = document.getElementById("output");
 let codeArea = document.getElementById("code");
@@ -876,6 +885,7 @@ function tokenizerExpr(str) {
     if (c === '[') { tokens.push({ type: '[' }); i++; continue; }
     if (c === ']') { tokens.push({ type: ']' }); i++; continue; }
     if (c === ':') { tokens.push({ type: 'deuxpoints' }); i++; continue; }
+    if (c === '~') { tokens.push({ type: 'tilde' }); i++; continue; }
     if (c === '=' && str[i+1] === '=') { tokens.push({ type: 'cmp', v: '==' }); i += 2; continue; }
     if (c === '!' && str[i+1] === '=') { tokens.push({ type: 'cmp', v: '!=' }); i += 2; continue; }
     if (c === '<' && str[i+1] === '=') { tokens.push({ type: 'cmp', v: '<=' }); i += 2; continue; }
@@ -1076,7 +1086,15 @@ function construireFonctionAnonyme(tokens, pos) {
     __fonction: true,
     nom: null,
     params: params,
-    corps: [{ texte: "retour " + corpsTexte, ligne: ligneExpressionCourante }]
+    corps: [{ texte: "retour " + corpsTexte, ligne: ligneExpressionCourante }],
+    // CLOSURE : capture une reference vers la pile de portees ACTIVE au moment ou cette
+    // fonction anonyme est CREEE (pas ou elle sera appelee plus tard -- c'est toute la
+    // difference entre portee lexicale et portee dynamique). scopes.slice() copie le
+    // TABLEAU (donc l'ordre des portees a cet instant est fige), mais chaque element reste
+    // une reference vers le MEME objet-portee : si la fonction englobante modifie ensuite
+    // une de ses variables locales, la fonction anonyme la voit -- exactement comme n ~ n+1
+    // reste visible d'un appel a l'autre dans "fonc creerCompteur(){ n~0 retour fonc(){...} }".
+    environnement: scopes.slice()
   };
   return { valeur: valeur, pos: finCorps };
 }
@@ -1653,6 +1671,18 @@ async function evalExprSansEntreeAsync(str, ctx) {
     while (peek() && peek().type === 'or') { next(); let d = await parseAnd(); g = estVrai(g) || estVrai(d); }
     return g;
   }
+  // Lit UN argument d'appel de fonction : soit nomParam~expr (argument nomme, style Monlangage,
+  // meme ~ que les affectations), soit une expression normale. On ne consomme le nom+tilde
+  // que si ce motif EXACT est present juste ici, pour ne jamais gener un identifiant qui serait
+  // simplement une variable normale passee en argument positionnel.
+  async function lireArgument() {
+    if (peek() && peek().type === 'ident' && tokens[pos + 1] && tokens[pos + 1].type === 'tilde') {
+      let nomArg = next().v; // ident
+      next(); // tilde
+      return { __argNomme: nomArg, valeur: await parseOr() };
+    }
+    return await parseOr();
+  }
   async function parseAnd() {
     let g = await parseDan();
     while (peek() && peek().type === 'and') { next(); let d = await parseDan(); g = estVrai(g) && estVrai(d); }
@@ -1735,8 +1765,8 @@ async function evalExprSansEntreeAsync(str, ctx) {
           next(); // '('
           let args = [];
           if (!(peek() && peek().type === ')')) {
-            args.push(await parseOr());
-            while (peek() && peek().type === ',') { next(); args.push(await parseOr()); }
+            args.push(await lireArgument());
+            while (peek() && peek().type === ',') { next(); args.push(await lireArgument()); }
           }
           if (!peek() || peek().type !== ')') throw new Error("Parenthese fermante manquante pour l'appel de " + nomSuivant);
           next();
@@ -1821,8 +1851,8 @@ async function evalExprSansEntreeAsync(str, ctx) {
         next(); // '('
         let args = [];
         if (!(peek() && peek().type === ')')) {
-          args.push(await parseOr());
-          while (peek() && peek().type === ',') { next(); args.push(await parseOr()); }
+          args.push(await lireArgument());
+          while (peek() && peek().type === ',') { next(); args.push(await lireArgument()); }
         }
         if (!peek() || peek().type !== ')') throw new Error("Parenthese fermante manquante pour l'appel de parent." + nomMethode);
         next();
@@ -1841,8 +1871,8 @@ async function evalExprSansEntreeAsync(str, ctx) {
         next();
         let args = [];
         if (!(peek() && peek().type === ')')) {
-          args.push(await parseOr());
-          while (peek() && peek().type === ',') { next(); args.push(await parseOr()); }
+          args.push(await lireArgument());
+          while (peek() && peek().type === ',') { next(); args.push(await lireArgument()); }
         }
         if (!peek() || peek().type !== ')') throw new Error("Parenthese fermante manquante pour l'appel de " + t.v);
         next();
@@ -1901,7 +1931,8 @@ function nomNature(v) {
   if (estListe(v)) return "liste";
   if (estVecteur(v)) return "vecteur";
   if (typeof v === "boolean") return "booleen";
-  if (typeof v === "number") return "nombre";
+  if (typeof v === "bigint") return "entier";
+  if (typeof v === "number") return "reel";
   if (typeof v === "string") return "texte";
   if (estValeurFonction(v)) return "fonction";
   // Instance de classe : natu(a) renvoie le nom de sa classe (comme type(a).__name__ en Python),
@@ -1920,6 +1951,7 @@ function nomRacine(n) { return "racine" + (n === 2 ? "" : n); }
 // Calcule la racine n-ieme d'un nombre. Les racines d'indice impair sont definies pour les
 // nombres negatifs (ex: racine3(-8) = -2) ; les racines d'indice pair ne le sont pas.
 function racineNieme(n, x) {
+  if (typeof x === 'bigint') x = Number(x); // resultat generalement irrationnel de toute facon : pas d'exactitude a preserver, comme math.sqrt(10**30) en Python
   if (typeof x !== 'number') throw new Error(nomRacine(n) + "(...) attend un nombre, un vecteur ou une matrice de nombres");
   if (!Number.isFinite(n) || n === 0) throw new Error(nomRacine(n) + "(...) : indice de racine invalide");
   if (x < 0) {
@@ -2005,6 +2037,21 @@ function verifierNombre(v, operateur) {
 // renvoie un booleen, un vecteur de booleens, ou une matrice de booleens.
 function combinerComparaison(g, d, op) {
   function cmp2(a, b) {
+    // Un grand entier (bigint) et un nombre normal (number) sont deux types JS distincts :
+    // "5n === 5" vaut FAUX malgre l'egalite numerique (=== ne convertit jamais). On utilise
+    // donc == (avec conversion) uniquement quand un des deux cotes est un grand entier -- les
+    // operateurs relationnels (<,>,<=,>=) n'ont pas ce probleme, JS les compare nativement
+    // entre bigint et number sans erreur.
+    if (typeof a === 'bigint' || typeof b === 'bigint') {
+      switch (op) {
+        case '==': return a == b;
+        case '!=': return a != b;
+        case '<': return a < b;
+        case '>': return a > b;
+        case '<=': return a <= b;
+        case '>=': return a >= b;
+      }
+    }
     switch (op) {
       case '==': return a === b;
       case '!=': return a !== b;
@@ -2058,7 +2105,19 @@ function testerAppartenance(g, d) {
 // '+' et '-' : element par element sur vecteurs/matrices (avec recyclage pour les vecteurs,
 // comme en R), broadcast d'un scalaire, ou operation classique entre deux nombres.
 function combinerAddition(g, d, op) {
-  function combiner2(a, b) { return op === '+' ? a + b : a - b; }
+  function combiner2(a, b) {
+    if (typeof a === 'bigint' && typeof b === 'bigint') return op === '+' ? a + b : a - b;
+    if (typeof a === 'bigint' || typeof b === 'bigint') {
+      // Melange grand entier + nombre normal : JS interdit de melanger bigint et number dans
+      // un operateur ("1n + 1" leve une TypeError), donc on convertit le grand entier en
+      // nombre normal pour l'operation -- meme choix que Python quand on mele int et float
+      // (le resultat redevient flottant, et peut perdre en precision au-dela de 2^53 si le
+      // grand entier etait tres grand ; c'est le compromis assume, voir reel(...)).
+      let af = typeof a === 'bigint' ? Number(a) : a, bf = typeof b === 'bigint' ? Number(b) : b;
+      return op === '+' ? af + bf : af - bf;
+    }
+    return op === '+' ? a + b : a - b;
+  }
 
   if (estMatrice(g) || estMatrice(d)) {
     if (estMatrice(g) && estMatrice(d)) {
@@ -2088,9 +2147,38 @@ function combinerAddition(g, d, op) {
 // '*', '/', 'MOD' (%), 'ENTI' (division entiere) : element par element sur vecteurs/matrices
 // (avec recyclage pour les vecteurs, comme en R), broadcast d'un scalaire, ou operation
 // classique entre deux nombres. Meme logique que combinerAddition mais pour ces operateurs.
+// Division entiere (floor) pour deux grands entiers : BigInt "/" tronque nativement vers
+// zero (ex: -7n/2n = -3n), alors que l'operateur enti() sur les nombres normaux utilise
+// Math.floor(a/b) (floor vers le bas, ex: Math.floor(-7/2) = -4). On ajuste pour garder le
+// MEME comportement (floor) entre les deux types.
+function diviserEntierBigInt(a, b) {
+  let q = a / b, r = a % b;
+  if (r !== 0n && ((r < 0n) !== (b < 0n))) q -= 1n;
+  return q;
+}
 function combinerMultiplication(g, d, op) {
   function combiner2(a, b) {
     verifierNombre(a, op); verifierNombre(b, op);
+    if (typeof a === 'bigint' && typeof b === 'bigint') {
+      if (b === 0n && (op === '/' || op === '%' || op === 'enti')) throw new Error("division par zero");
+      switch (op) {
+        case '*': return a * b;
+        case '/': return Number(a) / Number(b); // division "vraie" : toujours flottante, comme / entre deux int en Python
+        case '%': return a % b;
+        case 'enti': return diviserEntierBigInt(a, b);
+      }
+    }
+    if (typeof a === 'bigint' || typeof b === 'bigint') {
+      // Melange : meme choix que combinerAddition, on retombe sur un nombre normal.
+      let af = typeof a === 'bigint' ? Number(a) : a, bf = typeof b === 'bigint' ? Number(b) : b;
+      if (bf === 0 && (op === '/' || op === '%' || op === 'enti')) throw new Error("division par zero");
+      switch (op) {
+        case '*': return af * bf;
+        case '/': return af / bf;
+        case '%': return af % bf;
+        case 'enti': return Math.floor(af / bf);
+      }
+    }
     if (b === 0 && (op === '/' || op === '%' || op === 'enti')) throw new Error("division par zero");
     switch (op) {
       case '*': return a * b;
@@ -2128,7 +2216,18 @@ function combinerMultiplication(g, d, op) {
 // '^' : puissance, element par element sur vecteurs/matrices (avec recyclage pour les
 // vecteurs, comme en R), broadcast d'un scalaire, ou operation classique entre deux nombres.
 function combinerPuissance(g, d) {
-  function combiner2(a, b) { verifierNombre(a, '^'); verifierNombre(b, '^'); return Math.pow(a, b); }
+  function combiner2(a, b) {
+    verifierNombre(a, '^'); verifierNombre(b, '^');
+    if (typeof a === 'bigint' && typeof b === 'bigint') {
+      // Exposant negatif : pas de resultat entier exact possible (1/x), on retombe sur un flottant.
+      if (b < 0n) return Math.pow(Number(a), Number(b));
+      return a ** b; // exact, sans limite de precision -- l'interet principal de entier(...)
+    }
+    if (typeof a === 'bigint' || typeof b === 'bigint') {
+      return Math.pow(typeof a === 'bigint' ? Number(a) : a, typeof b === 'bigint' ? Number(b) : b);
+    }
+    return Math.pow(a, b);
+  }
 
   if (estMatrice(g) || estMatrice(d)) {
     if (estMatrice(g) && estMatrice(d)) {
@@ -2190,21 +2289,42 @@ function produitMatriciel(g, d) {
 }
 
 // som(v) : somme des elements d'un vecteur (ou d'une matrice, elements confondus).
+// Convertit un nombre normal OU un grand entier vers un entier JS normal, pour les usages
+// ou l'exactitude au-dela de 2^53 n'a de toute facon aucun sens pratique (borne d'un tirage
+// aleatoire, taille de tableau...) : Math.trunc() seul rejette un bigint (TypeError), d'ou ce
+// petit helper commun.
+function versEntierUsage(v, nomFonction) {
+  if (typeof v === 'bigint') return Number(v);
+  if (typeof v === 'number') return Math.trunc(v);
+  throw new Error(nomFonction + " attend un nombre");
+}
+
 function sommeVecteur(v) {
   if (estMatrice(v)) v = v.donnees;
-  if (!estVecteur(v)) { if (typeof v === 'number') return v; throw new Error("som(...) attend un vecteur"); }
-  let s = 0;
-  for (let e of v) { if (typeof e !== 'number') throw new Error("som(...) : tous les elements doivent etre numeriques"); s += e; }
+  if (!estVecteur(v)) { if (typeof v === 'number' || typeof v === 'bigint') return v; throw new Error("som(...) attend un vecteur"); }
+  for (let e of v) if (typeof e !== 'number' && typeof e !== 'bigint') throw new Error("som(...) : tous les elements doivent etre numeriques");
+  // Vecteur ENTIEREMENT compose de grands entiers : la somme reste exacte (bigint). Des que
+  // le vecteur melange grand entier et nombre normal, on retombe sur un flottant (meme regle
+  // que les operateurs +/- : voir combinerAddition).
+  let toutBigint = v.length > 0 && v.every(e => typeof e === 'bigint');
+  let s = toutBigint ? 0n : 0;
+  for (let e of v) s += toutBigint ? e : (typeof e === 'bigint' ? Number(e) : e);
   return s;
 }
 
 // moy(v) : moyenne (arithmetique) des elements d'un vecteur (ou d'une matrice, elements confondus).
 function moyenneVecteur(v) {
   if (estMatrice(v)) v = v.donnees;
-  if (!estVecteur(v)) { if (typeof v === 'number') return v; throw new Error("moy(...) attend un vecteur"); }
+  if (!estVecteur(v)) { if (typeof v === 'number' || typeof v === 'bigint') return Number(v); throw new Error("moy(...) attend un vecteur"); }
   if (v.length === 0) throw new Error("moy(...) : le vecteur est vide");
+  // Une moyenne divise presque toujours de façon non entiere : le resultat reste un nombre
+  // normal meme pour un vecteur de grands entiers (comme en Python, la moyenne d'entiers
+  // n'a aucune raison de rester un entier).
   let s = 0;
-  for (let e of v) { if (typeof e !== 'number') throw new Error("moy(...) : tous les elements doivent etre numeriques"); s += e; }
+  for (let e of v) {
+    if (typeof e !== 'number' && typeof e !== 'bigint') throw new Error("moy(...) : tous les elements doivent etre numeriques");
+    s += typeof e === 'bigint' ? Number(e) : e;
+  }
   return s / v.length;
 }
 
@@ -2215,7 +2335,11 @@ function varianceVecteur(v) {
   if (v.length < 2) throw new Error("var(...) : il faut au moins 2 valeurs pour calculer une variance (recu " + v.length + ")");
   let m = moyenneVecteur(v);
   let s = 0;
-  for (let e of v) { if (typeof e !== 'number') throw new Error("var(...) : tous les elements doivent etre numeriques"); s += (e - m) * (e - m); }
+  for (let e of v) {
+    if (typeof e !== 'number' && typeof e !== 'bigint') throw new Error("var(...) : tous les elements doivent etre numeriques");
+    let ef = typeof e === 'bigint' ? Number(e) : e;
+    s += (ef - m) * (ef - m);
+  }
   return s / (v.length - 1);
 }
 
@@ -2237,7 +2361,7 @@ function agregerMinMax(valeurs, nom, plusExtreme) {
   if (plat.length === 0) throw new Error(nom + "(...) attend au moins un argument");
   let res = plat[0];
   for (let e of plat) {
-    if (typeof e !== 'number') throw new Error(nom + "(...) : tous les elements doivent etre numeriques");
+    if (typeof e !== 'number' && typeof e !== 'bigint') throw new Error(nom + "(...) : tous les elements doivent etre numeriques");
     if (plusExtreme(e, res)) res = e;
   }
   return res;
@@ -2762,20 +2886,50 @@ function formatMatrice(m) {
 // methodes de classe (moi + autres parametres). classeCourante (facultatif) memorise, pour
 // une methode de classe, la classe qui DEFINIT reellement le corps execute (utile pour
 // parent.methode(...) : voir getClasseCourante ci-dessous).
-async function executerCorpsFonction(params, corps, argsVals, nomPourErreur, classeCourante) {
-  // Un parametre AVEC valeur par defaut (nom~expr dans la declaration, ex: fonc trier(x,
-  // ordre~|croissant|){...}) peut etre omis a l'appel -- seuls les parametres SANS valeur
-  // par defaut sont obligatoires. analyserListeParametres() garantit deja, a la
-  // declaration, que les parametres avec defaut viennent tous apres ceux sans, donc "nombre
-  // de parametres obligatoires" = position du premier parametre avec defaut.
-  let nbRequis = params.filter(p => p.defautExpr === null).length;
-  if (argsVals.length < nbRequis || argsVals.length > params.length) {
-    let attendu = (nbRequis === params.length) ? String(params.length) : (nbRequis + " a " + params.length);
-    throw new Error((nomPourErreur || "Cette fonction") + " attend " + attendu + " argument(s), " + argsVals.length + " fourni(s)");
+async function executerCorpsFonction(params, corps, argsVals, nomPourErreur, classeCourante, environnementCapture) {
+  // Separe les arguments fournis en POSITIONNELS (valeurs simples, dans l'ordre) et NOMMES
+  // (objets {__argNomme, valeur} produits par lireArgument() quand l'appel utilise nom~valeur,
+  // ex: text(b~5)). Un meme nom fourni deux fois est une erreur.
+  let positionnels = [];
+  let nommes = {};
+  for (let a of argsVals) {
+    if (a !== null && typeof a === 'object' && Object.prototype.hasOwnProperty.call(a, '__argNomme')) {
+      if (Object.prototype.hasOwnProperty.call(nommes, a.__argNomme)) {
+        throw new Error((nomPourErreur || "Cette fonction") + " : argument nomme \"" + a.__argNomme + "\" fourni deux fois");
+      }
+      nommes[a.__argNomme] = a.valeur;
+    } else {
+      positionnels.push(a);
+    }
+  }
+
+  // Seuls les parametres NON *nomSeul sont remplissables par position.
+  let paramsPositionnels = params.filter(p => !p.nomSeul);
+  let nbRequisPositionnels = paramsPositionnels.filter(p => p.defautExpr === null).length;
+  if (positionnels.length < nbRequisPositionnels || positionnels.length > paramsPositionnels.length) {
+    let attendu = (nbRequisPositionnels === paramsPositionnels.length) ? String(paramsPositionnels.length) : (nbRequisPositionnels + " a " + paramsPositionnels.length);
+    throw new Error((nomPourErreur || "Cette fonction") + " attend " + attendu + " argument(s) positionnel(s), " + positionnels.length + " fourni(s)");
   }
   let scope = {};
-  params.forEach((p, idx) => { if (idx < argsVals.length) scope[p.nom] = argsVals[idx]; });
+  paramsPositionnels.forEach((p, idx) => { if (idx < positionnels.length) scope[p.nom] = positionnels[idx]; });
+
+  // Applique les arguments nommes : erreur si le nom ne correspond a aucun parametre, ou s'il
+  // a deja ete rempli par position (conflit).
+  for (let nomArg of Object.keys(nommes)) {
+    let param = params.find(p => p.nom === nomArg);
+    if (!param) throw new Error((nomPourErreur || "Cette fonction") + " : parametre inconnu \"" + nomArg + "\"");
+    if (Object.prototype.hasOwnProperty.call(scope, nomArg)) {
+      throw new Error((nomPourErreur || "Cette fonction") + " : \"" + nomArg + "\" fourni a la fois par position et par nom");
+    }
+    scope[nomArg] = nommes[nomArg];
+  }
+
   if (classeCourante) scope['__classeCourante'] = classeCourante;
+  profondeurAppel++;
+  if (profondeurAppel > PROFONDEUR_APPEL_MAX) {
+    profondeurAppel--;
+    throw new Error((nomPourErreur || "Cette fonction") + " : plus de " + PROFONDEUR_APPEL_MAX + " appels imbriques -- recursion probablement infinie (cas d'arret manquant ou jamais atteint)");
+  }
   // PORTEE LEXICALE : on isole completement la pile pour cet appel. On ne garde QUE le
   // scope global (scopes[0]) + ce nouveau scope local — jamais les scopes intermediaires
   // des fonctions actuellement en cours d'execution plus haut dans la chaine d'appel.
@@ -2784,19 +2938,31 @@ async function executerCorpsFonction(params, corps, argsVals, nomPourErreur, cla
   // appelantes (portee dynamique) — un appel de fonction pouvait donc "voir" par
   // accident une variable qu'on avait oublie de lui passer en parametre.
   let pilePrecedente = scopes;
-  scopes = [pilePrecedente[0], scope];
+  // CLOSURE : si cette fonction porte un environnement capture (voir construireFonctionAnonyme),
+  // on l'utilise comme base au lieu du global seul -- il contient deja le scope global en
+  // position 0 (capture avec scopes.slice(), qui part toujours de scopes[0]), donc pas besoin
+  // de rajouter pilePrecedente[0] separement. Une fonction normale (fonc nom(...) au niveau
+  // global, sans closure) n'a pas cet environnement : comportement inchange, global + local.
+  scopes = environnementCapture ? [...environnementCapture, scope] : [pilePrecedente[0], scope];
   let resultat;
   try {
-    // Valeurs par defaut des parametres NON fournis a l'appel : evaluees maintenant, DANS
-    // le scope de la fonction (deja empile ci-dessus), ce qui permet a une valeur par
-    // defaut de referencer un parametre precedent deja affecte (ex: fonc f(a, b~a){...}).
-    for (let idx = argsVals.length; idx < params.length; idx++) {
-      scope[params[idx].nom] = await evalExpr(params[idx].defautExpr, ctxExpr);
+    // Valeurs par defaut pour tout parametre (positionnel OU *nomSeul) encore non rempli.
+    // Evaluees maintenant, DANS le scope de la fonction (deja empile ci-dessus), ce qui
+    // permet a une valeur par defaut de referencer un parametre precedent deja affecte
+    // (ex: fonc f(a, b~a){...}). Un *parametre sans defaut encore non rempli est une
+    // erreur claire : il devait etre fourni par son nom.
+    for (let p of params) {
+      if (Object.prototype.hasOwnProperty.call(scope, p.nom)) continue;
+      if (p.defautExpr === null) {
+        throw new Error((nomPourErreur || "Cette fonction") + " : le parametre \"" + p.nom + "\" est obligatoire" + (p.nomSeul ? " (fournir par son nom : " + p.nom + "~valeur)" : ""));
+      }
+      scope[p.nom] = await evalExpr(p.defautExpr, ctxExpr);
     }
     let res = await executerTokens(corps, 0, corps.length);
     resultat = (res.signal && res.signal.type === 'retour') ? res.signal.valeur : undefined;
   } finally {
     scopes = pilePrecedente;
+    profondeurAppel--;
   }
   return resultat;
 }
@@ -2820,7 +2986,7 @@ async function appelerFonction(nom, argsVals) {
   let rVar = chercherVariable(nom);
   if (rVar.trouve) {
     if (estValeurFonction(rVar.valeur)) {
-      return await executerCorpsFonction(rVar.valeur.params, rVar.valeur.corps, argsVals, "La fonction " + nom);
+      return await executerCorpsFonction(rVar.valeur.params, rVar.valeur.corps, argsVals, "La fonction " + nom, undefined, rVar.valeur.environnement);
     }
     throw new Error("'" + nom + "' n'est pas une fonction (c'est un(e) " + nomNature(rVar.valeur) + "), impossible de l'appeler avec (...)");
   }
@@ -2922,13 +3088,20 @@ function analyserListeParametres(str, contexteErreur, ligneErreur) {
   if (str.trim() === "") return [];
   let parties = splitTopLevelComma(str);
   let params = parties.map(part => {
+    // *param (ou *param~defaut) : parametre NOMME UNIQUEMENT (style Monlangage, le * colle
+    // directement au nom au lieu d'etre un separateur isole comme en Python). Peut venir
+    // n'importe ou apres un parametre par defaut puisqu'il ne sera jamais rempli par
+    // position -- seulement via param~valeur a l'appel (voir executerCorpsFonction).
+    let nomSeul = false;
+    if (part.startsWith('*')) { nomSeul = true; part = part.slice(1).trim(); }
     let mDefaut = part.match(/^(\w+)\s*~\s*(.+)$/);
-    if (mDefaut) return { nom: mDefaut[1], defautExpr: mDefaut[2].trim() };
+    if (mDefaut) return { nom: mDefaut[1], defautExpr: mDefaut[2].trim(), nomSeul };
     if (!/^\w+$/.test(part)) throw new ErreurLangage("Parametre invalide dans " + contexteErreur + " : \"" + part + "\"", ligneErreur);
-    return { nom: part, defautExpr: null };
+    return { nom: part, defautExpr: null, nomSeul };
   });
   let vuDefaut = false;
   for (let p of params) {
+    if (p.nomSeul) continue; // regle d'ordre : ne concerne que les parametres positionnels
     if (p.defautExpr !== null) vuDefaut = true;
     else if (vuDefaut) throw new ErreurLangage("Dans " + contexteErreur + " : le parametre \"" + p.nom + "\" (sans valeur par defaut) ne peut pas venir apres un parametre qui en a une", ligneErreur);
   }
@@ -3224,6 +3397,12 @@ let aideCommandes = [
       "Valeurs possibles : \"texte\", \"nombre\", \"booleen\", \"vecteur\" ou \"matrice\".",
       "Pour une instance de classe, renvoie le nom de sa classe (comme type(objet).__name__ en Python) : par exemple \"Chien\"."
     ], exemple: "natu(3)          ->   nombre\nnatu(|bonjour|)  ->   texte\nnatu(VRAI)       ->   booleen\nnatu(c(1,2,3))   ->   vecteur\nclasse Chien{}\na ~ Chien()\nnatu(a)          ->   Chien" },
+  { noms: ["entier", "reel"], categorie: "Base", syntaxe: "entier(x)  /  reel(x)", description: [
+      "Convertit x vers un GRAND ENTIER exact ou vers un nombre normal (reel), comme int(...)/float(...) en Python.",
+      "entier(x) : grand entier exact (precision illimitee, contrairement aux nombres normaux limites a 2^53), tronque une valeur a virgule vers zero. Depuis un texte, doit etre une suite de chiffres valide.",
+      "reel(x) : nombre normal (flottant) ; depuis un grand entier, peut perdre en precision au-dela de 2^53.",
+      "Voir aussi est.enti(...)/est.reel(...) pour verifier le type, natu(...) pour l'obtenir en texte."
+    ], exemple: "entier(2) ^ entier(100)   ->   1267650600228229401496703205376  (exact)\nreel(entier(5))            ->   5" },
   { noms: ["conver.nombr", "conver.text", "conver.vecteu", "conver.matric"], categorie: "Base", syntaxe: "conver.nombr(var) / conver.text(var) / conver.vecteu(var) / conver.matric(var)", description: [
       "Convertit var vers un autre type.",
       "conver.nombr(var) : convertit en nombre (un texte comme |3.5| devient 3.5 ; VRAI/FAUX deviennent 1/0). Erreur si le texte n'est pas un nombre valide.",
@@ -3231,13 +3410,16 @@ let aideCommandes = [
       "conver.vecteu(var) : convertit en vecteur. Une matrice devient un vecteur de tous ses elements. Un nombre/texte/booleen devient un vecteur a 1 element.",
       "conver.matric(var) : convertit en matrice. Un vecteur devient une matrice a 1 colonne. Un nombre/texte/booleen devient une matrice 1x1."
     ], exemple: "conver.nombr(|3.5|)   ->   3.5\nconver.text(42)       ->   |42|\nconver.vecteu(matrice(1:4, nlig~2, ncol~2))   ->   c(1,2,3,4)\nconver.matric(c(1,2,3))   ->   matrice 3x1" },
-  { noms: ["est.nombr", "est.text", "est.vecteu", "est.matric"], categorie: "Base", syntaxe: "est.nombr(var) / est.text(var) / est.vecteu(var) / est.matric(var)", description: [
+  { noms: ["est.nombr", "est.text", "est.vecteu", "est.matric", "est.enti", "est.reel", "est.liste"], categorie: "Base", syntaxe: "est.nombr(var) / est.text(var) / est.vecteu(var) / est.matric(var) / est.enti(var) / est.reel(var) / est.liste(var)", description: [
       "Verifie le type de var, et renvoie VRAI ou FAUX.",
-      "est.nombr(var) : VRAI si var est un nombre.",
+      "est.nombr(var) : VRAI si var est un nombre normal OU un grand entier (large ; voir est.enti/est.reel pour distinguer precisement).",
       "est.text(var) : VRAI si var est un texte.",
       "est.vecteu(var) : VRAI si var est un vecteur.",
-      "est.matric(var) : VRAI si var est une matrice."
-    ], exemple: "est.nombr(3)        ->   VRAI\nest.text(|bonjour|) ->   VRAI\nest.vecteu(c(1,2))  ->   VRAI\nsi(est.nombr(x)){ affi(|x est un nombre|) }" },
+      "est.matric(var) : VRAI si var est une matrice.",
+      "est.enti(var) : VRAI uniquement si var est un GRAND ENTIER (cree via entier(...)) ; FAUX pour un nombre normal meme de valeur entiere.",
+      "est.reel(var) : VRAI uniquement si var est un nombre normal (reel) ; FAUX pour un grand entier.",
+      "est.liste(var) : VRAI si var est une liste (creee via liste(...))."
+    ], exemple: "est.nombr(3)        ->   VRAI\nest.text(|bonjour|) ->   VRAI\nest.vecteu(c(1,2))  ->   VRAI\nest.enti(entier(3)) ->   VRAI\nest.reel(3)          ->   VRAI\nest.reel(entier(3)) ->   FAUX\nest.liste(liste(1,2)) ->   VRAI\nsi(est.nombr(x)){ affi(|x est un nombre|) }" },
   { noms: ["est.fonction"], categorie: "Base", syntaxe: "est.fonction(var)", description: [
       "VRAI si var contient une fonction (recue en parametre, ou stockee avec f ~ nomFonction).",
       "Une fonction perso deja declaree (fonc nom(...){...}) peut etre utilisee comme une valeur : stockee dans une variable (f ~ doubler), passee en argument a une autre fonction, ou renvoyee avec retour.",
@@ -3305,6 +3487,13 @@ let aideCommandes = [
       "Toujours place juste apres un essai{...}, jamais seul.",
       "Ne peut pas empecher un arret manuel du script (bouton Retour pendant l'execution) : cela remonte toujours en dehors de essai/attrape."
     ], exemple: "essai {\n    ecrire.fichier(|/storage/emulated/0/Download/save.mld|, moi)\n} attrape(msg) {\n    affi(|Echec de sauvegarde :|, msg)\n}" },
+  { noms: ["limiteRecursion"], categorie: "Controle", syntaxe: "limiteRecursion()  /  limiteRecursion(n)", description: [
+      "Lit ou change la limite d'appels de fonction imbriques autorises (protection contre une recursion infinie), comme sys.setrecursionlimit(...) en Python.",
+      "limiteRecursion() sans argument : lecture seule, renvoie la limite actuelle (500 par defaut).",
+      "limiteRecursion(n) : change la limite a n et renvoie l'ANCIENNE valeur (pratique pour la restaurer ensuite).",
+      "Refuse un nombre non entier ou <= 0, ou une valeur inferieure a la profondeur d'appel actuelle.",
+      "Se reinitialise a 500 a chaque nouvelle execution du script."
+    ], exemple: "ancienne ~ limiteRecursion(2000)\n** ... code qui a besoin de plus de profondeur ... **\nlimiteRecursion(ancienne)" },
   { noms: ["fonc"], categorie: "Controle", syntaxe: "fonc nom(param1, param2){ ... }", description: [
       "Definit une fonction reutilisable, avec un nom et des parametres.",
       "Le bloc entre accolades s'execute a chaque appel de la fonction."
@@ -3714,7 +3903,7 @@ function enregistrerFonctionsBase() {
     fonctionsBase["alea"] = fonctionsExpression["alea"] = async function(args, ctxExpr) {
         if (args.length === 2) {
             let v = await evaluerElementBrut(args[0], ctxExpr);
-            let x = Math.trunc(await evalExpr(args[1], ctxExpr));
+            let x = versEntierUsage(await evalExpr(args[1], ctxExpr), "alea(var, x)");
             let plat = estMatrice(v) ? v.donnees : (estVecteur(v) ? v : null);
             if (plat === null) throw new Error("alea(var, x) : var doit etre un vecteur ou une matrice");
             if (x < 0) throw new Error("alea(...) : x doit etre positif");
@@ -3722,9 +3911,9 @@ function enregistrerFonctionsBase() {
             return tirerAuHasardSansRemise(plat, x);
         }
         if (args.length === 3) {
-            let debut = Math.trunc(await evalExpr(args[0], ctxExpr));
-            let fin = Math.trunc(await evalExpr(args[1], ctxExpr));
-            let x = Math.trunc(await evalExpr(args[2], ctxExpr));
+            let debut = versEntierUsage(await evalExpr(args[0], ctxExpr), "alea(debut, fin, x)");
+            let fin = versEntierUsage(await evalExpr(args[1], ctxExpr), "alea(debut, fin, x)");
+            let x = versEntierUsage(await evalExpr(args[2], ctxExpr), "alea(debut, fin, x)");
             if (fin < debut) throw new Error("alea(debut, fin, x) : fin doit etre superieur ou egal a debut");
             let taille = fin - debut + 1;
             if (x < 0) throw new Error("alea(...) : x doit etre positif");
@@ -3742,7 +3931,7 @@ function enregistrerFonctionsBase() {
     fonctionsBase["ralea"] = fonctionsExpression["ralea"] = async function(args, ctxExpr) {
         if (args.length === 2) {
             let v = await evaluerElementBrut(args[0], ctxExpr);
-            let x = Math.trunc(await evalExpr(args[1], ctxExpr));
+            let x = versEntierUsage(await evalExpr(args[1], ctxExpr), "ralea(var, x)");
             let plat = estMatrice(v) ? v.donnees : (estVecteur(v) ? v : null);
             if (plat === null) throw new Error("ralea(var, x) : var doit etre un vecteur ou une matrice");
             if (x < 0) throw new Error("ralea(...) : x doit etre positif");
@@ -3750,9 +3939,9 @@ function enregistrerFonctionsBase() {
             return tirerAuHasardAvecRemise(plat, x);
         }
         if (args.length === 3) {
-            let debut = Math.trunc(await evalExpr(args[0], ctxExpr));
-            let fin = Math.trunc(await evalExpr(args[1], ctxExpr));
-            let x = Math.trunc(await evalExpr(args[2], ctxExpr));
+            let debut = versEntierUsage(await evalExpr(args[0], ctxExpr), "ralea(debut, fin, x)");
+            let fin = versEntierUsage(await evalExpr(args[1], ctxExpr), "ralea(debut, fin, x)");
+            let x = versEntierUsage(await evalExpr(args[2], ctxExpr), "ralea(debut, fin, x)");
             if (fin < debut) throw new Error("ralea(debut, fin, x) : fin doit etre superieur ou egal a debut");
             if (x < 0) throw new Error("ralea(...) : x doit etre positif");
             let plage = [];
@@ -4368,6 +4557,7 @@ function enregistrerFonctionsBase() {
         if (estListe(v)) return v.elements.length;
         if (estVecteur(v)) return v.length;
         if (estMatrice(v)) return v.donnees.length;
+        if (typeof v === 'string') return v.length; // nombre de caracteres, coherent avec texte[i]
         return 1;
     };
 
@@ -4377,6 +4567,62 @@ function enregistrerFonctionsBase() {
         let v = await evalExpr(args[0], ctxExpr);
         if (!estMatrice(v)) throw new Error("dim(...) ne s'applique qu'aux matrices");
         return [v.nlig, v.ncol];
+    };
+
+    // entier(x) : convertit vers un GRAND ENTIER exact (type bigint JS), sans la limite de
+    // precision des nombres normaux au-dela de 2^53 (voir 2^100 par exemple). Tronque un
+    // nombre a virgule vers zero, comme int(...) en Python. Equivalent inverse : reel(...).
+    fonctionsBase["entier"] = fonctionsExpression["entier"] = async function(args, ctxExpr) {
+        if (args.length < 1) throw new Error("entier(...) attend un argument");
+        let v = await evalExpr(args[0], ctxExpr);
+        if (typeof v === 'bigint') return v;
+        if (typeof v === 'boolean') return v ? 1n : 0n;
+        if (typeof v === 'number') {
+            if (!Number.isFinite(v)) throw new Error("entier(...) : impossible de convertir " + v + " en entier");
+            return BigInt(Math.trunc(v));
+        }
+        if (typeof v === 'string') {
+            let t = v.trim();
+            if (!/^[+-]?\d+$/.test(t)) throw new Error("entier(...) : texte \"" + v + "\" non convertible en entier");
+            return BigInt(t);
+        }
+        throw new Error("entier(...) : impossible de convertir un(e) " + nomNature(v) + " en entier");
+    };
+
+    // reel(x) : convertit vers un nombre normal (flottant JS). Depuis un grand entier issu de
+    // entier(...), peut perdre en precision au-dela de 2^53 -- c'est l'operation inverse
+    // assumee de entier(...), comme float(...) en Python.
+    fonctionsBase["reel"] = fonctionsExpression["reel"] = async function(args, ctxExpr) {
+        if (args.length < 1) throw new Error("reel(...) attend un argument");
+        let v = await evalExpr(args[0], ctxExpr);
+        if (typeof v === 'number') return v;
+        if (typeof v === 'bigint') return Number(v);
+        if (typeof v === 'boolean') return v ? 1 : 0;
+        if (typeof v === 'string') {
+            let n = parseFloat(v.trim());
+            if (Number.isNaN(n)) throw new Error("reel(...) : texte \"" + v + "\" non convertible en reel");
+            return n;
+        }
+        throw new Error("reel(...) : impossible de convertir un(e) " + nomNature(v) + " en reel");
+    };
+
+    // limiteRecursion(n) : change la limite d'appels de fonction imbriques (voir
+    // PROFONDEUR_APPEL_MAX). Sans argument, lecture seule (renvoie la limite actuelle),
+    // comme sys.getrecursionlimit() en Python. Avec un argument, change la limite ET
+    // renvoie l'ANCIENNE valeur (pratique pour la restaurer plus tard : ancienne ~
+    // limiteRecursion(2000) ... limiteRecursion(ancienne)).
+    fonctionsBase["limiteRecursion"] = fonctionsExpression["limiteRecursion"] = async function(args, ctxExpr) {
+        let ancienne = PROFONDEUR_APPEL_MAX;
+        if (args.length === 0) return ancienne;
+        let n = await evalExpr(args[0], ctxExpr);
+        if (typeof n !== 'number' || !Number.isInteger(n) || n < 1) {
+            throw new Error("limiteRecursion(...) attend un entier positif");
+        }
+        if (n < profondeurAppel) {
+            throw new Error("limiteRecursion(" + n + ") : impossible, on est deja a " + profondeurAppel + " appel(s) imbrique(s) en ce moment");
+        }
+        PROFONDEUR_APPEL_MAX = n;
+        return ancienne;
     };
 
     // som(...) : somme des elements d'un vecteur.
@@ -4586,6 +4832,22 @@ function enregistrerFonctionsBase() {
     // est.nombr(var) / est.text(var) / est.vecteu(var) / est.matric(var) : verification de type.
     fonctionsBase["est.nombr"] = fonctionsExpression["est.nombr"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("est.nombr(...) attend exactement 1 argument");
+        // Large : VRAI pour un nombre normal ET un grand entier (les deux sont "un nombre" au
+        // sens general). Pour distinguer precisement un grand entier, voir est.enti(...).
+        let v = await evalExpr(args[0], ctxExpr);
+        return typeof v === 'number' || typeof v === 'bigint';
+    };
+    // est.enti(var) : VRAI uniquement pour un GRAND ENTIER (issu de entier(...)), FAUX pour un
+    // nombre normal meme si c'est une valeur entiere (ex: est.enti(5) est FAUX, 5 est un nombre
+    // normal ; est.enti(entier(5)) est VRAI). Complement precis de est.nombr(...) ci-dessus.
+    fonctionsBase["est.enti"] = fonctionsExpression["est.enti"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("est.enti(...) attend exactement 1 argument");
+        return typeof (await evalExpr(args[0], ctxExpr)) === 'bigint';
+    };
+    // est.reel(var) : symetrique de est.enti(...) -- VRAI uniquement pour un nombre normal
+    // (flottant JS), FAUX pour un grand entier meme si numeriquement equivalent.
+    fonctionsBase["est.reel"] = fonctionsExpression["est.reel"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("est.reel(...) attend exactement 1 argument");
         return typeof (await evalExpr(args[0], ctxExpr)) === 'number';
     };
     fonctionsBase["est.text"] = fonctionsExpression["est.text"] = async function(args, ctxExpr) {
@@ -5453,7 +5715,33 @@ async function executerCommandeSimple(ligne) {
   }
 
   // Appel de fonction (prioritaire, comme en Python)
-let matchAppel = ligne.match(/^([a-zA-Z_][a-zA-Z0-9_.]*)\((.*)\)$/);
+  // IMPORTANT : la ligne n'est un appel "seul" QUE si la parenthese fermante qui correspond
+  // exactement a la 1ere '(' (en comptant la profondeur, sans compter ce qui est a
+  // l'interieur d'un texte litteral |...|) tombe tout en fin de ligne. Un ancien regex
+  // "/^nom\((.*)\)$/" etait greedy et capturait jusqu'a la DERNIERE ')' de la ligne, ce qui
+  // faisait passer a tort une EXPRESSION comme "entier(2) ^ entier(100)" pour un appel unique
+  // "entier(...)" avec pour argument le texte casse "2) ^ entier(100" -- d'ou l'erreur trompeuse
+  // "Parenthese fermante manquante" plus loin. Avec un vrai comptage de profondeur, cette ligne
+  // ne matche plus ici et retombe correctement sur l'evaluation d'expression generale ci-dessous.
+  let matchAppel = null;
+  {
+    let mIdent = ligne.match(/^([a-zA-Z_][a-zA-Z0-9_.]*)\(/);
+    if (mIdent) {
+      let depth = 1, k = mIdent[0].length, dansTexte = false;
+      while (k < ligne.length && depth > 0) {
+        let c = ligne[k];
+        if (c === '|') dansTexte = !dansTexte;
+        if (!dansTexte) {
+          if (c === '(') depth++;
+          if (c === ')') depth--;
+        }
+        k++;
+      }
+      if (depth === 0 && k === ligne.length) {
+        matchAppel = [ligne, mIdent[1], ligne.slice(mIdent[0].length, k - 1)];
+      }
+    }
+  }
 if (matchAppel) {
   let nom = matchAppel[1];
   if (nom === 'lettr' || nom === 'Lettr' || nom === 'pasdefini') {
@@ -5581,11 +5869,15 @@ function retirerCommentaires(code) {
 function parser(code) {
   code = retirerCommentaires(code);
   let tokens = [], buffer = "", ligne = 1, ligneDebutBuffer = 1;
+  // dansTexte : un ';' A L'INTERIEUR d'un texte litteral |...| ne separe pas des
+  // instructions, il fait partie du texte (ex: affi(|un ; deux|) reste UN seul argument).
+  let dansTexte = false;
   for (let i = 0; i < code.length; i++) {
     let c = code[i];
-    if (c === '{' || c === '}' || c === '\n') {
+    if (c === '|') dansTexte = !dansTexte;
+    if (!dansTexte && (c === '{' || c === '}' || c === '\n' || c === ';')) {
       if (buffer.trim() !== "") tokens.push({ texte: buffer.trim(), ligne: ligneDebutBuffer });
-      if (c !== '\n') tokens.push({ texte: c, ligne: ligne });
+      if (c === '{' || c === '}') tokens.push({ texte: c, ligne: ligne });
       buffer = "";
       if (c === '\n') ligne++;
       ligneDebutBuffer = ligne;
@@ -6161,6 +6453,8 @@ codeArea.addEventListener('touchcancel', () => arreterSynchroContinueApresDelai(
 /* ===================== LANCEMENT DU SCRIPT ===================== */
 async function runScript() {
   scopes = [{}];
+profondeurAppel = 0;
+PROFONDEUR_APPEL_MAX = PROFONDEUR_APPEL_MAX_DEFAUT;
 fonctions = {};
 enregistrerFonctionsBase();
   afficherConsole();
