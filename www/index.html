@@ -1548,7 +1548,8 @@ function evalExprSansEntreeSync(str, ctx) {
         continue;
       }
       // Indexation sur le resultat d'un attribut/appel precedent : moi.comptes[i], f()[1]...
-      if (peek() && peek().type === '[' && (estVecteur(valeur) || estMatrice(valeur) || estListe(valeur))) {
+      // (inclut le texte : moi.nom[1], f()[2:4]... voir accederUnique -> accederTexte)
+      if (peek() && peek().type === '[' && (estVecteur(valeur) || estMatrice(valeur) || estListe(valeur) || typeof valeur === 'string')) {
         next(); // '['
         let idx1 = (peek() && peek().type !== ',' && peek().type !== ']') ? parseOr() : null;
         if (peek() && peek().type === ',') {
@@ -1764,7 +1765,8 @@ async function evalExprSansEntreeAsync(str, ctx) {
         continue;
       }
       // Indexation sur le resultat d'un attribut/appel precedent : moi.comptes[i], f()[1]...
-      if (peek() && peek().type === '[' && (estVecteur(valeur) || estMatrice(valeur) || estListe(valeur))) {
+      // (inclut le texte : moi.nom[1], f()[2:4]... voir accederUnique -> accederTexte)
+      if (peek() && peek().type === '[' && (estVecteur(valeur) || estMatrice(valeur) || estListe(valeur) || typeof valeur === 'string')) {
         next(); // '['
         let idx1 = (peek() && peek().type !== ',' && peek().type !== ']') ? await parseOr() : null;
         if (peek() && peek().type === ',') {
@@ -2445,7 +2447,22 @@ function accederVecteur(v, indice, nom) {
 
 // Indexation a un seul crochet, valable pour un vecteur OU une matrice (traitee "a plat",
 // en ordre colonne, comme en R). Utile pour l'indexation logique : B[B==5].
+// texte[indice] -- indices a partir de 1, comme pour un vecteur, mais le resultat reste
+// TOUJOURS du texte : un seul caractere pour un indice simple, un sous-texte reconstruit
+// (join) pour une plage/un vecteur d'indices/un vecteur logique -- jamais une liste() ou un
+// vecteur de caracteres, pour rester coherent avec ce qu'on attend de "texte[...]".
+function accederTexte(v, indice, nom) {
+  if (indice === null) return v;
+  if (typeof indice === 'number') {
+    verifierIndiceEntier(indice, nom);
+    if (indice < 1 || indice > v.length) throw new Error("Indice " + indice + " hors limites pour " + nom + " (longueur " + v.length + ")");
+    return v[indice - 1];
+  }
+  let positions = resoudreIndicesVecteur(indice, v.length, nom);
+  return positions.map(p => v[p]).join("");
+}
 function accederUnique(v, indice, nom) {
+  if (typeof v === 'string') return accederTexte(v, indice, nom);
   if (estListe(v)) {
     let elements = v.elements;
     if (indice === null) return { __type: "liste", elements: elements.slice() };
@@ -2474,6 +2491,7 @@ function accederUnique(v, indice, nom) {
 // Comme en R (drop=TRUE par defaut) : si une des deux dimensions du resultat vaut 1,
 // le resultat est simplifie en simple vecteur plutot qu'en matrice a une ligne/colonne.
 function accederMatrice(m, ligne, colonne, nom) {
+  if (typeof m === 'string') throw new Error(nom + " est du texte (une seule dimension) : utilise " + nom + "[i] au lieu de " + nom + "[l,c]");
   if (!estMatrice(m)) throw new Error(nom + " n'est pas une matrice");
 
   // Cas historique : deux indices numeriques simples -> une seule valeur.
@@ -2500,6 +2518,32 @@ function accederMatrice(m, ligne, colonne, nom) {
 // v[] ~ valeur remplace tout le vecteur (meme taille, ou une seule valeur repetee partout).
 // Ecriture a un seul crochet, valable pour un vecteur OU une matrice (traitee "a plat").
 // Utile pour l'ecriture avec indexation logique : B[B>15] ~ 0.
+// texte[indice] ~ valeur -- contrairement a affecterUnique (vecteur/liste), le texte est
+// immuable en JS : impossible de muter "v" en place. Cette fonction renvoie donc le texte
+// ENTIER reconstruit avec la modification appliquee ; c'est a l'appelant (executerCommandeSimple)
+// de reecrire la variable/l'attribut avec ce nouveau texte via assignerCheminValeur.
+// Un indice au-dela de la longueur actuelle agrandit le texte avec des espaces (meme logique
+// que les vecteurs, qui s'agrandissent avec des 0).
+function affecterTexte(v, indice, valeur, nom) {
+  if (typeof valeur !== 'string') throw new Error(nom + "[...] ~ ... attend du texte (un texte reste du texte)");
+  let cars = v.split("");
+  if (indice === null) return valeur; // texte[] ~ valeur : remplace tout le texte
+  if (typeof indice === 'number') {
+    verifierIndiceEntier(indice, nom);
+    if (indice < 1) throw new Error("Indice " + indice + " invalide pour " + nom);
+    if (valeur.length !== 1) throw new Error(nom + "[" + indice + "] ~ ... attend un seul caractere, recu \"" + valeur + "\" (longueur " + valeur.length + ")");
+    while (cars.length < indice) cars.push(" ");
+    cars[indice - 1] = valeur;
+    return cars.join("");
+  }
+  let positions = resoudreIndicesVecteur(indice, cars.length, nom);
+  let valeurs = valeur.split("");
+  if (valeurs.length !== positions.length && valeurs.length !== 1) {
+    throw new Error(nom + "[...] ~ ... attend " + positions.length + " caractere(s) (ou un seul repete), recu " + valeurs.length);
+  }
+  for (let i = 0; i < positions.length; i++) cars[positions[i]] = valeurs[i % valeurs.length];
+  return cars.join("");
+}
 function affecterUnique(v, indice, valeur, nom) {
   if (estListe(v)) {
     let elements = v.elements;
@@ -2905,7 +2949,7 @@ function preRegistrerFonctions(tokens) {
       i = finBlocClasse;
       continue;
     }
-    let m = t.texte.match(/^fonc\s+(\w+)\(([^)]*)\)$/);
+    let m = t.texte.match(/^fonc\s+(\w+)\((.*)\)$/);
     if (m) {
       let nom = m[1];
       let params = analyserListeParametres(m[2], "fonc " + nom + "(...)", t.ligne);
@@ -2928,7 +2972,7 @@ function extraireMethodes(tokens, debut, fin, nomClasse) {
   let i = debut;
   while (i < fin) {
     let t = tokens[i];
-    let m = t.texte.match(/^fonc\s+(\w+)\(([^)]*)\)$/);
+    let m = t.texte.match(/^fonc\s+(\w+)\((.*)\)$/);
     if (m) {
       let nomMethode = m[1];
       let params = analyserListeParametres(m[2], "la methode " + nomClasse + "." + nomMethode + "(...)", t.ligne);
@@ -2956,7 +3000,7 @@ async function extraireAttributsPartages(tokens, debut, fin, ctxExpr) {
   let i = debut;
   while (i < fin) {
     let t = tokens[i];
-    let mFonc = t.texte.match(/^fonc\s+(\w+)\(([^)]*)\)$/);
+    let mFonc = t.texte.match(/^fonc\s+(\w+)\((.*)\)$/);
     if (mFonc) {
       // Le corps d'une methode n'est pas un attribut partage : on saute tout le bloc.
       let finBlocMethode = trouverFinBloc(tokens, i + 2, t.ligne);
@@ -5190,7 +5234,12 @@ async function executerCommandeSimple(ligne) {
       let indices = splitTopLevelComma(indicesStr);
       let valeur = await evaluerElementBrut(mTilde[1], ctxExpr);
       let cible = resoudreCheminCible(chemin);
-      if (indices.length === 1) {
+      if (typeof cible === 'string') {
+        if (indices.length !== 1) throw new Error(chemin + " est du texte (une seule dimension) : indexation a un seul indice, pas [l,c]");
+        let idx = indices[0].trim() === "" ? null : await evalExpr(indices[0], ctxExpr);
+        let nouveauTexte = affecterTexte(cible, idx, valeur, chemin);
+        assignerCheminValeur(chemin, nouveauTexte);
+      } else if (indices.length === 1) {
         let idx = indices[0].trim() === "" ? null : await evalExpr(indices[0], ctxExpr);
         affecterUnique(cible, idx, valeur, chemin);
       } else if (indices.length === 2) {
@@ -5586,7 +5635,7 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
         // "Fonction inconnue". On l'enregistre donc ici, au moment reel ou l'execution
         // atteint cette ligne (elle devient alors utilisable, comme une fonction globale
         // normale, y compris apres ce point dans le script).
-        let mFoncImbrique = token.match(/^fonc\s+(\w+)\(([^)]*)\)$/);
+        let mFoncImbrique = token.match(/^fonc\s+(\w+)\((.*)\)$/);
         if (!mFoncImbrique) throw new ErreurLangage("Declaration de fonction mal formee : " + token, ligneActuelle);
         let nomFoncImbrique = mFoncImbrique[1];
         let paramsFoncImbrique = analyserListeParametres(mFoncImbrique[2], "fonc " + nomFoncImbrique + "(...)", ligneActuelle);
