@@ -869,6 +869,19 @@ class ErreurIndisponibleHorsApp extends ErreurCode {
   constructor(message) { super(message, "INDISPONIBLE_HORS_APP"); }
 }
 
+// Les 13 codes d'erreur sont aussi des CONSTANTES reconnues du langage (comme VRAI/FAUX) :
+// on peut ecrire si(code==DIVISION_ZERO) directement, sans les guillemets |...|. La valeur
+// de chaque constante est simplement son propre nom (texte), pour rester coherente avec
+// e.code cote interpreteur (voir la hierarchie de classes ci-dessus et essai/attrape plus
+// bas) -- comparer code==DIVISION_ZERO revient donc a comparer deux textes identiques.
+// Utilisee dans evalExpr (les 2 variantes, rapide/synchrone et lente/asynchrone).
+const CODES_ERREUR_RECONNUS = new Set([
+  "DIVISION_ZERO", "FICHIER_INTROUVABLE", "FICHIER_DEJA_EXISTANT", "FICHIER_INVALIDE",
+  "CLE_INTROUVABLE", "VARIABLE_INCONNUE", "FONCTION_INCONNUE", "ATTRIBUT_INCONNU",
+  "INDEX_HORS_LIMITE", "TYPE_INVALIDE", "RECURSION_MAX", "PERMISSION_REFUSEE",
+  "INDISPONIBLE_HORS_APP", "SYNTAXE"
+]);
+
 /* ===================== EXECUTION "EN DIRECT" (comme R) ===================== */
 // L'executeur est asynchrone mais, sans point de cession explicite, le navigateur
 let executionEnCours = false;
@@ -1782,6 +1795,7 @@ function evalExprSansEntreeSync(str, ctx) {
       }
       if (t.v === 'VRAI') return true;
       if (t.v === 'FAUX') return false;
+      if (CODES_ERREUR_RECONNUS.has(t.v)) return t.v;
       if (t.v === 'pasdefini') {
         if (peek() && peek().type === '(') throw new Error(t.v + " est une constante (comme VRAI/FAUX), pas une fonction : ecris-la sans parentheses, \"" + t.v + "\" au lieu de \"" + t.v + "()\"");
         return undefined;
@@ -2011,6 +2025,7 @@ async function evalExprSansEntreeAsync(str, ctx) {
       }
       if (t.v === 'VRAI') return true;
       if (t.v === 'FAUX') return false;
+      if (CODES_ERREUR_RECONNUS.has(t.v)) return t.v;
       if (t.v === 'pasdefini') {
         if (peek() && peek().type === '(') throw new Error(t.v + " est une constante (comme VRAI/FAUX), pas une fonction : ecris-la sans parentheses, \"" + t.v + "\" au lieu de \"" + t.v + "()\"");
         return undefined;
@@ -3946,6 +3961,18 @@ let aideCommandes = [
       "Utilisable dans une comparaison : si(x == pasdefini){ ... }."
     ], exemple: "fonc f(){ retour }\nf()   ->   pasdefini" },
 
+  { noms: ["DIVISION_ZERO", "FICHIER_INTROUVABLE", "FICHIER_DEJA_EXISTANT", "FICHIER_INVALIDE",
+      "CLE_INTROUVABLE", "VARIABLE_INCONNUE", "FONCTION_INCONNUE", "ATTRIBUT_INCONNU",
+      "INDEX_HORS_LIMITE", "TYPE_INVALIDE", "RECURSION_MAX", "PERMISSION_REFUSEE",
+      "INDISPONIBLE_HORS_APP", "SYNTAXE"], categorie: "Constantes",
+    syntaxe: "DIVISION_ZERO / FICHIER_INTROUVABLE / ... (voir description)", description: [
+      "Les codes d'erreur du langage (comme VRAI/FAUX) : s'ecrivent sans guillemets |...|.",
+      "Utilises avec essai{...} attrape(msg, code){...} pour reagir differemment selon la cause d'une erreur interceptee, sans comparer le texte du message.",
+      "Chaque constante vaut son propre nom en texte : code==DIVISION_ZERO compare deux textes identiques.",
+      "Combinables avec l'operateur ou : si(code==FICHIER_INTROUVABLE ou code==CLE_INTROUVABLE){ ... }.",
+      "SYNTAXE est le code generique recu pour toute erreur non couverte par les 13 autres (syntaxe, mauvais nombre/type d'argument...)."
+    ], exemple: "essai { x ~ 10 / 0 }\nattrape(msg, code) {\n    si(code == DIVISION_ZERO){ affi(|Division par zero evitee|) }\n}" },
+
   { noms: ["saulig"], categorie: "Constantes", syntaxe: "affi(..., saulig, ...)  /  ecrire(cle, ..., saulig, ...)  /  c(..., saulig, ...)", description: [
       "Saut de ligne : un texte contenant un seul caractere retour a la ligne.",
       "Dans affi()/entr(), insere un retour a la ligne a cet endroit dans le message affiche/demande.",
@@ -4000,7 +4027,13 @@ function enregistrerFonctionsBase() {
     fonctionsBase = {};
     fonctionsExpression = {};
 
-    fonctionsBase["affi"] = async function(args, ctxExpr) {
+    // affi() est aussi enregistree dans fonctionsExpression (comme texte/c/liste/... juste en
+    // dessous) : sans ca, affi(...) ne fonctionne QUE comme instruction autonome (via
+    // executerCommandeSimple + fonctionsBase), et plante avec "Fonction inconnue: affi" des
+    // qu'on l'utilise a l'INTERIEUR d'une expression -- ex: retour affi(a) dans une fonction
+    // perso (bug reel signale et corrige). Ne renvoie rien d'utile (pasdefini, comme un
+    // retour sans valeur), affi() reste faite pour son effet d'affichage, pas pour sa valeur.
+    fonctionsBase["affi"] = fonctionsExpression["affi"] = async function(args, ctxExpr) {
         let parties = [];
         for (let elem of args) {
             let elemTrim = elem.trim();
@@ -6265,7 +6298,10 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
         } catch (e) {
           if (e instanceof ExecutionInterrompue) throw e;
           messageErreur = e.message;
-          codeErreur = (e instanceof ErreurCode && e.code) ? e.code : "SYNTAXE";
+          // e.code peut venir soit d'une ErreurCode levee directement, soit d'une ErreurLangage
+          // qui l'a recopie en remontant la pile (voir le catch de executerTokens plus haut) --
+          // dans les deux cas, e.code est la source de verite ici, pas la classe exacte de e.
+          codeErreur = e.code || "SYNTAXE";
         }
 
         if (messageErreur === null) {
@@ -6390,7 +6426,16 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
       index++;
     } catch (e) {
       if (e instanceof ErreurLangage) throw e;
-      throw new ErreurLangage(e.message, ligneActuelle);
+      // IMPORTANT : toute erreur qui remonte ici est enveloppee dans une ErreurLangage pour lui
+      // attacher le numero de ligne (utilise pour l'affichage "Erreur ligne X: ..." si elle
+      // n'est interceptee par aucun essai/attrape). Si l'erreur d'origine est une ErreurCode
+      // (voir la hierarchie de classes plus haut), on DOIT recopier son .code sur la nouvelle
+      // erreur : sinon essai/attrape(msg, code) ne verrait jamais que "SYNTAXE", meme pour une
+      // division par zero, un fichier introuvable, etc. -- le code serait silencieusement perdu
+      // a chaque rethrow alors qu'il vient tout juste d'etre leve plus bas dans la pile.
+      let erreurLigne = new ErreurLangage(e.message, ligneActuelle);
+      if (e instanceof ErreurCode) erreurLigne.code = e.code;
+      throw erreurLigne;
     }
   }
   return { index: index, signal: null };
