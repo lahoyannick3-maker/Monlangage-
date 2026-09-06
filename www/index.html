@@ -194,8 +194,40 @@
     #code::selection { background: #264f78; color: #c9d1d9; }
 
     #headerConsole { background: #010409; padding: 10px 10px 0 10px; flex-shrink: 0; }
-    #output { flex: 1; background: #010409; padding: 0 10px 10px 10px; overflow-y: auto; min-height: 0; white-space: pre-wrap; }
+    /* Bug reel signale par Yannick : le long appui pour copier ne faisait apparaitre AUCUNE
+       bulle "Copier" (ni sur l'app buildee, ni dans l'apercu fichier, ni dans Chrome) -- a la
+       difference de #code (un vrai <textarea>, toujours selectionnable nativement quel que
+       soit le navigateur). #output n'est que des <div>/<span> ordinaires : sans ces regles
+       explicites, certains WebView (dont celui de Capacitor) restent plus restrictifs par
+       defaut sur la selection de texte hors champ de formulaire -- on l'active donc ici sans
+       ambiguite plutot que de compter sur le comportement par defaut. */
+    #output { flex: 1; background: #010409; padding: 0 10px 10px 10px; overflow-y: auto; min-height: 0; white-space: pre-wrap; -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
     #output:focus { outline: none; }
+
+    /* ===================== ECRAN SPECIFICATION OFFICIELLE ===================== */
+    #ecranSpecification {
+      position: fixed; inset: 0; z-index: 7000;
+      display: none; flex-direction: column;
+      background: #0d1117; color: #c9d1d9;
+    }
+    #ecranSpecification.actif { display: flex; }
+    #barreSpecification {
+      min-height: 52px; flex-shrink: 0;
+      display: flex; align-items: center; gap: 10px;
+      padding: 7px 10px;
+      background: #161b22; border-bottom: 1px solid #30363d;
+      z-index: 2;
+    }
+    #btnFermerSpecification {
+      background: #30363d; min-width: 44px; height: 38px; padding: 0 12px;
+      font-size: 18px;
+    }
+    #btnFermerSpecification:hover { background: #484f58; }
+    #titreSpecification {
+      min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      font-size: 15px; font-weight: bold;
+    }
+    #cadreSpecification { flex: 1; min-height: 0; border: 0; width: 100%; background: #0d1117; }
   .invite { color: #58a6ff; font-weight: bold; user-select: none; }
   .ligneCommande { }
   .cmdInput { outline: none; }
@@ -320,6 +352,14 @@ affi(|Bonjour |, nom)</textarea>
     </div>
   </div>
 
+  <div id="ecranSpecification" aria-hidden="true">
+    <div id="barreSpecification">
+      <button id="btnFermerSpecification" type="button" title="Retour">←</button>
+      <span id="titreSpecification">Spécification officielle de MonLangage</span>
+    </div>
+    <iframe id="cadreSpecification" src="about:blank" title="Spécification officielle de MonLangage"></iframe>
+  </div>
+
   <div id="console">
     <div id="headerConsole" style="display:flex; align-items:center; gap:10px;">
       <button id="btnRetour">← Retour</button>
@@ -382,6 +422,9 @@ let numeros = document.getElementById("numeros");
 let btnRun = document.getElementById("btnRun");
 let ecranEditeur = document.getElementById("editeur");
 let ecranConsole = document.getElementById("console");
+let ecranSpecification = document.getElementById("ecranSpecification");
+let cadreSpecification = document.getElementById("cadreSpecification");
+let btnFermerSpecification = document.getElementById("btnFermerSpecification");
 let btnConsole = document.getElementById("btnConsole");
 let btnRetour = document.getElementById("btnRetour");
 let btnSauver = document.getElementById("btnSauver");
@@ -704,6 +747,20 @@ function afficherEditeur() {
   ecranConsole.classList.remove("actif");
   ecranEditeur.classList.remove("masque");
 }
+
+/* ===================== SPECIFICATION OFFICIELLE ===================== */
+function ouvrirSpecification() {
+  if (!cadreSpecification.getAttribute("src") || cadreSpecification.getAttribute("src") === "about:blank") {
+    cadreSpecification.src = "SPECIFICATION.html";
+  }
+  ecranSpecification.classList.add("actif");
+  ecranSpecification.setAttribute("aria-hidden", "false");
+}
+function fermerSpecification() {
+  ecranSpecification.classList.remove("actif");
+  ecranSpecification.setAttribute("aria-hidden", "true");
+}
+btnFermerSpecification.addEventListener("click", fermerSpecification);
 btnConsole.addEventListener("click", afficherConsole);
 // Si une execution est en cours, quitter la console l'interrompt en plus de
 // ramener a l'ecran de l'editeur (il faudra rappuyer sur "Executer" pour reprendre).
@@ -757,6 +814,59 @@ class ErreurLangage extends Error {
 // N'est jamais affichee comme une erreur du langage.
 class ExecutionInterrompue extends Error {
   constructor() { super("Execution interrompue"); }
+}
+
+// ===================== Hierarchie d'erreurs du langage (systeme de codes) =====================
+// Toute erreur levee par l'interpreteur qui merite d'etre distinguee a l'execution (via
+// essai/attrape(msg, code)) doit etre une instance d'une de ces sous-classes. Un throw new Error(...)
+// ou new ErreurLangage(msg, ligne) classique (non migre, cas de syntaxe/arguments) reste attrape
+// normalement mais recoit le code generique "SYNTAXE" au point d'interception (voir essai/attrape
+// plus bas). Base nommee ErreurCode (et non ErreurLangage, deja pris par la classe existante
+// message+numero de ligne juste au-dessus) pour eviter toute collision de nom.
+class ErreurCode extends Error {
+  constructor(message, code = "SYNTAXE") {
+    super(message);
+    this.code = code;
+  }
+}
+class ErreurDivisionZero extends ErreurCode {
+  constructor(message) { super(message, "DIVISION_ZERO"); }
+}
+class ErreurFichierIntrouvable extends ErreurCode {
+  constructor(message) { super(message, "FICHIER_INTROUVABLE"); }
+}
+class ErreurFichierDejaExistant extends ErreurCode {
+  constructor(message) { super(message, "FICHIER_DEJA_EXISTANT"); }
+}
+class ErreurFichierInvalide extends ErreurCode {
+  constructor(message) { super(message, "FICHIER_INVALIDE"); }
+}
+class ErreurCleIntrouvable extends ErreurCode {
+  constructor(message) { super(message, "CLE_INTROUVABLE"); }
+}
+class ErreurVariableInconnue extends ErreurCode {
+  constructor(message) { super(message, "VARIABLE_INCONNUE"); }
+}
+class ErreurFonctionInconnue extends ErreurCode {
+  constructor(message) { super(message, "FONCTION_INCONNUE"); }
+}
+class ErreurAttributInconnu extends ErreurCode {
+  constructor(message) { super(message, "ATTRIBUT_INCONNU"); }
+}
+class ErreurIndexHorsLimite extends ErreurCode {
+  constructor(message) { super(message, "INDEX_HORS_LIMITE"); }
+}
+class ErreurTypeInvalide extends ErreurCode {
+  constructor(message) { super(message, "TYPE_INVALIDE"); }
+}
+class ErreurRecursionMax extends ErreurCode {
+  constructor(message) { super(message, "RECURSION_MAX"); }
+}
+class ErreurPermissionRefusee extends ErreurCode {
+  constructor(message) { super(message, "PERMISSION_REFUSEE"); }
+}
+class ErreurIndisponibleHorsApp extends ErreurCode {
+  constructor(message) { super(message, "INDISPONIBLE_HORS_APP"); }
 }
 
 /* ===================== EXECUTION "EN DIRECT" (comme R) ===================== */
@@ -813,7 +923,7 @@ function getVar(nom) {
   // renvoie comme valeur-fonction plutot que d'echouer (permet "f ~ doubler", "retour doubler",
   // ou de passer "doubler" tel quel en argument a une autre fonction).
   if (Object.prototype.hasOwnProperty.call(fonctions, nom)) return valeurFonctionDepuisNom(nom);
-  throw new Error("Variable non definie: " + nom);
+  throw new ErreurVariableInconnue("Variable non definie: " + nom);
 }
 // Comme getVar, mais ne cherche QUE parmi les variables (jamais dans fonctions{}) et ne leve
 // jamais d'erreur : sert a appelerFonction() pour savoir si "nom(...)" designe une variable qui
@@ -842,7 +952,7 @@ function resoudreCheminCible(chemin) {
       throw new Error(segments.slice(0, i).join(".") + " n'est pas une instance de classe (dans " + chemin + ")");
     }
     if (!Object.prototype.hasOwnProperty.call(valeur, segments[i])) {
-      throw new Error("Attribut \"" + segments[i] + "\" introuvable sur " + segments.slice(0, i).join(".") + " (dans " + chemin + ")");
+      throw new ErreurAttributInconnu("Attribut \"" + segments[i] + "\" introuvable sur " + segments.slice(0, i).join(".") + " (dans " + chemin + ")");
     }
     valeur = valeur[segments[i]];
   }
@@ -949,7 +1059,7 @@ function tokenizerExpr(str) {
 // ignore les espaces), et ca evite tout risque que deux jetons collent et fusionnent en un seul
 // une fois retokenises (ex: un identifiant suivi d'un nombre).
 function detokeniserExpr(tokens) {
-  return tokens.map(t => {
+  let rendu = tokens.map(t => {
     switch (t.type) {
       case '(': return '(';
       case ')': return ')';
@@ -967,7 +1077,29 @@ function detokeniserExpr(tokens) {
       case 'str': return '|' + t.v + '|';
       default: throw new Error("Jeton inattendu dans le corps d'une fonction anonyme");
     }
-  }).join(' ');
+  });
+  // Bug reel trouve et corrige : l'ancien .join(' ') mettait un espace entre TOUS les jetons,
+  // y compris entre un nom de fonction et sa parenthese ouvrante -- "som(x)+100" redevenait
+  // "som ( x ) + 100". Inoffensif pour le retokenizing (qui ignore les espaces), mais fatal
+  // pour extraireFonctionsExpression : les fonctions integrees (som/moy/entr/ecrire/matrice/...)
+  // ne sont PAS appelables via ctx.appelerFonction (reserve aux fonctions perso/variables-
+  // fonction) -- elles ne marchent QUE via ce pre-passage, qui les detecte par correspondance
+  // TEXTUELLE EXACTE "nomFonction(" dans la chaine brute. Avec l'espace insere, la
+  // correspondance echouait silencieusement et on retombait sur "Fonction inconnue: som".
+  // Consequence concrete : toute fonction anonyme fonc(x){...} appelant un built-in (ex:
+  // fonc(x) som(x)+100, utilise justement comme exemple pour suchaq()) echouait a l'appel.
+  // Corrige en ne remettant un espace qu'entre deux jetons qui se termineraient/commenceraient
+  // tous les deux par un caractere alphanumerique (deux "mots" colles fusionneraient en un
+  // seul identifiant au retokenizing, ex: "5" suivi de "et" -> "5et") ; jamais autour de
+  // ( ) , [ ] : ou d'un operateur, pour preserver la forme "nom(...)" telle quelle.
+  const finitParMot = (s) => /[a-zA-Z0-9_]$/.test(s);
+  const commenceParMot = (s) => /^[a-zA-Z0-9_]/.test(s);
+  let resultat = "";
+  for (let i = 0; i < rendu.length; i++) {
+    if (i > 0 && finitParMot(rendu[i-1]) && commenceParMot(rendu[i])) resultat += " ";
+    resultat += rendu[i];
+  }
+  return resultat;
 }
 
 // Repere la fin (index EXCLUS) d'UNE SEULE expression a partir de tokens[debut], en suivant la
@@ -1064,11 +1196,11 @@ function construireFonctionAnonyme(tokens, pos) {
   let params = [];
   if (tokens[pos] && tokens[pos].type !== ')') {
     if (!tokens[pos] || tokens[pos].type !== 'ident') throw new Error("Parametre invalide dans fonc(...) : un nom de parametre est attendu");
-    params.push(tokens[pos].v); pos++;
+    params.push({ nom: tokens[pos].v, defautExpr: null, nomSeul: false }); pos++;
     while (tokens[pos] && tokens[pos].type === ',') {
       pos++;
       if (!tokens[pos] || tokens[pos].type !== 'ident') throw new Error("Parametre invalide dans fonc(...) : un nom de parametre est attendu");
-      params.push(tokens[pos].v); pos++;
+      params.push({ nom: tokens[pos].v, defautExpr: null, nomSeul: false }); pos++;
     }
   }
   if (!tokens[pos] || tokens[pos].type !== ')') throw new Error("Parenthese fermante manquante pour les parametres de fonc(...)");
@@ -1372,13 +1504,57 @@ async function extraireFonctionsExpression(str) {
     let precedent = i > 0 ? str[i-1] : "";
     let nomTrouve = null;
     let mRacine = null;
+    let mFonc = null;
     if (!/[a-zA-Z0-9_]/.test(precedent)) {
-      mRacine = /^racine(\d*)\(/.exec(str.slice(i));
-      if (!mRacine) {
-        for (let nom of noms) {
-          if (str.startsWith(nom + '(', i)) { nomTrouve = nom; break; }
+      mFonc = /^fonc\s*\(/.exec(str.slice(i));
+      if (!mFonc) {
+        mRacine = /^racine(\d*)\(/.exec(str.slice(i));
+        if (!mRacine) {
+          for (let nom of noms) {
+            if (str.startsWith(nom + '(', i)) { nomTrouve = nom; break; }
+          }
         }
       }
+    }
+    // Fonction anonyme fonc(params) corps : ne JAMAIS descendre dans son corps pour y
+    // extraire au vol un appel a som/moy/entr/racine/... -- un tel appel utilise
+    // typiquement un PARAMETRE de cette fonction anonyme (ex: fonc(x) som(x)+100), qui
+    // n'existe pas encore dans la portee courante a ce stade (avant meme que la fonction
+    // anonyme soit construite et appelee avec x reellement lie). Bug reel corrige : sans
+    // ceci, suchaq(m, 1, fonc(x) som(x)+100) echouait avec "Variable non definie: x".
+    // On saute donc tout le fonc(...) ... (parametres + corps) SANS y toucher, en suivant
+    // la profondeur de parentheses/crochets pour reperer la meme frontiere de corps que
+    // trouverFinCorpsAnonyme determine plus tard au niveau des tokens (une ',' ou une ')'
+    // qui n'appartient pas au corps le termine).
+    if (mFonc) {
+      let j = i + mFonc[0].length; // juste apres "fonc("
+      let depth = 1, dansTexteLocal = false;
+      while (j < n && depth > 0) {
+        let c2 = str[j];
+        if (c2 === '|') dansTexteLocal = !dansTexteLocal;
+        if (!dansTexteLocal) {
+          if (c2 === '(') depth++;
+          if (c2 === ')') depth--;
+        }
+        j++;
+      }
+      let depthParens = 0, depthCrochets = 0;
+      dansTexteLocal = false;
+      while (j < n) {
+        let c2 = str[j];
+        if (c2 === '|') { dansTexteLocal = !dansTexteLocal; j++; continue; }
+        if (!dansTexteLocal) {
+          if (c2 === '(') { depthParens++; }
+          else if (c2 === ')') { if (depthParens === 0) break; depthParens--; }
+          else if (c2 === '[') { depthCrochets++; }
+          else if (c2 === ']') { if (depthCrochets === 0) break; depthCrochets--; }
+          else if (c2 === ',' && depthParens === 0 && depthCrochets === 0) break;
+        }
+        j++;
+      }
+      resultat += str.slice(i, j);
+      i = j;
+      continue;
     }
     if (mRacine) {
       let n2 = mRacine[1] === "" ? 2 : parseInt(mRacine[1], 10);
@@ -1559,7 +1735,7 @@ function evalExprSansEntreeSync(str, ctx) {
         let methode = next().v; // miniscul / majuscul / suprespac
         next(); next(); // '(' ')'
         if (typeof valeur === 'number') continue; // rien a convertir : ignore silencieusement
-        if (typeof valeur !== 'string') throw new Error("." + methode + "() attend du texte");
+        if (typeof valeur !== 'string') throw new ErreurTypeInvalide("." + methode + "() attend du texte");
         if (methode === 'miniscul') valeur = valeur.toLowerCase();
         else if (methode === 'majuscul') valeur = valeur.toUpperCase();
         else if (methode === 'suprespac') valeur = valeur.trim();
@@ -1625,7 +1801,7 @@ function evalExprSansEntreeSync(str, ctx) {
         next(); // '.'
         let nomAttr = next().v;
         let trouve = trouverAttributPartage(t.v, nomAttr);
-        if (!trouve) throw new Error("La classe " + t.v + " n'a pas d'attribut partage \"" + nomAttr + "\"");
+        if (!trouve) throw new ErreurAttributInconnu("La classe " + t.v + " n'a pas d'attribut partage \"" + nomAttr + "\"");
         return trouve.valeur;
       }
       if (peek() && peek().type === '(') {
@@ -1788,7 +1964,7 @@ async function evalExprSansEntreeAsync(str, ctx) {
         let methode = next().v; // miniscul / majuscul / suprespac
         next(); next(); // '(' ')'
         if (typeof valeur === 'number') continue;
-        if (typeof valeur !== 'string') throw new Error("." + methode + "() attend du texte");
+        if (typeof valeur !== 'string') throw new ErreurTypeInvalide("." + methode + "() attend du texte");
         if (methode === 'miniscul') valeur = valeur.toLowerCase();
         else if (methode === 'majuscul') valeur = valeur.toUpperCase();
         else if (methode === 'suprespac') valeur = valeur.trim();
@@ -1864,7 +2040,7 @@ async function evalExprSansEntreeAsync(str, ctx) {
         next(); // '.'
         let nomAttr = next().v;
         let trouve = trouverAttributPartage(t.v, nomAttr);
-        if (!trouve) throw new Error("La classe " + t.v + " n'a pas d'attribut partage \"" + nomAttr + "\"");
+        if (!trouve) throw new ErreurAttributInconnu("La classe " + t.v + " n'a pas d'attribut partage \"" + nomAttr + "\"");
         return trouve.valeur;
       }
       if (peek() && peek().type === '(') {
@@ -1952,7 +2128,7 @@ function nomRacine(n) { return "racine" + (n === 2 ? "" : n); }
 // nombres negatifs (ex: racine3(-8) = -2) ; les racines d'indice pair ne le sont pas.
 function racineNieme(n, x) {
   if (typeof x === 'bigint') x = Number(x); // resultat generalement irrationnel de toute facon : pas d'exactitude a preserver, comme math.sqrt(10**30) en Python
-  if (typeof x !== 'number') throw new Error(nomRacine(n) + "(...) attend un nombre, un vecteur ou une matrice de nombres");
+  if (typeof x !== 'number') throw new ErreurTypeInvalide(nomRacine(n) + "(...) attend un nombre, un vecteur ou une matrice de nombres");
   if (!Number.isFinite(n) || n === 0) throw new Error(nomRacine(n) + "(...) : indice de racine invalide");
   if (x < 0) {
     if (Number.isInteger(n) && Math.abs(n % 2) === 1) return -Math.pow(-x, 1 / n);
@@ -2160,7 +2336,7 @@ function combinerMultiplication(g, d, op) {
   function combiner2(a, b) {
     verifierNombre(a, op); verifierNombre(b, op);
     if (typeof a === 'bigint' && typeof b === 'bigint') {
-      if (b === 0n && (op === '/' || op === '%' || op === 'enti')) throw new Error("division par zero");
+      if (b === 0n && (op === '/' || op === '%' || op === 'enti')) throw new ErreurDivisionZero("division par zero");
       switch (op) {
         case '*': return a * b;
         case '/': return Number(a) / Number(b); // division "vraie" : toujours flottante, comme / entre deux int en Python
@@ -2171,7 +2347,7 @@ function combinerMultiplication(g, d, op) {
     if (typeof a === 'bigint' || typeof b === 'bigint') {
       // Melange : meme choix que combinerAddition, on retombe sur un nombre normal.
       let af = typeof a === 'bigint' ? Number(a) : a, bf = typeof b === 'bigint' ? Number(b) : b;
-      if (bf === 0 && (op === '/' || op === '%' || op === 'enti')) throw new Error("division par zero");
+      if (bf === 0 && (op === '/' || op === '%' || op === 'enti')) throw new ErreurDivisionZero("division par zero");
       switch (op) {
         case '*': return af * bf;
         case '/': return af / bf;
@@ -2179,7 +2355,7 @@ function combinerMultiplication(g, d, op) {
         case 'enti': return Math.floor(af / bf);
       }
     }
-    if (b === 0 && (op === '/' || op === '%' || op === 'enti')) throw new Error("division par zero");
+    if (b === 0 && (op === '/' || op === '%' || op === 'enti')) throw new ErreurDivisionZero("division par zero");
     switch (op) {
       case '*': return a * b;
       case '/': return a / b;
@@ -2296,13 +2472,13 @@ function produitMatriciel(g, d) {
 function versEntierUsage(v, nomFonction) {
   if (typeof v === 'bigint') return Number(v);
   if (typeof v === 'number') return Math.trunc(v);
-  throw new Error(nomFonction + " attend un nombre");
+  throw new ErreurTypeInvalide(nomFonction + " attend un nombre");
 }
 
 function sommeVecteur(v) {
   if (estMatrice(v)) v = v.donnees;
-  if (!estVecteur(v)) { if (typeof v === 'number' || typeof v === 'bigint') return v; throw new Error("som(...) attend un vecteur"); }
-  for (let e of v) if (typeof e !== 'number' && typeof e !== 'bigint') throw new Error("som(...) : tous les elements doivent etre numeriques");
+  if (!estVecteur(v)) { if (typeof v === 'number' || typeof v === 'bigint') return v; throw new ErreurTypeInvalide("som(...) attend un vecteur"); }
+  for (let e of v) if (typeof e !== 'number' && typeof e !== 'bigint') throw new ErreurTypeInvalide("som(...) : tous les elements doivent etre numeriques");
   // Vecteur ENTIEREMENT compose de grands entiers : la somme reste exacte (bigint). Des que
   // le vecteur melange grand entier et nombre normal, on retombe sur un flottant (meme regle
   // que les operateurs +/- : voir combinerAddition).
@@ -2315,14 +2491,14 @@ function sommeVecteur(v) {
 // moy(v) : moyenne (arithmetique) des elements d'un vecteur (ou d'une matrice, elements confondus).
 function moyenneVecteur(v) {
   if (estMatrice(v)) v = v.donnees;
-  if (!estVecteur(v)) { if (typeof v === 'number' || typeof v === 'bigint') return Number(v); throw new Error("moy(...) attend un vecteur"); }
+  if (!estVecteur(v)) { if (typeof v === 'number' || typeof v === 'bigint') return Number(v); throw new ErreurTypeInvalide("moy(...) attend un vecteur"); }
   if (v.length === 0) throw new Error("moy(...) : le vecteur est vide");
   // Une moyenne divise presque toujours de façon non entiere : le resultat reste un nombre
   // normal meme pour un vecteur de grands entiers (comme en Python, la moyenne d'entiers
   // n'a aucune raison de rester un entier).
   let s = 0;
   for (let e of v) {
-    if (typeof e !== 'number' && typeof e !== 'bigint') throw new Error("moy(...) : tous les elements doivent etre numeriques");
+    if (typeof e !== 'number' && typeof e !== 'bigint') throw new ErreurTypeInvalide("moy(...) : tous les elements doivent etre numeriques");
     s += typeof e === 'bigint' ? Number(e) : e;
   }
   return s / v.length;
@@ -2331,12 +2507,12 @@ function moyenneVecteur(v) {
 // var(v) : variance (comme en R : variance d'echantillon, divisee par n-1).
 function varianceVecteur(v) {
   if (estMatrice(v)) v = v.donnees;
-  if (!estVecteur(v)) throw new Error("var(...) attend un vecteur");
+  if (!estVecteur(v)) throw new ErreurTypeInvalide("var(...) attend un vecteur");
   if (v.length < 2) throw new Error("var(...) : il faut au moins 2 valeurs pour calculer une variance (recu " + v.length + ")");
   let m = moyenneVecteur(v);
   let s = 0;
   for (let e of v) {
-    if (typeof e !== 'number' && typeof e !== 'bigint') throw new Error("var(...) : tous les elements doivent etre numeriques");
+    if (typeof e !== 'number' && typeof e !== 'bigint') throw new ErreurTypeInvalide("var(...) : tous les elements doivent etre numeriques");
     let ef = typeof e === 'bigint' ? Number(e) : e;
     s += (ef - m) * (ef - m);
   }
@@ -2361,7 +2537,7 @@ function agregerMinMax(valeurs, nom, plusExtreme) {
   if (plat.length === 0) throw new Error(nom + "(...) attend au moins un argument");
   let res = plat[0];
   for (let e of plat) {
-    if (typeof e !== 'number' && typeof e !== 'bigint') throw new Error(nom + "(...) : tous les elements doivent etre numeriques");
+    if (typeof e !== 'number' && typeof e !== 'bigint') throw new ErreurTypeInvalide(nom + "(...) : tous les elements doivent etre numeriques");
     if (plusExtreme(e, res)) res = e;
   }
   return res;
@@ -2372,7 +2548,7 @@ function minVecteur(v) { return agregerMinMax([v], "min", (e, res) => e < res); 
 
 // det(m) : determinant par elimination de Gauss avec pivot partiel (matrice carree requise).
 function determinantMatrice(m) {
-  if (!estMatrice(m)) throw new Error("det(...) attend une matrice");
+  if (!estMatrice(m)) throw new ErreurTypeInvalide("det(...) attend une matrice");
   if (m.nlig !== m.ncol) throw new Error("det(...) : la matrice doit etre carree (recue : " + m.nlig + "x" + m.ncol + ")");
   let n = m.nlig, a = [];
   for (let l = 0; l < n; l++) { let ligne = []; for (let c = 0; c < n; c++) ligne.push(m.donnees[c * n + l]); a.push(ligne); }
@@ -2520,14 +2696,14 @@ function tirerAuHasardAvecRemise(tableau, x) {
 }
 
 function verifierIndiceEntier(v, nom) {
-  if (typeof v !== 'number' || !Number.isInteger(v)) throw new Error("Indice invalide pour " + nom);
+  if (typeof v !== 'number' || !Number.isInteger(v)) throw new ErreurIndexHorsLimite("Indice invalide pour " + nom);
   return v;
 }
 
 // Resout un indice (nombre, vecteur d'indices, ou vecteur logique) en tableau de positions 0-based.
 function resoudreIndicesVecteur(idx, tailleMax, nom) {
   if (estMatrice(idx)) idx = idx.donnees;
-  if (!estVecteur(idx)) throw new Error("Indice invalide pour " + nom);
+  if (!estVecteur(idx)) throw new ErreurIndexHorsLimite("Indice invalide pour " + nom);
   if (idx.length > 0 && typeof idx[0] === 'boolean') {
     if (idx.length !== tailleMax) throw new Error("Indexation logique pour " + nom + " : longueur " + idx.length + " differente de " + tailleMax);
     let res = [];
@@ -2558,7 +2734,7 @@ function resoudreIndicesDim(idx, tailleMax, nom) {
 // indice peut etre : vide (tout le vecteur), un nombre (un seul element), un vecteur
 // d'indices (ex: c(2,5) ou 2:4), ou un vecteur logique de meme taille (ex: v[v>3]).
 function accederVecteur(v, indice, nom) {
-  if (!estVecteur(v)) throw new Error(nom + " n'est pas un vecteur");
+  if (!estVecteur(v)) throw new ErreurTypeInvalide(nom + " n'est pas un vecteur");
   if (indice === null) return v.slice();
   if (typeof indice === 'number') {
     verifierIndiceEntier(indice, nom);
@@ -2599,7 +2775,7 @@ function accederUnique(v, indice, nom) {
     return { __type: "liste", elements: positionsListe.map(p => elements[p]) };
   }
   let plat = estMatrice(v) ? v.donnees : (estVecteur(v) ? v : null);
-  if (plat === null) throw new Error(nom + " n'est pas un vecteur ou une matrice");
+  if (plat === null) throw new ErreurTypeInvalide(nom + " n'est pas un vecteur ou une matrice");
   if (indice === null) return plat.slice();
   if (typeof indice === 'number') {
     verifierIndiceEntier(indice, nom);
@@ -2616,7 +2792,7 @@ function accederUnique(v, indice, nom) {
 // le resultat est simplifie en simple vecteur plutot qu'en matrice a une ligne/colonne.
 function accederMatrice(m, ligne, colonne, nom) {
   if (typeof m === 'string') throw new Error(nom + " est du texte (une seule dimension) : utilise " + nom + "[i] au lieu de " + nom + "[l,c]");
-  if (!estMatrice(m)) throw new Error(nom + " n'est pas une matrice");
+  if (!estMatrice(m)) throw new ErreurTypeInvalide(nom + " n'est pas une matrice");
 
   // Cas historique : deux indices numeriques simples -> une seule valeur.
   if (typeof ligne === 'number' && typeof colonne === 'number') {
@@ -2649,12 +2825,12 @@ function accederMatrice(m, ligne, colonne, nom) {
 // Un indice au-dela de la longueur actuelle agrandit le texte avec des espaces (meme logique
 // que les vecteurs, qui s'agrandissent avec des 0).
 function affecterTexte(v, indice, valeur, nom) {
-  if (typeof valeur !== 'string') throw new Error(nom + "[...] ~ ... attend du texte (un texte reste du texte)");
+  if (typeof valeur !== 'string') throw new ErreurTypeInvalide(nom + "[...] ~ ... attend du texte (un texte reste du texte)");
   let cars = v.split("");
   if (indice === null) return valeur; // texte[] ~ valeur : remplace tout le texte
   if (typeof indice === 'number') {
     verifierIndiceEntier(indice, nom);
-    if (indice < 1) throw new Error("Indice " + indice + " invalide pour " + nom);
+    if (indice < 1) throw new ErreurIndexHorsLimite("Indice " + indice + " invalide pour " + nom);
     if (valeur.length !== 1) throw new Error(nom + "[" + indice + "] ~ ... attend un seul caractere, recu \"" + valeur + "\" (longueur " + valeur.length + ")");
     while (cars.length < indice) cars.push(" ");
     cars[indice - 1] = valeur;
@@ -2673,7 +2849,7 @@ function affecterUnique(v, indice, valeur, nom) {
     let elements = v.elements;
     if (indice === null) {
       if (estListe(valeur)) {
-        if (valeur.elements.length !== elements.length) throw new Error(nom + "[] ~ ... attend une liste de meme taille (" + elements.length + ")");
+        if (valeur.elements.length !== elements.length) throw new ErreurTypeInvalide(nom + "[] ~ ... attend une liste de meme taille (" + elements.length + ")");
         for (let i = 0; i < elements.length; i++) elements[i] = valeur.elements[i];
       } else {
         for (let i = 0; i < elements.length; i++) elements[i] = valeur;
@@ -2682,7 +2858,7 @@ function affecterUnique(v, indice, valeur, nom) {
     }
     if (typeof indice === 'number') {
       verifierIndiceEntier(indice, nom);
-      if (indice < 1) throw new Error("Indice " + indice + " invalide pour " + nom);
+      if (indice < 1) throw new ErreurIndexHorsLimite("Indice " + indice + " invalide pour " + nom);
       while (elements.length < indice) elements.push(undefined);
       elements[indice - 1] = valeur;
       return;
@@ -2715,17 +2891,17 @@ function affecterUnique(v, indice, valeur, nom) {
     return;
   }
   if (estVecteur(v)) { affecterVecteur(v, indice, valeur, nom); return; }
-  throw new Error(nom + " n'est pas un vecteur ou une matrice");
+  throw new ErreurTypeInvalide(nom + " n'est pas un vecteur ou une matrice");
 }
 
 function affecterVecteur(v, indice, valeur, nom) {
-  if (!estVecteur(v)) throw new Error(nom + " n'est pas un vecteur");
+  if (!estVecteur(v)) throw new ErreurTypeInvalide(nom + " n'est pas un vecteur");
   let positions;
   if (indice === null) {
     positions = []; for (let i = 0; i < v.length; i++) positions.push(i);
   } else if (typeof indice === 'number') {
     verifierIndiceEntier(indice, nom);
-    if (indice < 1) throw new Error("Indice " + indice + " invalide pour " + nom + " (doit etre >= 1)");
+    if (indice < 1) throw new ErreurIndexHorsLimite("Indice " + indice + " invalide pour " + nom + " (doit etre >= 1)");
     // Agrandissement automatique (comme en R) : un indice au-dela de la taille actuelle
     // etend le vecteur, en remplissant les nouvelles cases intermediaires avec 0.
     while (v.length < indice) v.push(0);
@@ -2752,7 +2928,7 @@ function affecterVecteur(v, indice, valeur, nom) {
 // matrice (nouvelles lignes/colonnes remplies de 0), pour permettre le remplissage
 // progressif comme pour les vecteurs.
 function affecterMatrice(m, ligne, colonne, valeur, nom) {
-  if (!estMatrice(m)) throw new Error(nom + " n'est pas une matrice");
+  if (!estMatrice(m)) throw new ErreurTypeInvalide(nom + " n'est pas une matrice");
   let ligneMax = calculerIndiceMax(ligne);
   let colMax = calculerIndiceMax(colonne);
   if (ligneMax > m.nlig || colMax > m.ncol) {
@@ -2773,7 +2949,7 @@ function affecterMatrice(m, ligne, colonne, valeur, nom) {
 
 // Construit une sequence numerique de "debut" a "fin" avec le pas donne (ou +1/-1 par defaut).
 function construireSequence(debut, fin, pas) {
-  if (typeof debut !== 'number' || typeof fin !== 'number') throw new Error("seq/':' attend des nombres");
+  if (typeof debut !== 'number' || typeof fin !== 'number') throw new ErreurTypeInvalide("seq/':' attend des nombres");
   if (pas === undefined || pas === null) pas = (fin >= debut ? 1 : -1);
   if (typeof pas !== 'number' || pas === 0) throw new Error("Le pas d'une sequence ne peut pas etre 0");
   let resultat = [];
@@ -2928,7 +3104,7 @@ async function executerCorpsFonction(params, corps, argsVals, nomPourErreur, cla
   profondeurAppel++;
   if (profondeurAppel > PROFONDEUR_APPEL_MAX) {
     profondeurAppel--;
-    throw new Error((nomPourErreur || "Cette fonction") + " : plus de " + PROFONDEUR_APPEL_MAX + " appels imbriques -- recursion probablement infinie (cas d'arret manquant ou jamais atteint)");
+    throw new ErreurRecursionMax((nomPourErreur || "Cette fonction") + " : plus de " + PROFONDEUR_APPEL_MAX + " appels imbriques -- recursion probablement infinie (cas d'arret manquant ou jamais atteint)");
   }
   // PORTEE LEXICALE : on isole completement la pile pour cet appel. On ne garde QUE le
   // scope global (scopes[0]) + ce nouveau scope local — jamais les scopes intermediaires
@@ -2994,7 +3170,7 @@ async function appelerFonction(nom, argsVals) {
     return await instancierClasse(nom, argsVals);
   }
   let f = fonctions[nom];
-  if (!f) throw new Error("Fonction inconnue: " + nom);
+  if (!f) throw new ErreurFonctionInconnue("Fonction inconnue: " + nom);
   return await executerCorpsFonction(f.params, f.corps, argsVals, "La fonction " + nom);
 }
 
@@ -3042,18 +3218,28 @@ async function appellerMethodeParent(nomMethode, argsVals) {
 }
 
 
-// Appelle une fonction par SON NOM (une fonction definie avec fonc, ou l'une des fonctions
-// statistiques de base) avec une seule valeur en argument. Utilise par suchaq(), qui recoit
-// le nom de la fonction a appliquer comme identifiant "nu" (pas comme un appel de fonction).
+// Applique la "fonction" recue par suchaq() (son 3e argument) a une tranche (ligne/colonne).
+// Historiquement ce 3e argument etait lu comme du texte brut (un nom "nu", jamais evalue) :
+// suchaq(m, 1, moy) marchait, mais suchaq(m, 1, f) ou f est une variable contenant une
+// fonction (ou suchaq(m, 1, fonc(x) moy(x)*2)) echouait toujours avec "doit etre le nom
+// (sans parentheses) d'une fonction", meme si f contenait bien une fonction valide.
+//
+// Corrige en evaluant desormais ce 3e argument comme une VRAIE expression (via evalExpr),
+// ce qui couvre variable-fonction, fonction anonyme, etc. Seule exception conservee : un nom
+// nu qui designe une fonction statistique de base (som/moy/var/sd/max/min) N'EST PAS une
+// expression evaluable (ce ne sont pas des variables), donc ce cas precis reste traite a part,
+// exactement comme avant -- pour ne pas casser suchaq(m, 1, moy) deja existant.
 const FONCTIONS_VECTEUR_SUCHAQ = { som: sommeVecteur, moy: moyenneVecteur, var: varianceVecteur, sd: ecartTypeVecteur, max: maxVecteur, min: minVecteur };
-async function appelerFonctionNommee(nom, valeur) {
-  if (Object.prototype.hasOwnProperty.call(fonctions, nom)) {
-    return await appelerFonction(nom, [valeur]);
+async function appelerFonctionPourSuchaq(argExpr, valeur, ctxExpr) {
+  let texte = argExpr.trim();
+  if (/^[a-zA-Z_]\w*$/.test(texte) && Object.prototype.hasOwnProperty.call(FONCTIONS_VECTEUR_SUCHAQ, texte) && !chercherVariable(texte).trouve) {
+    return FONCTIONS_VECTEUR_SUCHAQ[texte](valeur);
   }
-  if (Object.prototype.hasOwnProperty.call(FONCTIONS_VECTEUR_SUCHAQ, nom)) {
-    return FONCTIONS_VECTEUR_SUCHAQ[nom](valeur);
+  let f = await evalExpr(argExpr, ctxExpr);
+  if (!estValeurFonction(f)) {
+    throw new Error("suchaq(...) : le 3e argument doit etre une fonction -- son nom (moy, doubler...), une variable qui en contient une, ou une fonction anonyme fonc(x){...} -- recu : " + nomNature(f));
   }
-  throw new Error("suchaq(...) : fonction inconnue '" + nom + "'. Utilisez som, moy, var, sd, ou une fonction que vous avez definie avec fonc " + nom + "(x){ ... }");
+  return await executerCorpsFonction(f.params, f.corps, [valeur], "La fonction passee a suchaq", undefined, f.environnement);
 }
 
 
@@ -3108,8 +3294,20 @@ function analyserListeParametres(str, contexteErreur, ligneErreur) {
   return params;
 }
 
+// Bug reel trouve et corrige (signale par Yannick, capture d'ecran console) : cette fonction
+// remettait "fonctions = {}" AVANT de re-scanner les tokens fournis. Sans consequence pour
+// runScript() (RUN), qui fait deja ce reset lui-meme juste avant d'appeler cette fonction sur
+// TOUT le script d'un coup -- mais catastrophique pour la console interactive, qui appelle
+// cette fonction a CHAQUE touche Entree avec les tokens de la SEULE commande tapee : definir
+// "fonc t(...){...}" sur une ligne l'enregistrait bien, mais taper n'importe quelle AUTRE
+// commande juste apres (meme "t(b~1)", l'appel lui-meme !) effacait aussitot fonctions -- donc
+// "t" redevenait introuvable des la commande suivante, avec l'erreur trompeuse "Appel de
+// fonction mal forme" (le vrai souci n'etait pas la syntaxe de l'appel, juste que la fonction
+// avait deja disparu). Le reset reste a sa place a l'unique endroit ou il doit avoir lieu :
+// runScript(), qui fait deja fonctions = {} explicitement avant son propre appel a
+// preRegistrerFonctions() (voir plus bas) -- il etait simplement redondant ici, en plus d'etre
+// faux pour l'usage console.
 function preRegistrerFonctions(tokens) {
-  fonctions = {};
   let i = 0;
   while (i < tokens.length) {
     let t = tokens[i];
@@ -3388,10 +3586,11 @@ let aideCommandes = [
       "Utile si tu as defini ta propre fonction avec le meme nom qu'une commande du langage, car elle la masquerait sinon.",
       "Les methodes de variable comme var.miniscul(), var.majuscul() et var.suprespac() restent attachees a la variable et ne se remplacent pas par base.var... ."
     ], exemple: "fonc affi(x){ ... }\naffi(1)         ->  utilise TA fonction\nbase.affi(1)    ->  utilise l'affi() d'origine" },
-  { noms: ["aide"], categorie: "Base", syntaxe: "aide()  ou  aide(nomOuSymbole)", description: [
+  { noms: ["aide"], categorie: "Base", syntaxe: "aide()  ou  aide(nomOuSymbole)  ou  aide(spec)", description: [
       "aide() : affiche la liste de toutes les commandes, grouper par categorie.",
-      "aide(nomOuSymbole) : affiche seulement l'explication de cette commande ou de ce symbole."
-    ], exemple: "aide(matrice)   ou   aide(+)" },
+      "aide(nomOuSymbole) : affiche seulement l'explication de cette commande ou de ce symbole.",
+      "aide(spec) : ouvre l'ecran de la specification officielle complete de MonLangage."
+    ], exemple: "aide(matrice)   ou   aide(+)\naide(spec)   ->   ouvre la specification officielle" },
   { noms: ["natu"], categorie: "Base", syntaxe: "natu(var)", description: [
       "Renvoie la nature (le type) de l'objet contenu dans var, sous forme de texte.",
       "Valeurs possibles : \"texte\", \"nombre\", \"booleen\", \"vecteur\" ou \"matrice\".",
@@ -3424,7 +3623,7 @@ let aideCommandes = [
       "VRAI si var contient une fonction (recue en parametre, ou stockee avec f ~ nomFonction).",
       "Une fonction perso deja declaree (fonc nom(...){...}) peut etre utilisee comme une valeur : stockee dans une variable (f ~ doubler), passee en argument a une autre fonction, ou renvoyee avec retour.",
       "Une fois stockee, elle s'appelle comme n'importe quelle fonction : f(5).",
-      "Limite actuelle : pas encore de fonction anonyme (lambda) ecrite directement dans une expression -- il faut d'abord la declarer avec fonc nom(...){...}, puis la faire circuler par son nom."
+      "Les fonctions peuvent aussi etre creees anonymement dans une expression avec la forme fonc(parametres) expression, puis stockees, passees en argument ou renvoyees."
     ], exemple: "fonc doubler(x){ retour x * 2 }\nf ~ doubler\naffi(f(5))          ->   10\naffi(est.fonction(f))   ->   VRAI\n\nfonc mapper(vecteur, f){\n    resultat ~ c()\n    pou(x dan vecteur){ resultat.ajout(f(x)) }\n    retour resultat\n}\naffi(mapper(c(1,2,3), doubler))   ->   2 4 6" },
   { noms: ["est.instance"], categorie: "Base", syntaxe: "est.instance(objet, NomClasse)", description: [
       "Verifie si objet est une instance de la classe NomClasse (comme isinstance(...) en Python).",
@@ -3614,7 +3813,7 @@ let aideCommandes = [
     ], exemple: "min(c(3,7,2))   ->   2" },
   { noms: ["suchaq"], categorie: "Infos sur un vecteur/une matrice", syntaxe: "suchaq(matrice, marge, fonction)", description: [
       "Comme apply() en R : applique 'fonction' a chaque ligne (marge~1) ou chaque colonne (marge~2) d'une matrice.",
-      "'fonction' s'ecrit SANS parentheses : som, moy, var, sd, ou une fonction que vous avez definie avec fonc.",
+      "'fonction' : som, moy, var, sd, max, min (sans parentheses), ou n'importe quelle valeur-fonction -- nom d'une fonction definie avec fonc, variable qui en contient une, fonction anonyme fonc(x){...}.",
       "Renvoie un vecteur (un resultat par ligne/colonne) si 'fonction' renvoie un nombre.",
       "Renvoie une matrice si 'fonction' renvoie un vecteur (une colonne de resultat par ligne/colonne d'origine)."
     ], exemple: "m ~ matrice(1:6, nlig~2, ncol~3)\nsuchaq(m, 1, som)   ->   somme de chaque ligne\nsuchaq(m, 2, moy)   ->   moyenne de chaque colonne" },
@@ -3905,7 +4104,7 @@ function enregistrerFonctionsBase() {
             let v = await evaluerElementBrut(args[0], ctxExpr);
             let x = versEntierUsage(await evalExpr(args[1], ctxExpr), "alea(var, x)");
             let plat = estMatrice(v) ? v.donnees : (estVecteur(v) ? v : null);
-            if (plat === null) throw new Error("alea(var, x) : var doit etre un vecteur ou une matrice");
+            if (plat === null) throw new ErreurTypeInvalide("alea(var, x) : var doit etre un vecteur ou une matrice");
             if (x < 0) throw new Error("alea(...) : x doit etre positif");
             if (x > plat.length) throw new Error("alea(...) : impossible de choisir " + x + " element(s) au hasard sans remise parmi seulement " + plat.length);
             return tirerAuHasardSansRemise(plat, x);
@@ -3933,7 +4132,7 @@ function enregistrerFonctionsBase() {
             let v = await evaluerElementBrut(args[0], ctxExpr);
             let x = versEntierUsage(await evalExpr(args[1], ctxExpr), "ralea(var, x)");
             let plat = estMatrice(v) ? v.donnees : (estVecteur(v) ? v : null);
-            if (plat === null) throw new Error("ralea(var, x) : var doit etre un vecteur ou une matrice");
+            if (plat === null) throw new ErreurTypeInvalide("ralea(var, x) : var doit etre un vecteur ou une matrice");
             if (x < 0) throw new Error("ralea(...) : x doit etre positif");
             if (plat.length === 0) throw new Error("ralea(...) : impossible de tirer dans un vecteur/une matrice vide");
             return tirerAuHasardAvecRemise(plat, x);
@@ -4161,7 +4360,7 @@ function enregistrerFonctionsBase() {
     fonctionsBase["ecrire"] = fonctionsExpression["ecrire"] = async function(args, ctxExpr) {
         if (args.length < 2) throw new Error("ecrire(cle, valeur, ...) attend au moins 2 arguments");
         let cle = await evalExpr(args[0], ctxExpr);
-        if (typeof cle !== 'string') throw new Error("ecrire(cle, valeur, ...) : cle doit etre du texte");
+        if (typeof cle !== 'string') throw new ErreurTypeInvalide("ecrire(cle, valeur, ...) : cle doit etre du texte");
         let valeurs = [];
         for (let i = 1; i < args.length; i++) valeurs.push(await evaluerElementBrut(args[i], ctxExpr));
         let valeur = valeurs.length === 1 ? valeurs[0] : { __type: "liste", elements: valeurs };
@@ -4178,7 +4377,7 @@ function enregistrerFonctionsBase() {
     fonctionsBase["lire"] = fonctionsExpression["lire"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("lire(cle) attend 1 argument");
         let cle = await evalExpr(args[0], ctxExpr);
-        if (typeof cle !== 'string') throw new Error("lire(cle) : cle doit etre du texte");
+        if (typeof cle !== 'string') throw new ErreurTypeInvalide("lire(cle) : cle doit etre du texte");
         let brut = localStorage.getItem("monlangage:" + cle);
         if (brut === null) return undefined;
         try { return JSON.parse(brut); }
@@ -4190,15 +4389,27 @@ function enregistrerFonctionsBase() {
     // emplacement fixe, il n'y a rien a verifier avant l'ouverture du navigateur de fichiers
     // interactif. A utiliser typiquement avant ecrire.fichier(chemin, valeur) pour decider
     // d'ecraser ou non, sans passer par essai/attrape.
+    // Verifie l'autorisation de stockage native avant une operation fichier a CHEMIN DIRECT
+    // (les operations via le navigateur de fichiers integre gerent deja ca elles-memes avec
+    // une alerte + demande de permission, voir ouvrirNavigateurFichiers plus bas). Renvoie
+    // VRAI si l'API n'existe pas (ancien bridge natif), pour ne rien casser sur une version
+    // anterieure de l'app qui n'expose pas encore permissionStockageAccordee().
+    function verifierPermissionStockage() {
+        if (!(window.MonLangage && typeof window.MonLangage.permissionStockageAccordee === "function")) return true;
+        return window.MonLangage.permissionStockageAccordee();
+    }
     fonctionsBase["existe.fichier"] = fonctionsExpression["existe.fichier"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("existe.fichier(chemin) attend 1 argument");
         let chemin = await evalExpr(args[0], ctxExpr);
-        if (typeof chemin !== 'string') throw new Error("existe.fichier(chemin) : chemin doit etre du texte");
+        if (typeof chemin !== 'string') throw new ErreurTypeInvalide("existe.fichier(chemin) : chemin doit etre du texte");
         if (chemin.indexOf("/") === -1) {
             throw new Error("existe.fichier(chemin) : il faut un chemin complet (avec '/'), comme pour ecrire.fichier(chemin, valeur) -- un simple nom n'a pas d'emplacement fixe a verifier avant l'ouverture du navigateur de fichiers");
         }
         if (!(window.MonLangage && typeof window.MonLangage.existeFichier === "function")) {
-            throw new Error("existe.fichier(...) : disponible uniquement dans l'app installee (rebuild requis)");
+            throw new ErreurIndisponibleHorsApp("existe.fichier(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        if (!verifierPermissionStockage()) {
+            throw new ErreurPermissionRefusee("existe.fichier(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
         }
         let cheminFinal = /\.[a-zA-Z0-9]+$/.test(chemin) ? chemin : chemin + ".mld";
         return window.MonLangage.existeFichier(cheminFinal);
@@ -4225,7 +4436,7 @@ function enregistrerFonctionsBase() {
     fonctionsBase["ecrire.fichier"] = fonctionsExpression["ecrire.fichier"] = async function(args, ctxExpr) {
         if (args.length < 2) throw new Error("ecrire.fichier(nom, valeur, ...) attend au moins 2 arguments");
         let nom = await evalExpr(args[0], ctxExpr);
-        if (typeof nom !== 'string') throw new Error("ecrire.fichier(nom, valeur, ...) : nom doit etre du texte");
+        if (typeof nom !== 'string') throw new ErreurTypeInvalide("ecrire.fichier(nom, valeur, ...) : nom doit etre du texte");
 
         let ecra = false, valeursBrutes = [];
         for (let i = 1; i < args.length; i++) {
@@ -4250,9 +4461,12 @@ function enregistrerFonctionsBase() {
             if (!(window.MonLangage && typeof window.MonLangage.ecrireFichier === "function")) {
                 throw new Error("ecrire.fichier(chemin, valeur, ...) : l'ecriture directe par chemin n'est possible que dans l'app installee (utilise ecrire.fichier(nom, valeur, ...) sans '/' en previsualisation navigateur)");
             }
+            if (!verifierPermissionStockage()) {
+                throw new ErreurPermissionRefusee("ecrire.fichier(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
+            }
             let cheminDirect = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".mld";
             if (!ecra && typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminDirect)) {
-                throw new Error("ecrire.fichier(...) : le fichier '" + cheminDirect + "' existe deja (utilise ecra~VRAI pour l'ecraser, ou existe.fichier(...) pour verifier avant)");
+                throw new ErreurFichierDejaExistant("ecrire.fichier(...) : le fichier '" + cheminDirect + "' existe deja (utilise ecra~VRAI pour l'ecraser, ou existe.fichier(...) pour verifier avant)");
             }
             let ok = window.MonLangage.ecrireFichier(cheminDirect, texte);
             if (!ok) throw new Error("ecrire.fichier(...) : echec de l'ecriture sur '" + cheminDirect + "'");
@@ -4263,7 +4477,7 @@ function enregistrerFonctionsBase() {
             let nomSansExt = nom.replace(/\.[a-zA-Z0-9]+$/, "");
             let cheminComplet = await demanderEmplacementEcritureFichier(nomSansExt, ".mld");
             if (!ecra && typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminComplet)) {
-                throw new Error("ecrire.fichier(...) : le fichier '" + cheminComplet + "' existe deja (utilise ecra~VRAI pour l'ecraser, ou existe.fichier(...) pour verifier avant)");
+                throw new ErreurFichierDejaExistant("ecrire.fichier(...) : le fichier '" + cheminComplet + "' existe deja (utilise ecra~VRAI pour l'ecraser, ou existe.fichier(...) pour verifier avant)");
             }
             let ok = window.MonLangage.ecrireFichier(cheminComplet, texte);
             if (!ok) throw new Error("ecrire.fichier(...) : echec de l'ecriture sur le telephone");
@@ -4318,9 +4532,9 @@ function enregistrerFonctionsBase() {
     fonctionsBase["ajout"] = fonctionsExpression["ajout"] = async function(args, ctxExpr) {
         if (args.length < 2) throw new Error("ajout(cle, valeur, ...) attend au moins 2 arguments");
         let cle = await evalExpr(args[0], ctxExpr);
-        if (typeof cle !== 'string') throw new Error("ajout(cle, valeur, ...) : cle doit etre du texte");
+        if (typeof cle !== 'string') throw new ErreurTypeInvalide("ajout(cle, valeur, ...) : cle doit etre du texte");
         let brut = localStorage.getItem("monlangage:" + cle);
-        if (brut === null) throw new Error("ajout(...) : la cle '" + cle + "' n'existe pas encore (utilise ecrire(...) pour la creer)");
+        if (brut === null) throw new ErreurCleIntrouvable("ajout(...) : la cle '" + cle + "' n'existe pas encore (utilise ecrire(...) pour la creer)");
         let existant;
         try { existant = JSON.parse(brut); }
         catch (e) { throw new Error("ajout(...) : la sauvegarde pour '" + cle + "' est corrompue"); }
@@ -4348,19 +4562,20 @@ function enregistrerFonctionsBase() {
     fonctionsBase["ajout.fichier"] = fonctionsExpression["ajout.fichier"] = async function(args, ctxExpr) {
         if (args.length < 2) throw new Error("ajout.fichier(nom, valeur, ...) attend au moins 2 arguments");
         let nom = await evalExpr(args[0], ctxExpr);
-        if (typeof nom !== 'string') throw new Error("ajout.fichier(nom, valeur, ...) : nom doit etre du texte");
+        if (typeof nom !== 'string') throw new ErreurTypeInvalide("ajout.fichier(nom, valeur, ...) : nom doit etre du texte");
         if (!(window.MonLangage && typeof window.MonLangage.lireFichier === "function" && typeof window.MonLangage.ecrireFichier === "function")) {
-            throw new Error("ajout.fichier(...) : disponible uniquement dans l'app installee (rebuild requis)");
+            throw new ErreurIndisponibleHorsApp("ajout.fichier(...) : disponible uniquement dans l'app installee (rebuild requis)");
         }
-
-        let nouvelles = [];
+        if (!verifierPermissionStockage()) {
+            throw new ErreurPermissionRefusee("ajout.fichier(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
+        }
         for (let i = 1; i < args.length; i++) nouvelles.push(await evaluerElementBrut(args[i], ctxExpr));
 
         let cheminComplet;
         if (nom.indexOf("/") !== -1) {
             cheminComplet = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".mld";
             if (!(typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminComplet))) {
-                throw new Error("ajout.fichier(...) : le fichier '" + cheminComplet + "' n'existe pas (utilise ecrire.fichier(...) pour le creer)");
+                throw new ErreurFichierIntrouvable("ajout.fichier(...) : le fichier '" + cheminComplet + "' n'existe pas (utilise ecrire.fichier(...) pour le creer)");
             }
         } else {
             cheminComplet = await demanderEmplacementLectureFichier();
@@ -4370,7 +4585,7 @@ function enregistrerFonctionsBase() {
         if (texteExistant === null || texteExistant === undefined) throw new Error("ajout.fichier(...) : impossible de lire '" + cheminComplet + "'");
         let existant;
         try { existant = JSON.parse(texteExistant); }
-        catch (e) { throw new Error("ajout.fichier(...) : le fichier '" + cheminComplet + "' n'est pas une sauvegarde valide"); }
+        catch (e) { throw new ErreurFichierInvalide("ajout.fichier(...) : le fichier '" + cheminComplet + "' n'est pas une sauvegarde valide"); }
 
         let fusion = fusionnerPourAjout(existant, nouvelles);
         let texteFinal;
@@ -4391,9 +4606,12 @@ function enregistrerFonctionsBase() {
     fonctionsBase["ajout.Tfichier"] = fonctionsExpression["ajout.Tfichier"] = async function(args, ctxExpr) {
         if (args.length < 2) throw new Error("ajout.Tfichier(nom, valeur, ...) attend au moins 2 arguments");
         let nom = await evalExpr(args[0], ctxExpr);
-        if (typeof nom !== 'string') throw new Error("ajout.Tfichier(nom, valeur, ...) : nom doit etre du texte");
+        if (typeof nom !== 'string') throw new ErreurTypeInvalide("ajout.Tfichier(nom, valeur, ...) : nom doit etre du texte");
         if (!(window.MonLangage && typeof window.MonLangage.lireFichier === "function" && typeof window.MonLangage.ecrireFichier === "function")) {
-            throw new Error("ajout.Tfichier(...) : disponible uniquement dans l'app installee (rebuild requis)");
+            throw new ErreurIndisponibleHorsApp("ajout.Tfichier(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        if (!verifierPermissionStockage()) {
+            throw new ErreurPermissionRefusee("ajout.Tfichier(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
         }
 
         let nouvelles = [];
@@ -4403,7 +4621,7 @@ function enregistrerFonctionsBase() {
         if (nom.indexOf("/") !== -1) {
             cheminComplet = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".mld";
             if (!(typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminComplet))) {
-                throw new Error("ajout.Tfichier(...) : le fichier '" + cheminComplet + "' n'existe pas (utilise ecrire.fichier(...) pour le creer)");
+                throw new ErreurFichierIntrouvable("ajout.Tfichier(...) : le fichier '" + cheminComplet + "' n'existe pas (utilise ecrire.fichier(...) pour le creer)");
             }
         } else {
             cheminComplet = await demanderEmplacementLectureFichier();
@@ -4413,7 +4631,7 @@ function enregistrerFonctionsBase() {
         if (texteExistantBrut === null || texteExistantBrut === undefined) throw new Error("ajout.Tfichier(...) : impossible de lire '" + cheminComplet + "'");
         let existant;
         try { existant = JSON.parse(texteExistantBrut); }
-        catch (e) { throw new Error("ajout.Tfichier(...) : le fichier '" + cheminComplet + "' n'est pas une sauvegarde valide"); }
+        catch (e) { throw new ErreurFichierInvalide("ajout.Tfichier(...) : le fichier '" + cheminComplet + "' n'est pas une sauvegarde valide"); }
         if (typeof existant !== 'string') {
             throw new Error("ajout.Tfichier(...) : le fichier '" + cheminComplet + "' ne contient pas du texte (utilise ajout.fichier() pour ce type de contenu)");
         }
@@ -4455,9 +4673,9 @@ function enregistrerFonctionsBase() {
     fonctionsBase["supri.cle"] = fonctionsExpression["supri.cle"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("supri.cle(cle) attend 1 argument");
         let cle = await evalExpr(args[0], ctxExpr);
-        if (typeof cle !== 'string') throw new Error("supri.cle(cle) : cle doit etre du texte");
+        if (typeof cle !== 'string') throw new ErreurTypeInvalide("supri.cle(cle) : cle doit etre du texte");
         if (localStorage.getItem("monlangage:" + cle) === null) {
-            throw new Error("supri.cle(...) : la cle '" + cle + "' n'existe pas");
+            throw new ErreurCleIntrouvable("supri.cle(...) : la cle '" + cle + "' n'existe pas");
         }
         localStorage.removeItem("monlangage:" + cle);
         return true;
@@ -4473,12 +4691,15 @@ function enregistrerFonctionsBase() {
     fonctionsBase["voir.fichier"] = fonctionsExpression["voir.fichier"] = async function(args, ctxExpr) {
         if (args.length > 1) throw new Error("voir.fichier(dossier) attend 0 ou 1 argument");
         if (!(window.MonLangage && typeof window.MonLangage.listerDossier === "function")) {
-            throw new Error("voir.fichier(...) : disponible uniquement dans l'app installee (rebuild requis)");
+            throw new ErreurIndisponibleHorsApp("voir.fichier(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        if (!verifierPermissionStockage()) {
+            throw new ErreurPermissionRefusee("voir.fichier(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
         }
         let dossier;
         if (args.length === 1) {
             dossier = await evalExpr(args[0], ctxExpr);
-            if (typeof dossier !== 'string') throw new Error("voir.fichier(dossier) : dossier doit etre du texte");
+            if (typeof dossier !== 'string') throw new ErreurTypeInvalide("voir.fichier(dossier) : dossier doit etre du texte");
         } else {
             dossier = (typeof window.MonLangage.dossierRacine === "function") ? window.MonLangage.dossierRacine() : null;
             if (!dossier) throw new Error("voir.fichier(...) : impossible de determiner le dossier par defaut, precise un dossier");
@@ -4497,16 +4718,19 @@ function enregistrerFonctionsBase() {
     fonctionsBase["supri.fichier"] = fonctionsExpression["supri.fichier"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("supri.fichier(nom) attend 1 argument");
         let nom = await evalExpr(args[0], ctxExpr);
-        if (typeof nom !== 'string') throw new Error("supri.fichier(nom) : nom doit etre du texte");
+        if (typeof nom !== 'string') throw new ErreurTypeInvalide("supri.fichier(nom) : nom doit etre du texte");
         if (!(window.MonLangage && typeof window.MonLangage.supprimerFichier === "function")) {
-            throw new Error("supri.fichier(...) : disponible uniquement dans l'app installee (rebuild requis)");
+            throw new ErreurIndisponibleHorsApp("supri.fichier(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        if (!verifierPermissionStockage()) {
+            throw new ErreurPermissionRefusee("supri.fichier(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
         }
 
         let cheminComplet;
         if (nom.indexOf("/") !== -1) {
             cheminComplet = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".mld";
             if (!(typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminComplet))) {
-                throw new Error("supri.fichier(...) : le fichier '" + cheminComplet + "' n'existe pas");
+                throw new ErreurFichierIntrouvable("supri.fichier(...) : le fichier '" + cheminComplet + "' n'existe pas");
             }
         } else {
             cheminComplet = await demanderEmplacementLectureFichier();
@@ -4526,14 +4750,17 @@ function enregistrerFonctionsBase() {
     fonctionsBase["lire.fichier"] = fonctionsExpression["lire.fichier"] = async function(args, ctxExpr) {
         if (args.length >= 1) {
             let chemin = await evalExpr(args[0], ctxExpr);
-            if (typeof chemin !== 'string') throw new Error("lire.fichier(chemin) : chemin doit etre du texte");
+            if (typeof chemin !== 'string') throw new ErreurTypeInvalide("lire.fichier(chemin) : chemin doit etre du texte");
             if (!(window.MonLangage && typeof window.MonLangage.lireFichier === "function")) {
                 throw new Error("lire.fichier(chemin) : la lecture directe par chemin n'est possible que dans l'app installee (utilise lire.fichier() sans argument en previsualisation navigateur)");
+            }
+            if (!verifierPermissionStockage()) {
+                throw new ErreurPermissionRefusee("lire.fichier(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
             }
             let texte = window.MonLangage.lireFichier(chemin);
             if (texte === null || texte === undefined) throw new Error("lire.fichier(...) : impossible de lire '" + chemin + "'");
             try { return JSON.parse(texte); }
-            catch (e) { throw new Error("lire.fichier(...) : le fichier '" + chemin + "' n'est pas une sauvegarde valide"); }
+            catch (e) { throw new ErreurFichierInvalide("lire.fichier(...) : le fichier '" + chemin + "' n'est pas une sauvegarde valide"); }
         }
 
         if (window.MonLangage && typeof window.MonLangage.lireFichier === "function") {
@@ -4541,12 +4768,12 @@ function enregistrerFonctionsBase() {
             let texte = window.MonLangage.lireFichier(cheminComplet);
             if (texte === null || texte === undefined) throw new Error("lire.fichier(...) : impossible de lire ce fichier");
             try { return JSON.parse(texte); }
-            catch (e) { throw new Error("lire.fichier(...) : le fichier choisi n'est pas une sauvegarde valide"); }
+            catch (e) { throw new ErreurFichierInvalide("lire.fichier(...) : le fichier choisi n'est pas une sauvegarde valide"); }
         }
 
         let texte = await demanderFichierConsole();
         try { return JSON.parse(texte); }
-        catch (e) { throw new Error("lire.fichier(...) : le fichier choisi n'est pas une sauvegarde valide"); }
+        catch (e) { throw new ErreurFichierInvalide("lire.fichier(...) : le fichier choisi n'est pas une sauvegarde valide"); }
     };
 
 
@@ -4677,7 +4904,7 @@ function enregistrerFonctionsBase() {
     fonctionsBase["trace"] = fonctionsExpression["trace"] = async function(args, ctxExpr) {
         if (args.length < 1) throw new Error("trace(...) attend un argument");
         let m = await evalExpr(args[0], ctxExpr);
-        if (!estMatrice(m)) throw new Error("trace(...) attend une matrice");
+        if (!estMatrice(m)) throw new ErreurTypeInvalide("trace(...) attend une matrice");
         if (m.nlig !== m.ncol) throw new Error("trace(...) : la matrice doit etre carree (recue : " + m.nlig + "x" + m.ncol + ")");
         let somme = 0;
         for (let k = 0; k < m.nlig; k++) somme += m.donnees[k * m.nlig + k];
@@ -4688,7 +4915,7 @@ function enregistrerFonctionsBase() {
     fonctionsBase["trans"] = fonctionsExpression["trans"] = async function(args, ctxExpr) {
         if (args.length < 1) throw new Error("trans(...) attend un argument");
         let m = await evalExpr(args[0], ctxExpr);
-        if (!estMatrice(m)) throw new Error("trans(...) attend une matrice");
+        if (!estMatrice(m)) throw new ErreurTypeInvalide("trans(...) attend une matrice");
         return transposerMatrice(m);
     };
 
@@ -4702,13 +4929,10 @@ function enregistrerFonctionsBase() {
             throw new Error("suchaq(...) attend 3 arguments : suchaq(matrice, marge, fonction) -- marge vaut 1 (par ligne) ou 2 (par colonne)");
         }
         let m = await evalExpr(args[0], ctxExpr);
-        if (!estMatrice(m)) throw new Error("suchaq(...) : le 1er argument doit etre une matrice");
+        if (!estMatrice(m)) throw new ErreurTypeInvalide("suchaq(...) : le 1er argument doit etre une matrice");
         let marge = await evalExpr(args[1], ctxExpr);
         if (marge !== 1 && marge !== 2) throw new Error("suchaq(...) : la marge (2e argument) doit valoir 1 (par ligne) ou 2 (par colonne), recu : " + marge);
         let nomFonction = args[2].trim();
-        if (!/^[a-zA-Z_]\w*$/.test(nomFonction)) {
-            throw new Error("suchaq(...) : le 3e argument doit etre le nom (sans parentheses) d'une fonction, ex: suchaq(m, 1, moy) -- recu : " + nomFonction);
-        }
 
         let nb = marge === 1 ? m.nlig : m.ncol;
         let resultats = [];
@@ -4716,7 +4940,7 @@ function enregistrerFonctionsBase() {
             let tranche = marge === 1
                 ? accederMatrice(m, i + 1, null, "suchaq")
                 : accederMatrice(m, null, i + 1, "suchaq");
-            resultats.push(await appelerFonctionNommee(nomFonction, tranche));
+            resultats.push(await appelerFonctionPourSuchaq(nomFonction, tranche, ctxExpr));
         }
 
         // Chaque resultat est un simple nombre -> un vecteur (un resultat par ligne/colonne).
@@ -4737,7 +4961,7 @@ function enregistrerFonctionsBase() {
     // element a un vecteur/une matrice. Utilisee par sin, cos, exp, ln.
     function appliquerFonctionMath(nom, f, v) {
         function surUnNombre(x) {
-            if (typeof x !== 'number') throw new Error(nom + "(...) attend un nombre, un vecteur ou une matrice de nombres");
+            if (typeof x !== 'number') throw new ErreurTypeInvalide(nom + "(...) attend un nombre, un vecteur ou une matrice de nombres");
             return f(x);
         }
         if (estMatrice(v)) return { __type: "matrice", nlig: v.nlig, ncol: v.ncol, donnees: v.donnees.map(surUnNombre) };
@@ -4801,7 +5025,7 @@ function enregistrerFonctionsBase() {
             if (texte === "" || isNaN(n)) throw new Error("conver.nombr(...) : impossible de convertir |" + v + "| en nombre");
             return n;
         }
-        throw new Error("conver.nombr(...) attend un nombre, un texte ou un booleen (recu : " + nomNature(v) + ")");
+        throw new ErreurTypeInvalide("conver.nombr(...) attend un nombre, un texte ou un booleen (recu : " + nomNature(v) + ")");
     };
     fonctionsBase["conver.text"] = fonctionsExpression["conver.text"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("conver.text(...) attend exactement 1 argument");
@@ -4809,7 +5033,7 @@ function enregistrerFonctionsBase() {
         if (typeof v === 'string') return v;
         if (typeof v === 'number') return String(v);
         if (typeof v === 'boolean') return v ? "VRAI" : "FAUX";
-        throw new Error("conver.text(...) attend un nombre, un texte ou un booleen (recu : " + nomNature(v) + ")");
+        throw new ErreurTypeInvalide("conver.text(...) attend un nombre, un texte ou un booleen (recu : " + nomNature(v) + ")");
     };
     fonctionsBase["conver.vecteu"] = fonctionsExpression["conver.vecteu"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("conver.vecteu(...) attend exactement 1 argument");
@@ -4910,6 +5134,10 @@ function enregistrerFonctionsBase() {
         }
         let cle = args[0].trim();
         if (/^\|.*\|$/.test(cle)) cle = cle.slice(1, -1).trim();
+        if (cle.toLowerCase() === "spec") {
+            ouvrirSpecification();
+            return;
+        }
         let entree = aideCommandes.find(e => e.noms.includes(cle));
         if (!entree) { print("Aucune aide trouver pour : " + cle); return; }
         let lignes = ["[" + entree.categorie + "]", entree.syntaxe];
@@ -5021,12 +5249,12 @@ function enregistrerFonctionsBase() {
         // trac(x, y)  -> trace y en fonction de x
         // trac(y)     -> trace y en fonction de sa position (1, 2, 3...)
         let premierVal = await evalExpr(positionnels[0], ctxExpr);
-        if (!estVecteur(premierVal)) throw new Error("trac(...) : l'argument doit etre un vecteur (calcule au prealable, comme en Scilab)");
+        if (!estVecteur(premierVal)) throw new ErreurTypeInvalide("trac(...) : l'argument doit etre un vecteur (calcule au prealable, comme en Scilab)");
 
         let xs, ys;
         if (positionnels.length >= 2) {
             let deuxiemeVal = await evalExpr(positionnels[1], ctxExpr);
-            if (!estVecteur(deuxiemeVal)) throw new Error("trac(...) : le deuxieme argument doit etre un vecteur");
+            if (!estVecteur(deuxiemeVal)) throw new ErreurTypeInvalide("trac(...) : le deuxieme argument doit etre un vecteur");
             if (premierVal.length !== deuxiemeVal.length) throw new Error("trac(...) : x et y doivent avoir la meme longueur");
             xs = premierVal; ys = deuxiemeVal;
             if (!xlab) xlab = "x";
@@ -5427,6 +5655,21 @@ function splitAffiElements(str) {
 // Sans ca, un argument comme |i vaut |  ou  | (special)|  pouvait etre coupe au
 // mauvais endroit (a cause d'une virgule ou d'une parenthese presente dans le texte),
 // ou simplement mal repere a cause d'espaces autour du '|'.
+// Evalue UN argument d'appel deja isole par splitTopLevelComma, en reconnaissant la syntaxe
+// d'argument nomme "nomParam~expr" (meme ~ que les affectations) EXACTEMENT comme lireArgument()
+// le fait dans le parseur d'expression asynchrone -- necessaire ici car les appels de fonction
+// ECRITS SEULS SUR LEUR LIGNE (ex: "t(b~3)", "moi.methode(x~1)", "parent.methode(moi, x~1)")
+// ne passent PAS par ce parseur : ils sont detectes par une regex a part (matchAppel/mMethode)
+// puis leurs arguments etaient jusqu'ici evalues un par un avec evalExpr() brut, qui ne
+// reconnait pas "nomParam~expr" et tentait donc de lire "b" comme une simple variable
+// (d'ou "Variable non definie: b" avec fonc t(a~1,*b){...} puis t(b~3) sur sa ligne).
+async function evaluerArgumentAppelStmt(argStr, ctxExpr) {
+  let m = argStr.match(/^([a-zA-Z_]\w*)\s*~\s*([\s\S]*)$/);
+  if (m) {
+    return { __argNomme: m[1], valeur: await evalExpr(m[2], ctxExpr) };
+  }
+  return await evalExpr(argStr, ctxExpr);
+}
 function splitTopLevelComma(str) {
   let parts = [], depth = 0, buf = "", dansTexte = false;
   for (let ch of str) {
@@ -5526,7 +5769,7 @@ async function executerCommandeSimple(ligne) {
     let cible = resoudreCheminCible(chemin);
     if (typeof cible === "number") { return; } // nombre : rien a convertir, on ignore silencieusement
     if (typeof cible !== "string") {
-      throw new Error(chemin + ".miniscul()/majuscul()/suprespac() attend une variable contenant du texte");
+      throw new ErreurTypeInvalide(chemin + ".miniscul()/majuscul()/suprespac() attend une variable contenant du texte");
     }
     let chaine = mMethodesTexte[2];
     let methodes = [];
@@ -5554,7 +5797,7 @@ async function executerCommandeSimple(ligne) {
     // Python). "parent" n'est pas une variable : traite avant toute resolution de variable.
     if (nomVar === "parent") {
       let argsVals = [];
-      for (let a of argExprs) argsVals.push(await evalExpr(a, ctxExpr));
+      for (let a of argExprs) argsVals.push(await evaluerArgumentAppelStmt(a, ctxExpr));
       let classeCourante = getClasseCourante();
       let classeParenteInfo = classeCourante && classes[classeCourante] ? classes[classeCourante] : null;
       let trouve = classeParenteInfo && classeParenteInfo.parent ? trouverMethodeAvecClasse(classeParenteInfo.parent, methode) : null;
@@ -5570,7 +5813,7 @@ async function executerCommandeSimple(ligne) {
     let cibleEventuelle = resoudreCheminCible(nomVar);
     if (cibleEventuelle && typeof cibleEventuelle === 'object' && cibleEventuelle.__classe !== undefined) {
       let argsVals = [];
-      for (let a of argExprs) argsVals.push(await evalExpr(a, ctxExpr));
+      for (let a of argExprs) argsVals.push(await evaluerArgumentAppelStmt(a, ctxExpr));
       let trouve = trouverMethodeAvecClasse(cibleEventuelle.__classe, methode);
       let val = await appellerMethodeInstance(cibleEventuelle, methode, argsVals);
       if (doitAfficherResultatAppel(val, trouve && trouve.methode.aRetourVide)) printValeur(await formatPourAffichage(val));
@@ -5594,7 +5837,7 @@ async function executerCommandeSimple(ligne) {
       }
       if (estVecteur(cible)) ajouterVecteur(cible, elements);
       else if (estMatrice(cible)) ajouterMatrice(cible, elements);
-      else throw new Error(nomVar + " n'est pas un vecteur, une matrice ou une liste");
+      else throw new ErreurTypeInvalide(nomVar + " n'est pas un vecteur, une matrice ou une liste");
       return;
     }
 
@@ -5615,7 +5858,7 @@ async function executerCommandeSimple(ligne) {
       }
       if (estVecteur(cible)) supprimerVecteur(cible, elements);
       else if (estMatrice(cible)) supprimerMatrice(cible, elements);
-      else throw new Error(nomVar + " n'est pas un vecteur, une matrice ou une liste");
+      else throw new ErreurTypeInvalide(nomVar + " n'est pas un vecteur, une matrice ou une liste");
       return;
     }
 
@@ -5627,7 +5870,7 @@ async function executerCommandeSimple(ligne) {
       let cible = resoudreCheminCible(nomVar);
       if (typeof cible === "number") { return; } // nombre : rien a convertir, on ignore silencieusement
       if (typeof cible !== "string") {
-        throw new Error(nomVar + "." + methode + "() attend une variable contenant du texte");
+        throw new ErreurTypeInvalide(nomVar + "." + methode + "() attend une variable contenant du texte");
       }
       let valeur = methode === "miniscul" ? cible.toLowerCase() : methode === "majuscul" ? cible.toUpperCase() : cible.trim();
       assignerCheminValeur(nomVar, valeur);
@@ -5781,7 +6024,7 @@ if (nomBase !== null) {
     let argsStr = matchAppel[2].trim();
     let argExprs = argsStr === "" ? [] : splitTopLevelComma(argsStr);
     let argsVals = [];
-    for (let a of argExprs) argsVals.push(await evalExpr(a.trim(), ctxExpr));
+    for (let a of argExprs) argsVals.push(await evaluerArgumentAppelStmt(a.trim(), ctxExpr));
     let val = await appelerFonction(nom, argsVals);
     // Affiche automatiquement le retour d'une fonction perso appelee seule sur sa
     // ligne (ex: "nomfonction(x)"), que ce soit dans la console OU en executant
@@ -5991,33 +6234,38 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
         continue;
       }
 
-      // essai{...} attrape(msg){...} : intercepte une erreur levee dans le bloc essai (ex:
+      // essai{...} attrape(msg, code){...} : intercepte une erreur levee dans le bloc essai (ex:
       // ecrire.fichier(...) avec ecra~FAUX sur un fichier existant) sans planter tout le
       // script. Comme sinon apres si, attrape doit suivre IMMEDIATEMENT le "}" de essai (pas
       // d'instruction entre les deux). "attrape(msg){...}" recupere le message d'erreur (texte)
-      // dans la variable msg ; "attrape{...}" (sans parametre) ignore le message. Le bloc
-      // attrape n'est execute QUE si une erreur a ete levee ; sinon il est simplement saute.
-      // ExecutionInterrompue (retour force a l'editeur pendant l'execution) n'est JAMAIS
-      // interceptee ici : elle doit toujours remonter jusqu'en haut, essai/attrape ne doit
-      // pas pouvoir empecher l'utilisateur d'arreter un script.
+      // dans la variable msg ; "attrape(msg, code){...}" recupere en plus un code d'erreur court
+      // (ex: "DIVISION_ZERO") dans la variable code, quand l'erreur levee est une instance
+      // d'ErreurLangage (voir la hierarchie de classes plus haut) -- sinon (erreur JS/syntaxe non
+      // migree) code vaut "SYNTAXE" par defaut. "attrape{...}" (sans parametre) ignore le message
+      // et le code. Le bloc attrape n'est execute QUE si une erreur a ete levee ; sinon il est
+      // simplement saute. ExecutionInterrompue (retour force a l'editeur pendant l'execution)
+      // n'est JAMAIS interceptee ici : elle doit toujours remonter jusqu'en haut, essai/attrape
+      // ne doit pas pouvoir empecher l'utilisateur d'arreter un script.
       if (token === 'essai') {
         if (!tokens[index+1] || tokens[index+1].texte !== "{") throw new Error("Manque { apres essai");
         let finBlocEssai = trouverFinBloc(tokens, index + 2, ligneActuelle);
 
         let curseurAttrape = finBlocEssai;
         let tokAttrape = tokens[curseurAttrape];
-        let mAttrape = tokAttrape ? tokAttrape.texte.match(/^attrape(?:\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\))?$/) : null;
-        if (!mAttrape) throw new Error("essai{...} doit etre suivi directement de attrape{...} ou attrape(msg){...}, sans instruction entre les deux");
+        let mAttrape = tokAttrape ? tokAttrape.texte.match(/^attrape(?:\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:,\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*)?\))?$/) : null;
+        if (!mAttrape) throw new Error("essai{...} doit etre suivi directement de attrape{...}, attrape(msg){...} ou attrape(msg, code){...}, sans instruction entre les deux");
         if (!tokens[curseurAttrape+1] || tokens[curseurAttrape+1].texte !== "{") throw new Error("Manque { apres attrape");
         let finBlocAttrape = trouverFinBloc(tokens, curseurAttrape + 2, ligneActuelle);
         let nomVarErreur = mAttrape[1] || null;
+        let nomVarCode = mAttrape[2] || null;
 
-        let messageErreur = null, resEssai = null;
+        let messageErreur = null, codeErreur = null, resEssai = null;
         try {
           resEssai = await executerTokens(tokens, index + 2, finBlocEssai - 1);
         } catch (e) {
           if (e instanceof ExecutionInterrompue) throw e;
           messageErreur = e.message;
+          codeErreur = (e instanceof ErreurCode && e.code) ? e.code : "SYNTAXE";
         }
 
         if (messageErreur === null) {
@@ -6028,6 +6276,7 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
         }
 
         if (nomVarErreur) setVar(nomVarErreur, messageErreur);
+        if (nomVarCode) setVar(nomVarCode, codeErreur);
         let resAttrape = await executerTokens(tokens, curseurAttrape + 2, finBlocAttrape - 1);
         if (resAttrape.signal) return resAttrape;
         index = finBlocAttrape;
@@ -6049,7 +6298,7 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
 
         if (entete.type === 'dan') {
           let objetVal = await evalExpr(entete.objetExpr, ctxExpr);
-          if (!estVecteur(objetVal)) throw new Error("pou(var dan objet) : objet doit etre un vecteur");
+          if (!estVecteur(objetVal)) throw new ErreurTypeInvalide("pou(var dan objet) : objet doit etre un vecteur");
           for (let val of objetVal) {
             await respirer();
             setVar(entete.varNom, val);
@@ -6064,7 +6313,7 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
           let debutVal = await evalExpr(entete.debutExpr, ctxExpr);
           let finVal = await evalExpr(entete.finExpr, ctxExpr);
           let pasVal = entete.parExpr === null ? 1 : await evalExpr(entete.parExpr, ctxExpr);
-          if (typeof pasVal !== 'number' || isNaN(pasVal)) throw new Error("pou(...) : le pas doit etre un nombre");
+          if (typeof pasVal !== 'number' || isNaN(pasVal)) throw new ErreurTypeInvalide("pou(...) : le pas doit etre un nombre");
           if (pasVal === 0) throw new Error("pou(...) : le pas ne peut pas valoir 0 (boucle infinie)");
           for (let val = debutVal; (pasVal > 0 ? val <= finVal : val >= finVal); val += pasVal) {
             await respirer();
@@ -6362,6 +6611,10 @@ if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App
       quitterConsole();
       return;
     }
+    if (ecranSpecification.classList.contains("actif")) {
+      fermerSpecification();
+      return;
+    }
     // Vraiment dans l'editeur, aucune fenetre active : on quitte l'app.
     window.Capacitor.Plugins.App.exitApp();
   });
@@ -6487,7 +6740,24 @@ enregistrerFonctionsBase();
 // simple focus() ne fait alors plus rien (deja l'element actif). Un tap
 // n'importe ou dans la console force donc un cycle blur+focus pour rouvrir
 // le clavier, sauf si du texte est en cours de selection (copier/coller).
+//
+// Bug reel signale par Yannick et corrige : ce blur+focus systematique cassait le
+// long appui pour copier du texte dans la console. Cause : sur certaines WebView
+// Android, un "click" arrive quand meme a la fin d'un long appui de selection (avant
+// meme que window.getSelection() ne soit mise a jour avec le mot selectionne) -- le
+// controle "if (sel.toString().length>0) return;" ci-dessous arrivait donc TROP TOT,
+// voyait une selection encore vide, et refocalisait aussitot le champ de saisie --
+// ce qui fait perdre la selection en cours d'apparition (bulle "Copier" jamais vue,
+// ou disparaissant instantanement). Corrige en mesurant en plus la DUREE de l'appui
+// (touchstart -> click) : au-dela de 350ms, c'est un geste de selection (long appui),
+// jamais un simple tap pour rouvrir le clavier -- on l'ignore d'office, meme si
+// getSelection() est encore vide a cet instant precis.
+let dernierTouchstartOutput = 0;
+outputDiv.addEventListener("touchstart", function(e) {
+  dernierTouchstartOutput = Date.now();
+}, { passive: true });
 outputDiv.addEventListener("click", function(e) {
+  if (Date.now() - dernierTouchstartOutput > 350) return;
   let sel = window.getSelection();
   if (sel && sel.toString().length > 0) return;
   let saisies = outputDiv.querySelectorAll(".cmdInput, .entrInput");
