@@ -111,7 +111,17 @@
       font-size: 14px;
     }
     #menuOuvrir button:hover { background: #21262d; }
-    #nomFichier { margin-left: auto; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8b949e; font-size: 13px; }
+    #barreFichier {
+      background: #161b22;
+      padding: 6px 12px;
+      border-bottom: 1px solid #30363d;
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+    #nomFichier { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #c9d1d9; font-size: 15px; font-weight: bold; max-width: 100%; }
+    #cheminFichier { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8b949e; font-size: 11px; max-width: 100%; margin-top: 1px; }
+    #cheminFichier:empty { display: none; }
 
     /* Navigateur de fichiers integre (remplace les selecteurs systeme Android) */
     .modalFichiersOverlay {
@@ -192,6 +202,51 @@
     #codeHighlight::-webkit-scrollbar { display: none; }
     #code { background: transparent; color: transparent; caret-color: #c9d1d9; border: none; outline: none; resize: none; overflow-x: auto; overflow-y: auto; z-index: 1; }
     #code::selection { background: #264f78; color: #c9d1d9; }
+    #ligneActive { position: absolute; left: 0; right: 0; top: 0; height: 23px; background: rgba(31, 111, 235, 0.12); pointer-events: none; z-index: 0; }
+
+    #barreRecherche {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      padding: 8px;
+      flex-shrink: 0;
+    }
+    #barreRecherche.visible { display: flex; }
+    #rechercheTexte {
+      flex: 1;
+      min-width: 0;
+      background: #0d1117;
+      color: #c9d1d9;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-family: monospace;
+      font-size: 14px;
+    }
+    #rechercheCompte { color: #8b949e; font-size: 12px; min-width: 42px; text-align: center; flex-shrink: 0; }
+    #barreRecherche button { background: #21262d; padding: 6px 10px; flex-shrink: 0; }
+    #barreRecherche button:hover { background: #30363d; }
+
+    #barreOutilsBas {
+      display: flex;
+      background: #161b22;
+      border-top: 1px solid #30363d;
+      flex-shrink: 0;
+      padding: 2px;
+    }
+    #barreOutilsBas button {
+      flex: 1;
+      background: transparent;
+      color: #c9d1d9;
+      border-radius: 6px;
+      padding: 10px 0;
+      font-size: 17px;
+      font-weight: normal;
+    }
+    #barreOutilsBas button:hover, #barreOutilsBas button:active { background: #21262d; }
+    #barreOutilsBas button:disabled { color: #444; background: transparent; }
 
     #headerConsole { background: #010409; padding: 10px 10px 0 10px; flex-shrink: 0; }
     /* Bug reel signale par Yannick : le long appui pour copier ne faisait apparaitre AUCUNE
@@ -324,12 +379,16 @@
         </div>
       </div>
       <input type="file" id="inputOuvrir" accept="*/*" style="display:none">
-      <span id="nomFichier" title="Fichier actuel">Sans fichier</span>
+    </div>
+    <div id="barreFichier" title="Fichier actuel">
+      <span id="nomFichier">Sans fichier</span>
+      <span id="cheminFichier"></span>
     </div>
     <div id="ongletsBarre"></div>
     <div id="zoneCode">
       <div id="numeros">1</div>
       <div id="codeConteneur">
+        <div id="ligneActive" aria-hidden="true"></div>
         <div id="codeHighlight" aria-hidden="true"></div>
         <textarea id="code" spellcheck="false">fonc double(x){
 retour(x*2)
@@ -350,6 +409,21 @@ nom ~ entr(|Quel est ton prenom ?|)
 affi(|Bonjour |, nom)</textarea>
       </div>
     </div>
+    <div id="barreRecherche">
+      <input type="text" id="rechercheTexte" placeholder="Rechercher..." autocomplete="off" spellcheck="false">
+      <span id="rechercheCompte"></span>
+      <button id="btnRecherchePrecedent" type="button" title="Occurrence precedente">↑</button>
+      <button id="btnRechercheSuivant" type="button" title="Occurrence suivante">↓</button>
+      <button id="btnRechercheFermer" type="button" title="Fermer la recherche">✕</button>
+    </div>
+    <div id="barreOutilsBas">
+      <button id="btnCurseurGauche" type="button" title="Curseur a gauche">◀</button>
+      <button id="btnCurseurDroite" type="button" title="Curseur a droite">▶</button>
+      <button id="btnAnnuler" type="button" title="Annuler">↶</button>
+      <button id="btnRefaire" type="button" title="Retablir">↷</button>
+      <button id="btnRechercheOutil" type="button" title="Rechercher">🔍</button>
+      <button id="btnCollerOutil" type="button" title="Coller">📋</button>
+    </div>
   </div>
 
   <div id="ecranSpecification" aria-hidden="true">
@@ -368,7 +442,7 @@ affi(|Bonjour |, nom)</textarea>
     <div id="output"></div>
   </div>
 
-  <div id="indicateurAttente"><div class="spinnerAttente"></div><span>Execution en cours, patientez…</span></div>
+  <div id="indicateurAttente"><div class="spinnerAttente"></div><span id="texteIndicateurAttente">Execution en cours, patientez…</span></div>
 
   <div id="toastEnregistrement"><span class="toastIcone"></span><span class="toastTexte"></span></div>
 
@@ -436,6 +510,21 @@ let btnSauver = document.getElementById("btnSauver");
 let btnOuvrir = document.getElementById("btnOuvrir");
 let inputOuvrir = document.getElementById("inputOuvrir");
 let nomFichier = document.getElementById("nomFichier");
+let cheminFichierEl = document.getElementById("cheminFichier");
+let ligneActiveEl = document.getElementById("ligneActive");
+let barreOutilsBasEl = document.getElementById("barreOutilsBas");
+let btnCurseurGauche = document.getElementById("btnCurseurGauche");
+let btnCurseurDroite = document.getElementById("btnCurseurDroite");
+let btnAnnuler = document.getElementById("btnAnnuler");
+let btnRefaire = document.getElementById("btnRefaire");
+let btnRechercheOutil = document.getElementById("btnRechercheOutil");
+let btnCollerOutil = document.getElementById("btnCollerOutil");
+let barreRechercheEl = document.getElementById("barreRecherche");
+let rechercheTexteEl = document.getElementById("rechercheTexte");
+let rechercheCompteEl = document.getElementById("rechercheCompte");
+let btnRechercheSuivant = document.getElementById("btnRechercheSuivant");
+let btnRecherchePrecedent = document.getElementById("btnRecherchePrecedent");
+let btnRechercheFermer = document.getElementById("btnRechercheFermer");
 let ongletsBarre = document.getElementById("ongletsBarre");
 let menuOuvrir = document.getElementById("menuOuvrir");
 let btnMenuNouvelOnglet = document.getElementById("btnMenuNouvelOnglet");
@@ -471,7 +560,11 @@ let ongletActifId = null;
 let prochainIdOnglet = 1;
 
 function sauvegarderEtatOnglets() {
-  localStorage.setItem("monlangage_onglets", JSON.stringify(onglets));
+  // .historique est volontairement exclu de la serialisation : il peut contenir jusqu'a
+  // 100 versions completes du texte par onglet (voir HISTORIQUE_MAX plus bas), inutile de
+  // gonfler localStorage avec ca -- seul le contenu courant (.contenu) doit persister.
+  let ongletsSerialisables = onglets.map(({ historique, ...reste }) => reste);
+  localStorage.setItem("monlangage_onglets", JSON.stringify(ongletsSerialisables));
   localStorage.setItem("monlangage_onglet_actif", String(ongletActifId ?? ""));
 }
 
@@ -521,6 +614,9 @@ function afficherNomOngletActif() {
   let nom = onglet ? (onglet.nom || "sans titre") : "";
   nomFichier.textContent = nom || "Sans fichier";
   nomFichier.title = nom || "Fichier actuel";
+  let dossier = onglet ? (onglet.dossier || "") : "";
+  cheminFichierEl.textContent = dossier;
+  cheminFichierEl.title = dossier;
 }
 
 function definirNomFichier(nom) {
@@ -533,6 +629,7 @@ function definirNomFichier(nom) {
   } else {
     nomFichier.textContent = nom || "Sans fichier";
     nomFichier.title = nom || "Fichier actuel";
+    cheminFichierEl.textContent = "";
   }
 }
 
@@ -542,7 +639,11 @@ function creerOnglet(nom, contenu, contenuSauvegarde, activer = true) {
     nom: nom || "sans titre",
     contenu: contenu || "",
     contenuSauvegarde: contenuSauvegarde !== undefined ? contenuSauvegarde : (contenu || ""),
-    dirty: contenuSauvegarde !== undefined ? (contenu || "") !== contenuSauvegarde : false
+    dirty: contenuSauvegarde !== undefined ? (contenu || "") !== contenuSauvegarde : false,
+    // Historique annuler/retablir maison, propre a cet onglet -- jamais serialise dans
+    // localStorage (voir sauvegarderEtatOnglets) : il repart a zero a chaque ouverture de
+    // l'app, comme dans la plupart des editeurs.
+    historique: { piles: [contenu || ""], index: 0 }
   };
   onglets.push(onglet);
   if (activer) {
@@ -552,6 +653,7 @@ function creerOnglet(nom, contenu, contenuSauvegarde, activer = true) {
     majNumeros();
     majSurbrillance();
     synchroniserScrollEditeur();
+    majEtatBoutonsHistorique();
   }
   mettreAJourBarreOnglets();
   sauvegarderEtatOnglets();
@@ -579,6 +681,7 @@ function activerOnglet(id) {
   majNumeros();
   majSurbrillance();
   synchroniserScrollEditeur();
+  majEtatBoutonsHistorique();
   sauvegarderEtatOnglets();
   mettreAJourBarreOnglets();
   requestAnimationFrame(synchroniserScrollEditeur);
@@ -683,6 +786,7 @@ function fermerOnglet(id) {
     majNumeros();
     majSurbrillance();
     synchroniserScrollEditeur();
+    majEtatBoutonsHistorique();
   }
 
   sauvegarderEtatOnglets();
@@ -709,7 +813,9 @@ function initialiserOnglets() {
       nom: o.nom || "sans titre",
       contenu: o.contenu || "",
       contenuSauvegarde: o.contenuSauvegarde !== undefined ? o.contenuSauvegarde : (o.contenu || ""),
-      dirty: !!o.dirty
+      dirty: !!o.dirty,
+      dossier: o.dossier || undefined,
+      historique: { piles: [o.contenu || ""], index: 0 }
     }));
     prochainIdOnglet = Math.max(...onglets.map(o => Number(o.id) || 0), 0) + 1;
     let idSauvegarde = Number(localStorage.getItem("monlangage_onglet_actif"));
@@ -727,6 +833,8 @@ function initialiserOnglets() {
   mettreAJourBarreOnglets();
   majNumeros();
   majSurbrillance();
+  synchroniserScrollEditeur();
+  majEtatBoutonsHistorique();
 }
 
 function focaliserSaisieConsole() {
@@ -790,9 +898,11 @@ btnRetour.addEventListener("click", quitterConsole);
 // que `delaiMs` : la plupart des scripts sont instantanes et n'ont pas besoin
 // d'un indicateur (qui ne ferait que clignoter et distraire inutilement).
 let indicateurAttenteEl = document.getElementById("indicateurAttente");
+let texteIndicateurAttenteEl = document.getElementById("texteIndicateurAttente");
 let minuteurIndicateurAttente = null;
-function demarrerIndicateurAttente(delaiMs = 200) {
+function demarrerIndicateurAttente(delaiMs = 200, texte = "Execution en cours, patientez…") {
   arreterIndicateurAttente();
+  texteIndicateurAttenteEl.textContent = texte;
   minuteurIndicateurAttente = setTimeout(() => {
     indicateurAttenteEl.classList.add("visible");
     minuteurIndicateurAttente = null;
@@ -4316,7 +4426,25 @@ let aideCommandes = [
       "grille() : active la grille (par defaut, elle n'est pas affichee).",
       "grille(FAUX) : desactive la grille.",
       "Doit etre appelee apres trac(...)."
-    ], exemple: "x ~ seq(-5,5,0.1)\ny ~ x*x\ntrac(x, y)\ngrille()" }
+    ], exemple: "x ~ seq(-5,5,0.1)\ny ~ x*x\ntrac(x, y)\ngrille()" },
+
+  { noms: ["import"], categorie: "Modules", syntaxe: "import(module)  ou  import(module, sunom~alias)  ou  import(|chemin.mlg|)", description: [
+      "Charge un fichier .mlg comme module : ses fonctions/classes/variables de premier niveau deviennent accessibles via module.nom (module.fonction(), module.Classe(), module.variable).",
+      "module identifiant nu (sans extension) : cherche module.mlg dans le meme dossier que le script courant.",
+      "|chemin.mlg| (texte litteral) : chemin explicite, absolu si commence par /, sinon relatif au dossier du script.",
+      "sunom~alias (optionnel) : accede au module sous un autre nom que celui par defaut (utile en cas de conflit).",
+      "Un module ne peut pas lui-meme importer un autre module (limitation actuelle).",
+      "Disponible uniquement dans l'app installee (pas en apercu navigateur)."
+    ], exemple: "import(outils)\nres ~ outils.double(5)\n\nimport(outils, sunom~o)\nres ~ o.double(5)" },
+  { noms: ["de"], categorie: "Modules", syntaxe: "de module import(nom1, nom2, ...)", description: [
+      "Importe directement certains elements d'un module (fonction, classe ou variable), utilisables sans prefixe module.",
+      "nom sunom~alias (optionnel, par element) : renomme l'element importe en cas de conflit avec un nom deja present dans le script.",
+      "Memes regles que import(...) pour designer le module (identifiant nu ou |chemin.mlg|)."
+    ], exemple: "de outils import(double, carre)\nres ~ double(5)\n\nde outils import(double sunom~doubleV2, carre)\nres ~ doubleV2(5)" },
+  { noms: ["sunom"], categorie: "Modules", syntaxe: "sunom~alias", description: [
+      "Renomme un module ou un element importe, pour eviter un conflit avec un nom deja utilise dans le script.",
+      "S'utilise dans import(...) ou dans de ... import(...)."
+    ], exemple: "import(outils, sunom~o)   ** acces via o.double(5) au lieu de outils.double(5) **" }
 ];
 
 function enregistrerFonctionsBase() {
@@ -5440,21 +5568,25 @@ function enregistrerFonctionsBase() {
     // aide() : liste toutes les commandes, groupees par categorie. aide(nom_ou_symbole) : detail sur une seule.
     fonctionsBase["aide"] = async function(args, ctxExpr) {
         if (args.length === 0 || args[0].trim() === "") {
+            // Index compact : la syntaxe (signature) de chaque commande, groupee par categorie,
+            // mais SANS les paragraphes de description ni les exemples multi-lignes (avant,
+            // aide() affichait TOUT ca d'un coup pour plus de 100 entrees -- illisible et
+            // decourageant a faire defiler sur mobile). La syntaxe seule reste lisible en un
+            // coup d'oeil ; le detail complet (description + exemple) reste a un aide(nom) de
+            // distance, rien n'est supprime nulle part.
             let categories = [];
             for (let e of aideCommandes) if (!categories.includes(e.categorie)) categories.push(e.categorie);
             let lignes = ["=== Commandes de MonLangage ==="];
+            lignes.push("aide(nom) pour le detail d'une commande, ex: aide(matrice) ou aide(+)");
+            lignes.push("aide(spec) pour ouvrir la specification officielle complete");
             for (let cat of categories) {
                 lignes.push("");
                 lignes.push("-- " + cat + " --");
                 for (let e of aideCommandes) {
                     if (e.categorie !== cat) continue;
                     lignes.push("  " + e.syntaxe);
-                    for (let d of e.description) lignes.push("    " + d);
-                    if (e.exemple) lignes.push("    Exemple : " + e.exemple.split("\n").join("\n              "));
                 }
             }
-            lignes.push("");
-            lignes.push("(aide(nom) pour le detail d'une seule commande, ex: aide(matrice) ou aide(+))");
             print(lignes.join("\n"));
             return;
         }
@@ -5631,7 +5763,8 @@ let categorieCouleurs = {
   "Fonctions mathematiques": "#f2a65a",
   "Texte": "#79c0ff",
   "Sauvegarde": "#a5d6ff",
-  "Constantes": "#56d4dd"
+  "Constantes": "#56d4dd",
+  "Modules": "#3fb950"
 };
 // Construit nom -> couleur a partir de aideCommandes (uniquement les noms "mots", pas
 // les symboles comme +, -, [, ], qui restent geres a part).
@@ -7014,12 +7147,25 @@ function synchroniserScrollEditeur() {
   numeros.scrollTop = codeArea.scrollTop;
   codeHighlight.scrollTop = codeArea.scrollTop;
   codeHighlight.scrollLeft = codeArea.scrollLeft;
+  majLigneActive();
+}
+
+// Surligne la ligne ou se trouve le curseur (translateY plutot que top : evite de
+// forcer un recalcul de mise en page a chaque frappe/scroll, juste un deplacement de
+// calque). Appelee depuis synchroniserScrollEditeur, donc suit deja tous les evenements
+// qui peuvent deplacer le curseur ou faire defiler (frappe, clic, scroll, tactile...).
+function majLigneActive() {
+  let avantCurseur = codeArea.value.slice(0, codeArea.selectionStart);
+  let ligneIndex = avantCurseur.split('\n').length - 1;
+  let decalage = 10 + ligneIndex * 23 - codeArea.scrollTop;
+  ligneActiveEl.style.transform = 'translateY(' + decalage + 'px)';
 }
 
 codeArea.addEventListener('input', () => {
   majNumeros(); majSurbrillance(); sauvegarderCode();
   synchroniserScrollEditeur();
   requestAnimationFrame(synchroniserScrollEditeur);
+  planifierHistorique();
 });
 codeArea.addEventListener('scroll', synchroniserScrollEditeur);
 codeArea.addEventListener('click', () => requestAnimationFrame(synchroniserScrollEditeur));
@@ -7053,6 +7199,218 @@ codeArea.addEventListener('touchstart', demarrerSynchroContinue, { passive: true
 codeArea.addEventListener('touchmove', demarrerSynchroContinue, { passive: true });
 codeArea.addEventListener('touchend', () => arreterSynchroContinueApresDelai(), { passive: true });
 codeArea.addEventListener('touchcancel', () => arreterSynchroContinueApresDelai(), { passive: true });
+
+/* ===================== HISTORIQUE ANNULER / RETABLIR (maison) ===================== */
+// L'undo/redo natif du navigateur ne suffit pas ici : on reassigne nous-memes
+// codeArea.value a plusieurs endroits (changement d'onglet, collage, etc.), ce qui vide
+// son historique natif a chaque fois. Un historique maison, par onglet (stocke dans
+// onglet.historique -- voir creerOnglet), survit a tout ca.
+const HISTORIQUE_MAX = 100;
+const HISTORIQUE_DEBOUNCE_MS = 500;
+let minuteurHistorique = null;
+
+function empilerHistorique(onglet, force = false) {
+  if (!onglet) return;
+  if (!onglet.historique) onglet.historique = { piles: [codeArea.value], index: 0 };
+  let h = onglet.historique;
+  let valeurActuelle = codeArea.value;
+  if (h.piles[h.index] === valeurActuelle) return; // rien de nouveau depuis le dernier point
+  // Ecrit une nouvelle modification : coupe le "futur" (les etats de retablissement
+  // deviennent inaccessibles, comme dans n'importe quel editeur).
+  h.piles = h.piles.slice(0, h.index + 1);
+  h.piles.push(valeurActuelle);
+  if (h.piles.length > HISTORIQUE_MAX) h.piles.shift();
+  h.index = h.piles.length - 1;
+  majEtatBoutonsHistorique();
+}
+
+// Plutot que d'empiler un point d'historique a CHAQUE caractere tape (bruyant, un undo
+// n'annulerait qu'une lettre a la fois), on attend une pause de frappe avant d'enregistrer
+// un point -- comme la plupart des editeurs de texte.
+function planifierHistorique() {
+  if (minuteurHistorique) clearTimeout(minuteurHistorique);
+  minuteurHistorique = setTimeout(() => empilerHistorique(trouverOnglet(ongletActifId)), HISTORIQUE_DEBOUNCE_MS);
+}
+
+function majEtatBoutonsHistorique() {
+  let onglet = trouverOnglet(ongletActifId);
+  let h = onglet && onglet.historique;
+  btnAnnuler.disabled = !h || h.index <= 0;
+  btnRefaire.disabled = !h || h.index >= h.piles.length - 1;
+}
+
+function restaurerDepuisHistorique(h) {
+  codeArea.value = h.piles[h.index];
+  codeArea.selectionStart = codeArea.selectionEnd = codeArea.value.length;
+  majNumeros(); majSurbrillance(); sauvegarderCode();
+  requestAnimationFrame(synchroniserScrollEditeur);
+  majEtatBoutonsHistorique();
+}
+
+function annulerEdition() {
+  let onglet = trouverOnglet(ongletActifId);
+  if (!onglet) return;
+  if (minuteurHistorique) { clearTimeout(minuteurHistorique); minuteurHistorique = null; }
+  empilerHistorique(onglet); // fige la frappe en cours avant de reculer, sinon elle serait perdue
+  let h = onglet.historique;
+  if (!h || h.index <= 0) return;
+  h.index--;
+  restaurerDepuisHistorique(h);
+}
+
+function refaireEdition() {
+  let onglet = trouverOnglet(ongletActifId);
+  let h = onglet && onglet.historique;
+  if (!h || h.index >= h.piles.length - 1) return;
+  h.index++;
+  restaurerDepuisHistorique(h);
+}
+
+btnAnnuler.addEventListener('click', annulerEdition);
+btnRefaire.addEventListener('click', refaireEdition);
+
+/* ===================== DEPLACEMENT DU CURSEUR (boutons ◀ ▶) ===================== */
+// Vise precisement un point entre deux caracteres au doigt est difficile sur mobile,
+// surtout pour se replacer dans du code dense (parentheses/textes |...| imbriques). Ces
+// deux boutons deplacent le curseur d'un caractere, sans avoir a re-toucher l'ecran.
+function deplacerCurseur(delta) {
+  codeArea.focus();
+  let position = codeArea.selectionStart === codeArea.selectionEnd
+    ? codeArea.selectionStart
+    : (delta < 0 ? codeArea.selectionStart : codeArea.selectionEnd); // collapse une selection vers le bon bord
+  let nouvellePosition = Math.max(0, Math.min(codeArea.value.length, position + delta));
+  codeArea.selectionStart = codeArea.selectionEnd = nouvellePosition;
+  requestAnimationFrame(synchroniserScrollEditeur);
+}
+btnCurseurGauche.addEventListener('click', () => deplacerCurseur(-1));
+btnCurseurDroite.addEventListener('click', () => deplacerCurseur(1));
+
+/* ===================== RECHERCHE DANS LE CODE ===================== */
+let rechercheResultats = [];
+let rechercheIndexActuel = -1;
+
+function ouvrirRecherche() {
+  barreRechercheEl.classList.add('visible');
+  rechercheTexteEl.focus();
+  rechercheTexteEl.select();
+}
+function fermerRecherche() {
+  barreRechercheEl.classList.remove('visible');
+  rechercheResultats = [];
+  rechercheIndexActuel = -1;
+  codeArea.focus();
+}
+function majCompteRecherche() {
+  rechercheCompteEl.textContent = !rechercheTexteEl.value ? ""
+    : (rechercheResultats.length ? (rechercheIndexActuel + 1) + "/" + rechercheResultats.length : "0/0");
+}
+// Assure que la ligne visee est visible dans le textarea (setSelectionRange seul ne fait
+// pas toujours defiler la vue sur mobile) : ajuste scrollTop manuellement si la ligne
+// tombe hors de la fenetre actuellement visible.
+function assurerLigneVisible(position) {
+  let ligne = codeArea.value.slice(0, position).split('\n').length - 1;
+  let yLigne = ligne * 23;
+  let vueHaut = codeArea.scrollTop;
+  let vueBas = vueHaut + codeArea.clientHeight - 23;
+  if (yLigne < vueHaut) codeArea.scrollTop = yLigne;
+  else if (yLigne > vueBas) codeArea.scrollTop = Math.max(0, yLigne - codeArea.clientHeight + 46);
+  synchroniserScrollEditeur();
+}
+function rechercherDansCode() {
+  let terme = rechercheTexteEl.value;
+  rechercheResultats = [];
+  rechercheIndexActuel = -1;
+  if (terme) {
+    let texte = codeArea.value.toLowerCase();
+    let t = terme.toLowerCase();
+    let i = 0;
+    while (true) {
+      let pos = texte.indexOf(t, i);
+      if (pos === -1) break;
+      rechercheResultats.push({ debut: pos, fin: pos + terme.length });
+      i = pos + 1;
+    }
+    if (rechercheResultats.length) { rechercheIndexActuel = 0; allerAOccurrence(0); return; }
+  }
+  majCompteRecherche();
+}
+function allerAOccurrence(index) {
+  if (!rechercheResultats.length) return;
+  rechercheIndexActuel = ((index % rechercheResultats.length) + rechercheResultats.length) % rechercheResultats.length;
+  let r = rechercheResultats[rechercheIndexActuel];
+  codeArea.focus();
+  codeArea.selectionStart = r.debut;
+  codeArea.selectionEnd = r.fin;
+  assurerLigneVisible(r.debut);
+  majCompteRecherche();
+}
+rechercheTexteEl.addEventListener('input', rechercherDansCode);
+rechercheTexteEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); allerAOccurrence(rechercheIndexActuel + (e.shiftKey ? -1 : 1)); }
+  else if (e.key === 'Escape') { fermerRecherche(); }
+});
+btnRechercheSuivant.addEventListener('click', () => allerAOccurrence(rechercheIndexActuel + 1));
+btnRecherchePrecedent.addEventListener('click', () => allerAOccurrence(rechercheIndexActuel - 1));
+btnRechercheFermer.addEventListener('click', fermerRecherche);
+btnRechercheOutil.addEventListener('click', () => {
+  if (barreRechercheEl.classList.contains('visible')) fermerRecherche(); else ouvrirRecherche();
+});
+
+/* ===================== COLLAGE (natif + bouton dedie) ===================== */
+// Un gros collage (texte long copie depuis ailleurs) declenche majNumeros()/majSurbrillance()
+// comme une frappe normale. Mais pour un texte tres long, ce recalcul (surtout la coloration
+// syntaxique, qui reconstruit tout le HTML colore) peut prendre un instant perceptible,
+// pendant lequel rien ne montre que le collage a bien ete pris en compte : l'ecran semble
+// fige, comme si l'appui n'avait rien fait. En dessous du seuil, insertion immediate, sans
+// badge (deja instantane). Au-dessus, le badge "Collage en cours" s'affiche AVANT de lancer
+// le recalcul couteux : le decouper en deux requestAnimationFrame laisse le temps au
+// navigateur de peindre le badge a l'ecran avant que le calcul (synchrone, donc bloquant)
+// ne demarre. Fonction commune au collage natif (bulle "Coller"/Ctrl+V) et au bouton dedie
+// de la barre d'outils du bas, pour que les deux passent par le meme historique annuler/retablir.
+const SEUIL_INDICATEUR_COLLAGE = 500; // caracteres
+function collerTexteDansEditeur(texte) {
+  if (!texte) return;
+  let debut = codeArea.selectionStart;
+  let fin = codeArea.selectionEnd;
+  function inserer() {
+    let valeurActuelle = codeArea.value;
+    codeArea.value = valeurActuelle.slice(0, debut) + texte + valeurActuelle.slice(fin);
+    let nouvellePosition = debut + texte.length;
+    codeArea.selectionStart = codeArea.selectionEnd = nouvellePosition;
+    majNumeros(); majSurbrillance(); sauvegarderCode();
+    synchroniserScrollEditeur();
+    empilerHistorique(trouverOnglet(ongletActifId));
+    indicateurAttenteEl.classList.remove('visible');
+  }
+  if (texte.length >= SEUIL_INDICATEUR_COLLAGE) {
+    indicateurAttenteEl.classList.add('visible');
+    texteIndicateurAttenteEl.textContent = 'Collage en cours…';
+    requestAnimationFrame(() => requestAnimationFrame(inserer));
+  } else {
+    inserer();
+  }
+}
+codeArea.addEventListener('paste', (evenement) => {
+  let presseFeuille = evenement.clipboardData || window.clipboardData;
+  let texteColle = presseFeuille ? presseFeuille.getData('text') : '';
+  if (!texteColle) return;
+  evenement.preventDefault();
+  collerTexteDansEditeur(texteColle);
+});
+// Bouton dedie : tente l'API moderne (necessite en general que le presse-papiers ait ete
+// rempli par un geste utilisateur recent) puis se rabat sur execCommand('paste'), qui
+// simule le "Coller" natif sur le champ focus et declenche l'ecouteur 'paste' ci-dessus.
+btnCollerOutil.addEventListener('click', async () => {
+  codeArea.focus();
+  let texte = null;
+  try {
+    if (navigator.clipboard && navigator.clipboard.readText) texte = await navigator.clipboard.readText();
+  } catch (e) { /* permission refusee ou API indisponible : on retente en repli */ }
+  if (texte) { collerTexteDansEditeur(texte); return; }
+  let ok = false;
+  try { ok = document.execCommand('paste'); } catch (e) { ok = false; }
+  if (!ok) afficherToastEnregistrement(false, "Collage indisponible ici -- utilise l'appui long > Coller");
+});
 
 /* ===================== LANCEMENT DU SCRIPT ===================== */
 async function runScript() {
