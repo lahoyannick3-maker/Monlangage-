@@ -518,7 +518,6 @@ let btnCurseurDroite = document.getElementById("btnCurseurDroite");
 let btnAnnuler = document.getElementById("btnAnnuler");
 let btnRefaire = document.getElementById("btnRefaire");
 let btnRechercheOutil = document.getElementById("btnRechercheOutil");
-let btnCollerOutil = document.getElementById("btnCollerOutil");
 let barreRechercheEl = document.getElementById("barreRecherche");
 let rechercheTexteEl = document.getElementById("rechercheTexte");
 let rechercheCompteEl = document.getElementById("rechercheCompte");
@@ -562,10 +561,42 @@ let prochainIdOnglet = 1;
 function sauvegarderEtatOnglets() {
   // .historique est volontairement exclu de la serialisation : il peut contenir jusqu'a
   // 100 versions completes du texte par onglet (voir HISTORIQUE_MAX plus bas), inutile de
-  // gonfler localStorage avec ca -- seul le contenu courant (.contenu) doit persister.
+  // gonfler localStorage avec ca. La position du curseur et le scroll, eux, sont conserves
+  // afin de retrouver exactement la ligne active apres fermeture/reouverture de l'app.
   let ongletsSerialisables = onglets.map(({ historique, ...reste }) => reste);
   localStorage.setItem("monlangage_onglets", JSON.stringify(ongletsSerialisables));
   localStorage.setItem("monlangage_onglet_actif", String(ongletActifId ?? ""));
+}
+
+// Memorise la position d'edition de l'onglet actif. La ligne active est une consequence
+// de selectionStart : pour la restaurer correctement, il faut donc memoriser la position du
+// curseur (et la selection eventuelle), ainsi que le scroll vertical.
+function memoriserPositionEditeur() {
+  let onglet = trouverOnglet(ongletActifId);
+  if (!onglet || !codeArea) return;
+  onglet.curseurDebut = Number.isFinite(codeArea.selectionStart) ? codeArea.selectionStart : 0;
+  onglet.curseurFin = Number.isFinite(codeArea.selectionEnd) ? codeArea.selectionEnd : onglet.curseurDebut;
+  onglet.scrollTop = codeArea.scrollTop || 0;
+  onglet.scrollLeft = codeArea.scrollLeft || 0;
+}
+
+function restaurerPositionEditeur(onglet) {
+  if (!onglet || !codeArea) return;
+  let longueur = codeArea.value.length;
+  let debut = Number.isFinite(Number(onglet.curseurDebut))
+    ? Math.max(0, Math.min(longueur, Number(onglet.curseurDebut))) : 0;
+  let fin = Number.isFinite(Number(onglet.curseurFin))
+    ? Math.max(debut, Math.min(longueur, Number(onglet.curseurFin))) : debut;
+
+  codeArea.setSelectionRange(debut, fin);
+  codeArea.scrollTop = Math.max(0, Number(onglet.scrollTop) || 0);
+  codeArea.scrollLeft = Math.max(0, Number(onglet.scrollLeft) || 0);
+  synchroniserScrollEditeur();
+}
+
+function sauvegarderPositionEtEtat() {
+  memoriserPositionEditeur();
+  sauvegarderEtatOnglets();
 }
 
 function trouverOnglet(id) {
@@ -640,6 +671,10 @@ function creerOnglet(nom, contenu, contenuSauvegarde, activer = true) {
     contenu: contenu || "",
     contenuSauvegarde: contenuSauvegarde !== undefined ? contenuSauvegarde : (contenu || ""),
     dirty: contenuSauvegarde !== undefined ? (contenu || "") !== contenuSauvegarde : false,
+    curseurDebut: 0,
+    curseurFin: 0,
+    scrollTop: 0,
+    scrollLeft: 0,
     // Historique annuler/retablir maison, propre a cet onglet -- jamais serialise dans
     // localStorage (voir sauvegarderEtatOnglets) : il repart a zero a chaque ouverture de
     // l'app, comme dans la plupart des editeurs.
@@ -649,6 +684,7 @@ function creerOnglet(nom, contenu, contenuSauvegarde, activer = true) {
   if (activer) {
     ongletActifId = onglet.id;
     codeArea.value = onglet.contenu;
+    restaurerPositionEditeur(onglet);
     afficherNomOngletActif();
     majNumeros();
     majSurbrillance();
@@ -677,6 +713,7 @@ function activerOnglet(id) {
   if (!onglet) return;
   ongletActifId = id;
   codeArea.value = onglet.contenu;
+  restaurerPositionEditeur(onglet);
   afficherNomOngletActif();
   majNumeros();
   majSurbrillance();
@@ -815,6 +852,10 @@ function initialiserOnglets() {
       contenuSauvegarde: o.contenuSauvegarde !== undefined ? o.contenuSauvegarde : (o.contenu || ""),
       dirty: !!o.dirty,
       dossier: o.dossier || undefined,
+      curseurDebut: Number.isFinite(Number(o.curseurDebut)) ? Number(o.curseurDebut) : 0,
+      curseurFin: Number.isFinite(Number(o.curseurFin)) ? Number(o.curseurFin) : (Number.isFinite(Number(o.curseurDebut)) ? Number(o.curseurDebut) : 0),
+      scrollTop: Number.isFinite(Number(o.scrollTop)) ? Number(o.scrollTop) : 0,
+      scrollLeft: Number.isFinite(Number(o.scrollLeft)) ? Number(o.scrollLeft) : 0,
       historique: { piles: [o.contenu || ""], index: 0 }
     }));
     prochainIdOnglet = Math.max(...onglets.map(o => Number(o.id) || 0), 0) + 1;
@@ -822,6 +863,7 @@ function initialiserOnglets() {
     ongletActifId = onglets.some(o => o.id === idSauvegarde) ? idSauvegarde : onglets[0].id;
     let actif = trouverOnglet(ongletActifId);
     codeArea.value = actif.contenu;
+    restaurerPositionEditeur(actif);
   } else {
     let ancienCode = localStorage.getItem("monlangage_code");
     let ancienNom = localStorage.getItem("monlangage_nom_fichier") || "sans titre";
@@ -7155,9 +7197,17 @@ function synchroniserScrollEditeur() {
 // calque). Appelee depuis synchroniserScrollEditeur, donc suit deja tous les evenements
 // qui peuvent deplacer le curseur ou faire defiler (frappe, clic, scroll, tactile...).
 function majLigneActive() {
+  // Ne depend plus d'une hauteur de ligne codee en dur : sur Android/WebView,
+  // la hauteur reelle peut varier legerement selon le zoom, la police ou le clavier.
+  // On utilise les valeurs reellement appliquees au textarea pour que le bandeau
+  // bleu reste exactement sur la ligne du curseur.
   let avantCurseur = codeArea.value.slice(0, codeArea.selectionStart);
   let ligneIndex = avantCurseur.split('\n').length - 1;
-  let decalage = 10 + ligneIndex * 23 - codeArea.scrollTop;
+  let style = window.getComputedStyle(codeArea);
+  let lineHeight = parseFloat(style.lineHeight) || 23;
+  let paddingTop = parseFloat(style.paddingTop) || 0;
+  let decalage = paddingTop + ligneIndex * lineHeight - codeArea.scrollTop;
+  ligneActiveEl.style.height = lineHeight + 'px';
   ligneActiveEl.style.transform = 'translateY(' + decalage + 'px)';
 }
 
@@ -7169,10 +7219,36 @@ codeArea.addEventListener('input', () => {
 });
 codeArea.addEventListener('scroll', synchroniserScrollEditeur);
 codeArea.addEventListener('click', () => requestAnimationFrame(synchroniserScrollEditeur));
-codeArea.addEventListener('keyup', () => requestAnimationFrame(synchroniserScrollEditeur));
+codeArea.addEventListener('keyup', () => {
+  requestAnimationFrame(() => {
+    synchroniserScrollEditeur();
+    sauvegarderPositionEtEtat();
+  });
+});
+codeArea.addEventListener('mouseup', () => requestAnimationFrame(sauvegarderPositionEtEtat));
+codeArea.addEventListener('touchend', () => requestAnimationFrame(sauvegarderPositionEtEtat), { passive: true });
+// selectionchange couvre notamment les deplacements de curseur effectues par Android.
+document.addEventListener('selectionchange', () => {
+  if (document.activeElement === codeArea) {
+    memoriserPositionEditeur();
+    clearTimeout(window.__sauvegardeCurseurTimer);
+    window.__sauvegardeCurseurTimer = setTimeout(sauvegarderEtatOnglets, 40);
+  }
+});
 // Le clavier virtuel qui s'ouvre/se ferme redimensionne la zone visible et peut deplacer
 // le scroll du textarea sans evenement 'scroll' associe.
 window.addEventListener('resize', () => requestAnimationFrame(synchroniserScrollEditeur));
+
+// Sauvegarde de securite avant que l'application ou l'aperçu soit masque/quitte.
+// visibilitychange est le plus fiable sur Android WebView, tandis que pagehide couvre
+// aussi la navigation/fermeture de la page.
+function sauvegarderAvantSortie() {
+  memoriserPositionEditeur();
+  sauvegarderEtatOnglets();
+}
+document.addEventListener('visibilitychange', sauvegarderAvantSortie);
+window.addEventListener('pagehide', sauvegarderAvantSortie);
+window.addEventListener('beforeunload', sauvegarderAvantSortie);
 
 // Sur mobile, un defilement au doigt continue par inertie (momentum) bien apres le
 // relachement du doigt, et l'evenement 'scroll' du navigateur ne se declenche pas assez
@@ -7274,16 +7350,106 @@ btnRefaire.addEventListener('click', refaireEdition);
 // surtout pour se replacer dans du code dense (parentheses/textes |...| imbriques). Ces
 // deux boutons deplacent le curseur d'un caractere, sans avoir a re-toucher l'ecran.
 function deplacerCurseur(delta) {
-  codeArea.focus();
+  // Les boutons ne doivent pas prendre le focus a la place de l'editeur.
+  // On conserve donc la position actuelle, deplace le curseur, puis resynchronise
+  // immediatement la ligne active.
+  codeArea.focus({ preventScroll: true });
   let position = codeArea.selectionStart === codeArea.selectionEnd
     ? codeArea.selectionStart
     : (delta < 0 ? codeArea.selectionStart : codeArea.selectionEnd); // collapse une selection vers le bon bord
   let nouvellePosition = Math.max(0, Math.min(codeArea.value.length, position + delta));
   codeArea.selectionStart = codeArea.selectionEnd = nouvellePosition;
-  requestAnimationFrame(synchroniserScrollEditeur);
+
+  // Quand le curseur quitte la zone actuellement visible, le simple changement de
+  // selection ne suffit pas toujours sur Android/WebView (surtout parce que le bouton
+  // de la barre d'outils conserve le focus logique). On ramene donc explicitement la
+  // ligne du curseur dans la zone visible avant de redessiner la ligne active.
+  assurerLigneVisible(nouvellePosition);
+
+  memoriserPositionEditeur();
+  sauvegarderEtatOnglets();
+  majLigneActive();
+  requestAnimationFrame(() => {
+    assurerLigneVisible(nouvellePosition);
+    synchroniserScrollEditeur();
+  });
 }
-btnCurseurGauche.addEventListener('click', () => deplacerCurseur(-1));
-btnCurseurDroite.addEventListener('click', () => deplacerCurseur(1));
+
+// Sur Android, certains WebView refocalisent le bouton au moment du toucher.
+// Empeche ce changement de focus pour que le curseur de l'editeur reste la reference.
+[btnCurseurGauche, btnCurseurDroite].forEach(btn => {
+  btn.addEventListener('pointerdown', e => e.preventDefault());
+});
+// Un clic deplace d'un caractere. Un appui prolonge repete le meme deplacement
+// automatiquement, comme les fleches d'un clavier. On attend un court delai avant
+// le premier deplacement du maintien afin qu'un simple clic ne deplace pas deux fois.
+const DELAI_APPUI_PROLONGE_CURSEUR = 280;
+const INTERVALLE_APPUI_PROLONGE_CURSEUR = 65;
+let repetitionCurseurMinuteur = null;
+let repetitionCurseurIntervalle = null;
+let repetitionCurseurLongue = false;
+let repetitionCurseurSupprimerClic = false;
+
+function arreterRepetitionCurseur() {
+  if (repetitionCurseurMinuteur !== null) {
+    clearTimeout(repetitionCurseurMinuteur);
+    repetitionCurseurMinuteur = null;
+  }
+  if (repetitionCurseurIntervalle !== null) {
+    clearInterval(repetitionCurseurIntervalle);
+    repetitionCurseurIntervalle = null;
+  }
+}
+
+function demarrerRepetitionCurseur(delta) {
+  arreterRepetitionCurseur();
+  repetitionCurseurLongue = false;
+  repetitionCurseurSupprimerClic = false;
+
+  repetitionCurseurMinuteur = setTimeout(() => {
+    repetitionCurseurMinuteur = null;
+    repetitionCurseurLongue = true;
+    repetitionCurseurSupprimerClic = true;
+    deplacerCurseur(delta);
+    repetitionCurseurIntervalle = setInterval(() => {
+      deplacerCurseur(delta);
+    }, INTERVALLE_APPUI_PROLONGE_CURSEUR);
+  }, DELAI_APPUI_PROLONGE_CURSEUR);
+}
+
+[
+  [btnCurseurGauche, -1],
+  [btnCurseurDroite, 1]
+].forEach(([btn, delta]) => {
+  btn.addEventListener('pointerdown', e => {
+    // Conserve le focus logique de l'editeur et demarre la detection du maintien.
+    e.preventDefault();
+    try { btn.setPointerCapture(e.pointerId); } catch (_) {}
+    demarrerRepetitionCurseur(delta);
+  });
+
+  const terminer = e => {
+    arreterRepetitionCurseur();
+    // Si l'appui a ete assez long, le deplacement a deja ete fait par la repetition.
+    // On empeche donc le click genere au relachement de faire un caractere de plus.
+    if (repetitionCurseurLongue) {
+      e.preventDefault();
+    }
+  };
+
+  btn.addEventListener('pointerup', terminer);
+  btn.addEventListener('pointercancel', terminer);
+  btn.addEventListener('lostpointercapture', () => arreterRepetitionCurseur());
+  btn.addEventListener('click', () => {
+    // Clic court uniquement : un appui long a deja ete traite.
+    if (repetitionCurseurSupprimerClic) {
+      repetitionCurseurSupprimerClic = false;
+      repetitionCurseurLongue = false;
+      return;
+    }
+    deplacerCurseur(delta);
+  });
+});
 
 /* ===================== RECHERCHE DANS LE CODE ===================== */
 let rechercheResultats = [];
@@ -7309,11 +7475,24 @@ function majCompteRecherche() {
 // tombe hors de la fenetre actuellement visible.
 function assurerLigneVisible(position) {
   let ligne = codeArea.value.slice(0, position).split('\n').length - 1;
-  let yLigne = ligne * 23;
-  let vueHaut = codeArea.scrollTop;
-  let vueBas = vueHaut + codeArea.clientHeight - 23;
-  if (yLigne < vueHaut) codeArea.scrollTop = yLigne;
-  else if (yLigne > vueBas) codeArea.scrollTop = Math.max(0, yLigne - codeArea.clientHeight + 46);
+  let style = window.getComputedStyle(codeArea);
+  let lineHeight = parseFloat(style.lineHeight) || 23;
+  let paddingTop = parseFloat(style.paddingTop) || 0;
+  let paddingBottom = parseFloat(style.paddingBottom) || 0;
+  let yLigne = paddingTop + ligne * lineHeight;
+  let hauteurUtile = Math.max(lineHeight, codeArea.clientHeight - paddingTop - paddingBottom);
+  let vueHaut = codeArea.scrollTop + paddingTop;
+  let vueBas = codeArea.scrollTop + codeArea.clientHeight - paddingBottom - lineHeight;
+
+  // Laisser une petite marge rend le suivi plus confortable lorsque le curseur
+  // arrive sur la première ou la dernière ligne visible.
+  let marge = Math.min(lineHeight, Math.max(4, hauteurUtile * 0.08));
+  if (yLigne < vueHaut + marge) {
+    codeArea.scrollTop = Math.max(0, yLigne - marge - paddingTop);
+  } else if (yLigne > vueBas - marge) {
+    codeArea.scrollTop = Math.max(0, yLigne - codeArea.clientHeight + paddingBottom + lineHeight + marge);
+  }
+
   synchroniserScrollEditeur();
 }
 function rechercherDansCode() {
@@ -7338,11 +7517,20 @@ function allerAOccurrence(index) {
   if (!rechercheResultats.length) return;
   rechercheIndexActuel = ((index % rechercheResultats.length) + rechercheResultats.length) % rechercheResultats.length;
   let r = rechercheResultats[rechercheIndexActuel];
-  codeArea.focus();
-  codeArea.selectionStart = r.debut;
-  codeArea.selectionEnd = r.fin;
+
+  // IMPORTANT : ne pas appeler codeArea.focus() ici. Sur Android, cela fait sortir
+  // le curseur du champ de recherche des qu'une occurrence est trouvee. Le caractere
+  // tape ensuite remplace alors le terme de recherche au lieu de le completer.
+  // setSelectionRange() fonctionne sans donner le focus au textarea : la recherche
+  // reste donc active et le clavier continue de saisir dans #rechercheTexte.
+  codeArea.setSelectionRange(r.debut, r.fin);
   assurerLigneVisible(r.debut);
+  majLigneActive();
   majCompteRecherche();
+
+  // Si l'utilisateur vient d'appuyer sur ↑/↓, le bouton ne doit pas devenir le
+  // champ de saisie actif : on rend le focus au champ de recherche.
+  if (document.activeElement !== rechercheTexteEl) rechercheTexteEl.focus({ preventScroll: true });
 }
 rechercheTexteEl.addEventListener('input', rechercherDansCode);
 rechercheTexteEl.addEventListener('keydown', (e) => {
@@ -7397,21 +7585,20 @@ codeArea.addEventListener('paste', (evenement) => {
   evenement.preventDefault();
   collerTexteDansEditeur(texteColle);
 });
-// Bouton dedie : tente l'API moderne (necessite en general que le presse-papiers ait ete
-// rempli par un geste utilisateur recent) puis se rabat sur execCommand('paste'), qui
-// simule le "Coller" natif sur le champ focus et declenche l'ecouteur 'paste' ci-dessus.
+// Bouton dédié : le bouton reste disponible pour coller depuis le presse-papiers.
+// Les actions natives Copier/Couper/Coller de l'interface sont bloquées séparément
+// plus bas : cela n'empêche donc pas le clic normal sur ce bouton.
 btnCollerOutil.addEventListener('click', async () => {
   codeArea.focus();
   let texte = null;
   try {
     if (navigator.clipboard && navigator.clipboard.readText) texte = await navigator.clipboard.readText();
-  } catch (e) { /* permission refusee ou API indisponible : on retente en repli */ }
+  } catch (e) { /* permission refusée ou API indisponible : on tente le repli */ }
   if (texte) { collerTexteDansEditeur(texte); return; }
   let ok = false;
   try { ok = document.execCommand('paste'); } catch (e) { ok = false; }
   if (!ok) afficherToastEnregistrement(false, "Collage indisponible ici -- utilise l'appui long > Coller");
 });
-
 /* ===================== LANCEMENT DU SCRIPT ===================== */
 async function runScript() {
   scopes = [{}];
@@ -7564,6 +7751,27 @@ btnRun.addEventListener("click", runScript);
 initialiserOnglets();
 clearConsole();
 printInvite();
+// Désactive les actions natives Copier/Couper/Coller sur les éléments d'interface
+// (barres d'outils, en-têtes, onglets et barres de navigation), sans toucher aux
+// champs dans lesquels l'utilisateur doit pouvoir saisir/rechercher du texte.
+(() => {
+  const zonesInterface = [
+    '#barre',
+    '#barreFichier',
+    '#ongletsBarre',
+    '#barreOutilsBas',
+    '#barreSpecification',
+    '#headerConsole'
+  ].map(sel => document.querySelector(sel)).filter(Boolean);
+
+  zonesInterface.forEach(zone => {
+    zone.addEventListener('contextmenu', e => e.preventDefault());
+    zone.addEventListener('copy', e => e.preventDefault());
+    zone.addEventListener('cut', e => e.preventDefault());
+    zone.addEventListener('paste', e => e.preventDefault());
+    zone.addEventListener('selectstart', e => e.preventDefault());
+  });
+})();
 </script>
 </body>
 </html>
