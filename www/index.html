@@ -248,7 +248,7 @@
     #barreOutilsBas button:hover, #barreOutilsBas button:active { background: #21262d; }
     #barreOutilsBas button:disabled { color: #444; background: transparent; }
 
-    #headerConsole { background: #010409; padding: 10px 10px 0 10px; flex-shrink: 0; }
+    #headerConsole { background: #010409; padding: 10px 10px 0 10px; flex-shrink: 0 -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
     /* Bug reel signale par Yannick : le long appui pour copier ne faisait apparaitre AUCUNE
        bulle "Copier" (ni sur l'app buildee, ni dans l'apercu fichier, ni dans Chrome) -- a la
        difference de #code (un vrai <textarea>, toujours selectionnable nativement quel que
@@ -5630,6 +5630,8 @@ function enregistrerFonctionsBase() {
                 }
             }
             print(lignes.join("\n"));
+            // aide() doit commencer par le haut de la liste, pas rester forcee en bas.
+            requestAnimationFrame(() => { outputDiv.scrollTop = 0; });
             return;
         }
         let cle = args[0].trim();
