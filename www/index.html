@@ -405,6 +405,11 @@ const PROFONDEUR_APPEL_MAX_DEFAUT = 500;
 let PROFONDEUR_APPEL_MAX = PROFONDEUR_APPEL_MAX_DEFAUT;   // ajustable via limiteRecursion(n)
 let fonctions = {};      // fonctions ~ { nom: {params:[...], corps:[tokens...] } }
 let classes = {};        // classes ~ { nom: {methodes: {nomMethode: {params:[...], corps:[tokens...]}}} }
+// modules ~ { alias: { fonctions:{}, classes:{}, scope:{}, chemin:"..." } } -- un module charge
+// via import(...) : ses propres fonctions/classes/variables top-level, isolees du script
+// principal (comme un module Python), remplies par chargerModule().
+let modules = {};
+let pileImportEnCours = [];   // chemins en cours de chargement -- detecte les imports circulaires
 let fonctionsBase = {};
 let fonctionsExpression = {};   // sous-ensemble de fonctionsBase utilisable directement dans une expression (ex: entr)
 // Numero de la ligne source EN COURS D'EXECUTION, mis a jour par executerTokens a chaque
@@ -598,6 +603,7 @@ function enregistrerOnglet(onglet, apresSauvegarde) {
         let ok = window.MonLangage.ecrireFichier(cheminComplet, onglet.contenu);
         if (ok) {
           onglet.nom = cheminComplet.substring(cheminComplet.lastIndexOf("/") + 1);
+          onglet.dossier = cheminComplet.substring(0, cheminComplet.lastIndexOf("/"));
           onglet.contenuSauvegarde = onglet.contenu;
           onglet.dirty = false;
           sauvegarderEtatOnglets();
@@ -683,8 +689,9 @@ function fermerOnglet(id) {
   mettreAJourBarreOnglets();
 }
 
-function chargerFichierDansNouvelOnglet(texte, nom) {
-  creerOnglet(nom || "sans titre", texte, texte, true);
+function chargerFichierDansNouvelOnglet(texte, nom, dossier) {
+  let onglet = creerOnglet(nom || "sans titre", texte, texte, true);
+  if (dossier) onglet.dossier = dossier;
   sauvegarderCode();
   afficherEditeur();
   requestAnimationFrame(synchroniserScrollEditeur);
@@ -936,6 +943,9 @@ function getVar(nom) {
   // renvoie comme valeur-fonction plutot que d'echouer (permet "f ~ doubler", "retour doubler",
   // ou de passer "doubler" tel quel en argument a une autre fonction).
   if (Object.prototype.hasOwnProperty.call(fonctions, nom)) return valeurFonctionDepuisNom(nom);
+  // Pas une variable/fonction, mais un module importe (import(outils)) : renvoie un objet
+  // "sentinelle" que parsePrimary reconnait pour resoudre outils.PI, outils.double(...), etc.
+  if (Object.prototype.hasOwnProperty.call(modules, nom)) return { __module: nom };
   throw new ErreurVariableInconnue("Variable non definie: " + nom);
 }
 // Comme getVar, mais ne cherche QUE parmi les variables (jamais dans fonctions{}) et ne leve
@@ -1736,6 +1746,21 @@ function evalExprSansEntreeSync(str, ctx) {
         valeur = Object.prototype.hasOwnProperty.call(valeur, nomAttr) ? valeur[nomAttr] : undefined;
         continue;
       }
+      // Variable d'un module importe : outils.PI (lecture seule). outils.fonction(...) n'arrive
+      // jamais ici -- extraireFonctionsExpression() l'a deja remplace par un appel avant que le
+      // tokenizer ne voie cette expression (meme mecanisme que ecrire.fichier(...) etc.).
+      if (peek() && peek().type === 'op' && peek().v === '.' &&
+          tokens[pos + 1] && tokens[pos + 1].type === 'ident' &&
+          valeur && typeof valeur === 'object' && valeur.__module !== undefined) {
+        next(); // '.'
+        let nomAttr = next().v;
+        let modInfo = modules[valeur.__module];
+        if (!modInfo || !Object.prototype.hasOwnProperty.call(modInfo.scope, nomAttr)) {
+          throw new ErreurAttributInconnu("Le module \"" + valeur.__module + "\" n'a pas de variable \"" + nomAttr + "\"");
+        }
+        valeur = modInfo.scope[nomAttr];
+        continue;
+      }
       // Methodes de texte chainees directement dans une expression (si(...), affi(...), etc.) :
       // var.miniscul(), |texte|.majuscul(), (a+b).suprespac()... Ne consomme le '.' que si le
       // motif complet correspond, pour ne jamais gener l'operateur '.' de produit scalaire.
@@ -1966,6 +1991,21 @@ async function evalExprSansEntreeAsync(str, ctx) {
           let nomAttr = next().v;
           valeur = Object.prototype.hasOwnProperty.call(valeur, nomAttr) ? valeur[nomAttr] : undefined;
         }
+        continue;
+      }
+      // Variable d'un module importe : outils.PI (lecture seule). Voir le meme bloc dans la
+      // version synchrone de parsePrimary pour le detail -- outils.fonction(...) n'arrive
+      // jamais ici, deja substitue par extraireFonctionsExpression().
+      if (peek() && peek().type === 'op' && peek().v === '.' &&
+          tokens[pos + 1] && tokens[pos + 1].type === 'ident' &&
+          valeur && typeof valeur === 'object' && valeur.__module !== undefined) {
+        next(); // '.'
+        let nomAttr = next().v;
+        let modInfo = modules[valeur.__module];
+        if (!modInfo || !Object.prototype.hasOwnProperty.call(modInfo.scope, nomAttr)) {
+          throw new ErreurAttributInconnu("Le module \"" + valeur.__module + "\" n'a pas de variable \"" + nomAttr + "\"");
+        }
+        valeur = modInfo.scope[nomAttr];
         continue;
       }
       // Methodes de texte chainees directement dans une expression.
@@ -3182,25 +3222,48 @@ async function appelerFonction(nom, argsVals) {
     throw new Error("'" + nom + "' n'est pas une fonction (c'est un(e) " + nomNature(rVar.valeur) + "), impossible de l'appeler avec (...)");
   }
   if (Object.prototype.hasOwnProperty.call(classes, nom)) {
-    return await instancierClasse(nom, argsVals);
+    return await instancierClasse(nom, argsVals, classes[nom].__moduleEnv);
   }
   let f = fonctions[nom];
   if (!f) throw new ErreurFonctionInconnue("Fonction inconnue: " + nom);
+  // Fonction importee selectivement (de X import(nom, ...)) : garde le contexte (fonctions/
+  // classes/scope) de SON module pendant son execution, meme appelee sans prefixe ici.
+  if (f.__moduleEnv) {
+    let fonctionsPrec = fonctions, classesPrec = classes;
+    fonctions = f.__moduleEnv.fonctions; classes = f.__moduleEnv.classes;
+    try {
+      return await executerCorpsFonction(f.params, f.corps, argsVals, "La fonction " + nom, undefined, f.__moduleEnv.env);
+    } finally {
+      fonctions = fonctionsPrec; classes = classesPrec;
+    }
+  }
   return await executerCorpsFonction(f.params, f.corps, argsVals, "La fonction " + nom);
 }
 
 // Cree une instance d'une classe declaree avec "classe NomClasse [herite NomParent] { ... }",
 // et appelle son constructeur init(moi, ...) s'il existe (recherche en remontant la chaine
 // d'heritage si la classe elle-meme n'en definit pas). moi recoit automatiquement le nouvel objet.
-async function instancierClasse(nomClasse, argsVals) {
+async function instancierClasse(nomClasse, argsVals, moduleEnv) {
   let classeInfo = classes[nomClasse];
   if (!classeInfo) throw new Error("Classe inconnue: " + nomClasse);
-  let instance = { __classe: nomClasse };
-  let trouve = trouverMethodeAvecClasse(nomClasse, "init");
-  if (trouve) {
-    await executerCorpsFonction(trouve.methode.params, trouve.methode.corps, [instance, ...argsVals], "Le constructeur de " + nomClasse, trouve.classeDef);
-  } else if (argsVals.length > 0) {
-    throw new Error("La classe " + nomClasse + " n'a pas de init(moi, ...) mais a recu " + argsVals.length + " argument(s)");
+  // Une classe importee sélectivement (de X import(NomClasse sunom~Autre)) peut avoir ete
+  // renommee localement : __nomInterne garde son VRAI nom dans le module, seul valable une
+  // fois classes/fonctions bascules vers le dictionnaire prive du module ci-dessous (la chaine
+  // d'heritage "herite Parent" a ete enregistree avec les noms internes du module).
+  let nomRecherche = classeInfo.__nomInterne || nomClasse;
+  let instance = { __classe: nomRecherche };
+  if (moduleEnv) instance.__moduleEnv = moduleEnv; // se souvient de son module pour les appels de methode futurs
+  let fonctionsPrec = fonctions, classesPrec = classes;
+  if (moduleEnv) { fonctions = moduleEnv.fonctions; classes = moduleEnv.classes; }
+  try {
+    let trouve = trouverMethodeAvecClasse(nomRecherche, "init");
+    if (trouve) {
+      await executerCorpsFonction(trouve.methode.params, trouve.methode.corps, [instance, ...argsVals], "Le constructeur de " + nomClasse, trouve.classeDef, moduleEnv ? moduleEnv.env : undefined);
+    } else if (argsVals.length > 0) {
+      throw new Error("La classe " + nomClasse + " n'a pas de init(moi, ...) mais a recu " + argsVals.length + " argument(s)");
+    }
+  } finally {
+    fonctions = fonctionsPrec; classes = classesPrec;
   }
   return instance;
 }
@@ -3213,10 +3276,20 @@ async function instancierClasse(nomClasse, argsVals) {
 // version redefinie et retomber sur celle du parent.
 async function appellerMethodeInstance(instance, nomMethode, argsVals, classeDepart) {
   let nomClasseRecherche = classeDepart || instance.__classe;
-  if (!classes[nomClasseRecherche]) throw new Error("Classe inconnue: " + nomClasseRecherche);
-  let trouve = trouverMethodeAvecClasse(nomClasseRecherche, nomMethode);
-  if (!trouve) throw new Error("La classe " + nomClasseRecherche + " n'a pas de methode " + nomMethode + "(...)");
-  return await executerCorpsFonction(trouve.methode.params, trouve.methode.corps, [instance, ...argsVals], nomClasseRecherche + "." + nomMethode + "(...)", trouve.classeDef);
+  // Instance d'une classe importee d'un module : le temps de cet appel, on bascule les
+  // dictionnaires globaux fonctions/classes vers ceux du module (comme chargerModule() le fait
+  // au chargement), pour que la methode retrouve ses propres classes soeurs/fonctions internes.
+  let moduleEnv = instance.__moduleEnv;
+  let fonctionsPrec = fonctions, classesPrec = classes;
+  if (moduleEnv) { fonctions = moduleEnv.fonctions; classes = moduleEnv.classes; }
+  try {
+    if (!classes[nomClasseRecherche]) throw new Error("Classe inconnue: " + nomClasseRecherche);
+    let trouve = trouverMethodeAvecClasse(nomClasseRecherche, nomMethode);
+    if (!trouve) throw new Error("La classe " + nomClasseRecherche + " n'a pas de methode " + nomMethode + "(...)");
+    return await executerCorpsFonction(trouve.methode.params, trouve.methode.corps, [instance, ...argsVals], nomClasseRecherche + "." + nomMethode + "(...)", trouve.classeDef, moduleEnv ? moduleEnv.env : undefined);
+  } finally {
+    fonctions = fonctionsPrec; classes = classesPrec;
+  }
 }
 
 // Appelle parent.methode(moi, ...) depuis l'interieur d'une methode de classe : execute la
@@ -3438,6 +3511,229 @@ async function preRegistrerClasses(tokens) {
       vus.add(c.parent);
       c = classes[c.parent];
     }
+  }
+}
+
+/* ===================== MODULES (import) ===================== */
+// Reconnait les differentes formes de "import(...)" et "de X import(...)" a la ligne. Renvoie
+// null si la ligne n'est pas un import, sinon un descripteur structure. Ne resout ni ne charge
+// rien elle-meme -- ca c'est le travail de resoudreCheminImport()/chargerModule() plus bas.
+function analyserLigneImport(ligne) {
+  let mDe = ligne.match(/^de\s+(.+?)\s+import\((.*)\)$/);
+  if (mDe) {
+    let cibleBrute = mDe[1].trim();
+    let listeBrute = mDe[2].trim();
+    if (listeBrute === "") throw new Error("de ... import(...) : liste de noms vide");
+    let noms = splitTopLevelComma(listeBrute).map(item => {
+      let m = item.trim().match(/^([a-zA-Z_]\w*)(?:\s+sunom~([a-zA-Z_]\w*))?$/);
+      if (!m) throw new Error("de ... import(...) : element invalide \"" + item.trim() + "\" (attendu: nom ou nom sunom~alias)");
+      return { nom: m[1], alias: m[2] || m[1] };
+    });
+    return { forme: "selectif", cible: cibleBrute, noms: noms };
+  }
+  let mImport = ligne.match(/^import\((.*)\)$/);
+  if (mImport) {
+    let interieur = mImport[1].trim();
+    if (interieur === "") throw new Error("import(...) : chemin ou nom de module manquant");
+    let parties = splitTopLevelComma(interieur);
+    if (parties.length > 2) throw new Error("import(...) : trop d'arguments (attendu: import(module) ou import(module, sunom~alias))");
+    let cibleBrute = parties[0].trim();
+    let alias = null;
+    if (parties.length === 2) {
+      let m = parties[1].trim().match(/^sunom~([a-zA-Z_]\w*)$/);
+      if (!m) throw new Error("import(...) : deuxieme argument invalide (attendu: sunom~alias)");
+      alias = m[1];
+    }
+    return { forme: "complet", cible: cibleBrute, alias: alias };
+  }
+  return null;
+}
+
+// Resout la "cible" brute d'un import (identifiant nu SANS extension, ou texte |chemin.mlg|
+// explicite) en un chemin de fichier complet, et determine le nom de module par defaut (utilise
+// comme prefixe si aucun sunom~ n'est fourni). Identifiant nu -> outils.mlg dans le dossier du
+// script courant. Texte |...| -> chemin explicite (absolu si commence par "/", sinon relatif au
+// dossier du script courant), extension requise dans ce cas.
+function resoudreCheminImport(cibleBrute, ligneErreur) {
+  let mTexte = cibleBrute.match(/^\|([^|]*)\|$/);
+  let cheminBrut, nomModuleParDefaut;
+  if (mTexte) {
+    cheminBrut = mTexte[1].trim();
+    if (cheminBrut === "") throw new ErreurLangage("import(...) : chemin vide", ligneErreur);
+    let base = cheminBrut.substring(cheminBrut.lastIndexOf("/") + 1);
+    nomModuleParDefaut = base.replace(/\.mlg$/i, "");
+  } else {
+    if (!/^[a-zA-Z_]\w*$/.test(cibleBrute)) {
+      throw new ErreurLangage("import(...) : \"" + cibleBrute + "\" n'est ni un identifiant de module ni un chemin |...|", ligneErreur);
+    }
+    cheminBrut = cibleBrute + ".mlg";
+    nomModuleParDefaut = cibleBrute;
+  }
+  let chemin;
+  if (cheminBrut.startsWith("/")) {
+    chemin = cheminBrut;
+  } else {
+    let onglet = trouverOnglet(ongletActifId);
+    let dossier = onglet && onglet.dossier;
+    if (!dossier) {
+      throw new ErreurLangage("import(...) : impossible de resoudre un chemin relatif -- ce script n'a pas encore ete enregistre sur le stockage (enregistre-le d'abord avec un nom, ou utilise un chemin absolu |...|)", ligneErreur);
+    }
+    chemin = dossier.replace(/\/+$/, "") + "/" + cheminBrut;
+  }
+  return { chemin: chemin, nomModuleParDefaut: nomModuleParDefaut };
+}
+
+// Charge le fichier a "chemin", l'execute ISOLE (son propre fonctions{}/classes{}/scope, jamais
+// melange a ceux du script qui importe -- comme un module Python), et l'enregistre sous
+// modules[alias]. Rend ensuite chacune de ses fonctions/classes appelable via "alias.nom(...)".
+async function chargerModule(chemin, alias, ligneErreur) {
+  if (Object.prototype.hasOwnProperty.call(modules, alias)) {
+    if (modules[alias].chemin === chemin) return; // deja charge sous cet alias : rien a faire
+    throw new ErreurLangage("import(...) : l'alias \"" + alias + "\" est deja utilise pour un autre module (utilise sunom~ pour en choisir un autre)", ligneErreur);
+  }
+  if (pileImportEnCours.includes(chemin)) {
+    throw new ErreurLangage("import(...) : import circulaire detecte (" + [...pileImportEnCours, chemin].join(" -> ") + ")", ligneErreur);
+  }
+  if (!(window.MonLangage && typeof window.MonLangage.lireFichier === "function")) {
+    throw new ErreurIndisponibleHorsApp("import(...) : disponible uniquement dans l'app installee (rebuild requis)");
+  }
+  if (window.MonLangage && typeof window.MonLangage.permissionStockageAccordee === "function" && !window.MonLangage.permissionStockageAccordee()) {
+    throw new ErreurPermissionRefusee("import(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
+  }
+  let texte = window.MonLangage.lireFichier(chemin);
+  if (texte === null || texte === undefined) {
+    throw new ErreurFichierIntrouvable("import(...) : impossible de lire le module '" + chemin + "'");
+  }
+  let tokensModule;
+  try {
+    tokensModule = parser(texte);
+  } catch (e) {
+    throw new ErreurLangage("import(...) : erreur dans le module '" + chemin + "' : " + e.message, ligneErreur);
+  }
+  // v1 : un module ne peut pas lui-meme importer un autre module (pas de namespacing recursif
+  // pour l'instant). On le detecte explicitement plutot que de laisser un import(...) imbrique
+  // se faire ignorer silencieusement (il ne serait jamais charge, mais la ligne serait quand
+  // meme reconnue comme "un import deja traite" et sautee sans rien faire).
+  for (let tm of tokensModule) {
+    let estImport = false;
+    try { estImport = !!analyserLigneImport(tm.texte); } catch (_) { estImport = true; }
+    if (estImport) {
+      throw new ErreurLangage("import(...) : le module '" + chemin + "' contient lui-meme un import -- un module ne peut pas encore importer un autre module (limitation v1)", ligneErreur);
+    }
+  }
+
+  let fonctionsPrec = fonctions, classesPrec = classes, scopesPrec = scopes;
+  pileImportEnCours.push(chemin);
+  fonctions = {};
+  classes = {};
+  scopes = [{}];
+  try {
+    preRegistrerFonctions(tokensModule);
+    await preRegistrerClasses(tokensModule);
+    await executerTokens(tokensModule, 0, tokensModule.length);
+    modules[alias] = { fonctions: fonctions, classes: classes, scope: scopes[0], chemin: chemin };
+  } catch (e) {
+    if (e instanceof ErreurLangage) throw new ErreurLangage("import(...) : erreur dans le module '" + chemin + "' (ligne " + e.ligne + ") : " + e.message, ligneErreur);
+    throw new Error("import(...) : erreur dans le module '" + chemin + "' : " + e.message);
+  } finally {
+    fonctions = fonctionsPrec;
+    classes = classesPrec;
+    scopes = scopesPrec;
+    pileImportEnCours.pop();
+  }
+
+  let modInfo = modules[alias];
+  let moduleEnv = { fonctions: modInfo.fonctions, classes: modInfo.classes, env: [modInfo.scope] };
+  for (let nomFonc in modInfo.fonctions) enregistrerAppelableModule(alias, nomFonc, "fonction", moduleEnv);
+  for (let nomClasse in modInfo.classes) enregistrerAppelableModule(alias, nomClasse, "classe", moduleEnv);
+}
+
+// Enregistre "alias.nom(...)" comme un appel valide, en reutilisant EXACTEMENT le mecanisme
+// deja utilise par les fonctions integrees a prefixe (ecrire.fichier, conver.nombr, entr.secret...) :
+// une simple clef avec un point dans fonctionsBase/fonctionsExpression. Rien d'autre a changer
+// dans le moteur -- ni le tokenizer, ni l'evaluateur d'expressions ne voient jamais la difference.
+function enregistrerAppelableModule(alias, nom, type, moduleEnv) {
+  let cle = alias + "." + nom;
+  let wrapper = async function(argExprs, ctxExpr) {
+    let argsVals = [];
+    for (let a of argExprs) argsVals.push(await evaluerArgumentAppelStmt(a.trim(), ctxExpr));
+    let fonctionsPrec = fonctions, classesPrec = classes;
+    fonctions = moduleEnv.fonctions; classes = moduleEnv.classes;
+    try {
+      if (type === "fonction") {
+        let f = moduleEnv.fonctions[nom];
+        return await executerCorpsFonction(f.params, f.corps, argsVals, cle + "(...)", undefined, moduleEnv.env);
+      }
+      return await instancierClasse(nom, argsVals, moduleEnv);
+    } finally {
+      fonctions = fonctionsPrec; classes = classesPrec;
+    }
+  };
+  fonctionsBase[cle] = fonctionsExpression[cle] = wrapper;
+}
+
+let __compteurImportTmp = 0;
+// "de X import(a, b sunom~c)" : charge le module sous un alias interne (jamais expose via
+// prefixe), puis recopie SEULEMENT les noms demandes directement dans fonctions{}/classes{}
+// globaux -- chacun garde neanmoins le contexte (fonctions/classes/scope) de son module
+// d'origine via __moduleEnv, pour que ses appels internes non-prefixes continuent de fonctionner.
+async function appliquerImportSelectif(chemin, noms, ligneErreur) {
+  let aliasInterne = "__import_selectif_" + (__compteurImportTmp++);
+  await chargerModule(chemin, aliasInterne, ligneErreur);
+  let modInfo = modules[aliasInterne];
+  let moduleEnv = { fonctions: modInfo.fonctions, classes: modInfo.classes, env: [modInfo.scope] };
+  for (let { nom, alias } of noms) {
+    let estFonction = Object.prototype.hasOwnProperty.call(modInfo.fonctions, nom);
+    let estClasse = Object.prototype.hasOwnProperty.call(modInfo.classes, nom);
+    if (!estFonction && !estClasse) {
+      throw new ErreurLangage("de ... import(...) : \"" + nom + "\" est introuvable dans le module '" + chemin + "'", ligneErreur);
+    }
+    if (Object.prototype.hasOwnProperty.call(fonctions, alias) || Object.prototype.hasOwnProperty.call(classes, alias)) {
+      throw new ErreurLangage("de ... import(...) : \"" + alias + "\" existe deja dans ce script -- renomme a l'import avec : " + nom + " sunom~nouveauNom", ligneErreur);
+    }
+    if (estFonction) {
+      let f = modInfo.fonctions[nom];
+      fonctions[alias] = { params: f.params, corps: f.corps, aRetourVide: f.aRetourVide, __moduleEnv: moduleEnv };
+    } else {
+      let c = modInfo.classes[nom];
+      c.__moduleEnv = moduleEnv;
+      c.__nomInterne = nom;
+      classes[alias] = c;
+    }
+  }
+}
+
+// Scanne les tokens de PREMIER NIVEAU a la recherche de import(...)/de X import(...), avant
+// meme preRegistrerFonctions() -- comme les fonc/classe, les imports sont "hisses" en haut du
+// script, peu importe ou la ligne apparait textuellement. Saute entierement les blocs classe
+// (memes regles que preRegistrerFonctions : un import(...) a l'interieur d'une classe n'a pas
+// de sens et n'est pas reconnu).
+async function preRegistrerImports(tokens) {
+  let i = 0;
+  while (i < tokens.length) {
+    let t = tokens[i];
+    let mClasse = t.texte.match(/^classe\s+(\w+)(?:\s+herite\s+(\w+))?$/);
+    if (mClasse) {
+      if (!tokens[i+1] || tokens[i+1].texte !== "{") { i++; continue; }
+      let finBlocClasse = trouverFinBloc(tokens, i + 2, t.ligne);
+      i = finBlocClasse;
+      continue;
+    }
+    let desc;
+    try {
+      desc = analyserLigneImport(t.texte);
+    } catch (e) {
+      throw new ErreurLangage(e.message, t.ligne);
+    }
+    if (desc) {
+      let resolu = resoudreCheminImport(desc.cible, t.ligne);
+      if (desc.forme === "complet") {
+        await chargerModule(resolu.chemin, desc.alias || resolu.nomModuleParDefaut, t.ligne);
+      } else {
+        await appliquerImportSelectif(resolu.chemin, desc.noms, t.ligne);
+      }
+    }
+    i++;
   }
 }
 
@@ -4297,10 +4593,7 @@ function enregistrerFonctionsBase() {
         let message = await construireMessageEntr(args, ctxExpr);
         let saisie = await demanderSaisieConsole(message);
         if (saisie === null || saisie === undefined) saisie = "";
-        let asTrim = saisie.trim();
-        let nombre = parseFloat(asTrim);
-        let estNombre = asTrim !== "" && !isNaN(nombre) && String(nombre) === asTrim;
-        return estNombre ? nombre : saisie;
+        return saisie;
     };
 
     // entr.secret(|texte|, sty~|*|) : comme entr(), mais la frappe n'est jamais affichee en
@@ -5751,6 +6044,15 @@ function analyserEnTetePou(token) {
 async function executerCommandeSimple(ligne) {
   if (ligne === "") return;
 
+  // import(...) / de X import(...) : deja entierement traite par preRegistrerImports() avant
+  // le debut de l'execution (comme fonc/classe, "hisses" en haut du script) -- on ne fait rien
+  // de plus en le recroisant ici a sa position normale dans le texte.
+  if (/^import\(/.test(ligne) || /^de\s+\S/.test(ligne)) {
+    let desc = null;
+    try { desc = analyserLigneImport(ligne); } catch (_) { desc = null; }
+    if (desc) return;
+  }
+
   // Affectation indexee : chemin[indice] ~ valeur  ou  chemin[ligne,colonne] ~ valeur
   // "chemin" peut etre une variable simple (v[i]~...) ou un chemin d'attributs chaine
   // (moi.compte[i]~..., a.b.c[i]~...), pour rester coherent avec la lecture qui accepte
@@ -5951,6 +6253,9 @@ async function executerCommandeSimple(ligne) {
       return;
     }
     let cible = getVar(nomVar);
+    if (cible && typeof cible === 'object' && cible.__module !== undefined) {
+      throw new Error(nomVar + "." + nomAttr + " : les variables d'un module importe sont en lecture seule depuis l'exterieur");
+    }
     if (!cible || typeof cible !== 'object' || cible.__classe === undefined) {
       throw new Error(nomVar + "." + nomAttr + " : " + nomVar + " n'est pas une instance de classe");
     }
@@ -6617,7 +6922,8 @@ btnMenuOuvrirFichier.addEventListener("click", () => {
           return;
         }
         let nom = cheminComplet.substring(cheminComplet.lastIndexOf("/") + 1);
-        chargerFichierDansNouvelOnglet(texte, nom);
+        let dossier = cheminComplet.substring(0, cheminComplet.lastIndexOf("/"));
+        chargerFichierDansNouvelOnglet(texte, nom, dossier);
       }
     });
     return;
@@ -6754,6 +7060,8 @@ async function runScript() {
 profondeurAppel = 0;
 PROFONDEUR_APPEL_MAX = PROFONDEUR_APPEL_MAX_DEFAUT;
 fonctions = {};
+modules = {};
+pileImportEnCours = [];
 enregistrerFonctionsBase();
   afficherConsole();
   print("=== EXECUTION ===");
@@ -6766,6 +7074,7 @@ enregistrerFonctionsBase();
     let tokens = parser(script);
     preRegistrerFonctions(tokens);
     await preRegistrerClasses(tokens);
+    await preRegistrerImports(tokens);
     await executerTokens(tokens);
     print("=== FIN ===");
   } catch (e) {
