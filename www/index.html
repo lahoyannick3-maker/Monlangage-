@@ -1264,6 +1264,7 @@ function tokenizerExpr(str) {
       let motMaj = mot.toUpperCase();
       if (mot === 'et') tokens.push({ type: 'and' });
       else if (mot === 'ou') tokens.push({ type: 'or' });
+      else if (mot === 'non') tokens.push({ type: 'not' });
       else if (mot === 'dan') tokens.push({ type: 'dan' });
       else if (motMaj === 'MOD') tokens.push({ type: 'op', v: '%' });
       else if (motMaj === 'ENTI') tokens.push({ type: 'op', v: 'enti' });
@@ -1305,6 +1306,7 @@ function detokeniserExpr(tokens) {
       case 'ident': return t.v;
       case 'and': return 'et';
       case 'or': return 'ou';
+      case 'not': return 'non';
       case 'dan': return 'dan';
       case 'str': return '|' + t.v + '|';
       default: throw new Error("Jeton inattendu dans le corps d'une fonction anonyme");
@@ -1348,6 +1350,88 @@ function detokeniserExpr(tokens) {
 // l'on ne connait pas ici. Mais dans les deux cas, le nombre de jetons consommes est identique
 // (un identifiant, un ".", un identifiant, et eventuellement des parentheses/crochets) : ce
 // reperage n'a donc jamais besoin de trancher entre les deux pour trouver la bonne fin.
+// Consomme (sans RIEN evaluer) un operande booleen a partir d'un NIVEAU donne du flux de
+// jetons, en suivant EXACTEMENT la meme grammaire que le vrai evaluateur (or_/and_/not_/dan_/
+// cmp_/.../primaire_ -- copie de la grammaire deja eprouvee de trouverFinCorpsAnonyme
+// ci-dessous). Sert au court-circuit de et/ou : quand le resultat est deja connu (VRAI ou FAUX
+// suffit a determiner et/ou), il faut quand meme AVANCER le curseur jusqu'a la fin du
+// sous-arbre de droite pour que le parseur appelant continue correctement ensuite -- mais sans
+// jamais evaluer ce sous-arbre (aucun appel de fonction, aucune division, aucun effet de bord
+// ni erreur declenchee). C'est ce qui rend "x!=0 et 10/x>2" sur avec x==0 : 10/x n'est jamais
+// calcule puisque x!=0 est deja FAUX.
+// niveau : 'and' pour sauter l'operande droit de "et" (niveau not_), 'or' pour sauter
+// l'operande droit de "ou" (niveau and_ -- peut lui-meme contenir des "et"/"non" imbriques).
+function sauterOperandeBooleen(tokens, debut, niveau) {
+  let pos = debut;
+  const peek = () => tokens[pos];
+  const next = () => tokens[pos++];
+  function attendre(type, quoi) {
+    if (!peek() || peek().type !== type) throw new Error("Expression incomplete ou mal formee (" + quoi + " attendu)");
+    next();
+  }
+  function listeArgs() {
+    if (!(peek() && peek().type === ')')) {
+      or_();
+      while (peek() && peek().type === ',') { next(); or_(); }
+    }
+    attendre(')', "parenthese fermante");
+  }
+  function or_() { and_(); while (peek() && peek().type === 'or') { next(); and_(); } }
+  function and_() { not_(); while (peek() && peek().type === 'and') { next(); not_(); } }
+  function not_() { if (peek() && peek().type === 'not') { next(); not_(); return; } dan_(); }
+  function dan_() { cmp_(); while (peek() && peek().type === 'dan') { next(); cmp_(); } }
+  function cmp_() { add_(); if (peek() && peek().type === 'cmp') { next(); add_(); } }
+  function add_() { mul_(); while (peek() && peek().type === 'op' && (peek().v === '+' || peek().v === '-')) { next(); mul_(); } }
+  function mul_() {
+    colon_();
+    while (peek() && peek().type === 'op' && ['*', '/', '%', 'enti', '.', '..', '×'].includes(peek().v)) { next(); colon_(); }
+  }
+  function colon_() { unary_(); if (peek() && peek().type === 'deuxpoints') { next(); unary_(); } }
+  function unary_() {
+    if (peek() && peek().type === 'op' && peek().v === '-') { next(); unary_(); return; }
+    pow_();
+  }
+  function pow_() { primaire_(); if (peek() && peek().type === 'op' && peek().v === '^') { next(); unary_(); } }
+  function primaire_() {
+    let t = peek();
+    if (!t) throw new Error("Expression incomplete");
+    if (t.type === 'num' || t.type === 'str') { next(); suffixes_(); return; }
+    if (t.type === '(') { next(); or_(); attendre(')', "parenthese fermante"); suffixes_(); return; }
+    if (t.type === 'ident') {
+      next();
+      if (peek() && peek().type === '(') { next(); listeArgs(); suffixes_(); return; }
+      if (peek() && peek().type === '[') {
+        next();
+        if (!(peek() && (peek().type === ',' || peek().type === ']'))) or_();
+        if (peek() && peek().type === ',') { next(); if (!(peek() && peek().type === ']')) or_(); }
+        attendre(']', "crochet fermant");
+        suffixes_(); return;
+      }
+      suffixes_(); return;
+    }
+    throw new Error("Expression invalide (jeton inattendu)");
+  }
+  function suffixes_() {
+    while (true) {
+      if (peek() && peek().type === 'op' && peek().v === '.' && tokens[pos + 1] && tokens[pos + 1].type === 'ident') {
+        next(); next();
+        if (peek() && peek().type === '(') { next(); listeArgs(); }
+        continue;
+      }
+      if (peek() && peek().type === '[') {
+        next();
+        if (!(peek() && (peek().type === ',' || peek().type === ']'))) or_();
+        if (peek() && peek().type === ',') { next(); if (!(peek() && peek().type === ']')) or_(); }
+        attendre(']', "crochet fermant");
+        continue;
+      }
+      break;
+    }
+  }
+  if (niveau === 'and') not_(); else and_();
+  return pos;
+}
+
 function trouverFinCorpsAnonyme(tokens, debut) {
   let pos = debut;
   const peek = () => tokens[pos];
@@ -1364,7 +1448,8 @@ function trouverFinCorpsAnonyme(tokens, debut) {
     attendre(')', "parenthese fermante");
   }
   function or_() { and_(); while (peek() && peek().type === 'or') { next(); and_(); } }
-  function and_() { dan_(); while (peek() && peek().type === 'and') { next(); dan_(); } }
+  function and_() { not_(); while (peek() && peek().type === 'and') { next(); not_(); } }
+  function not_() { if (peek() && peek().type === 'not') { next(); not_(); return; } dan_(); }
   function dan_() { cmp_(); while (peek() && peek().type === 'dan') { next(); cmp_(); } }
   function cmp_() { add_(); if (peek() && peek().type === 'cmp') { next(); add_(); } }
   function add_() { mul_(); while (peek() && peek().type === 'op' && (peek().v === '+' || peek().v === '-')) { next(); mul_(); } }
@@ -1912,13 +1997,25 @@ function evalExprSansEntreeSync(str, ctx) {
 
   function parseOr() {
     let g = parseAnd();
-    while (peek() && peek().type === 'or') { next(); let d = parseAnd(); g = estVrai(g) || estVrai(d); }
+    while (peek() && peek().type === 'or') {
+      next();
+      if (estVrai(g)) { pos = sauterOperandeBooleen(tokens, pos, 'or'); g = true; }
+      else { g = estVrai(parseAnd()); }
+    }
     return g;
   }
   function parseAnd() {
-    let g = parseDan();
-    while (peek() && peek().type === 'and') { next(); let d = parseDan(); g = estVrai(g) && estVrai(d); }
+    let g = parseNot();
+    while (peek() && peek().type === 'and') {
+      next();
+      if (!estVrai(g)) { pos = sauterOperandeBooleen(tokens, pos, 'and'); g = false; }
+      else { g = estVrai(parseNot()); }
+    }
     return g;
+  }
+  function parseNot() {
+    if (peek() && peek().type === 'not') { next(); return !estVrai(parseNot()); }
+    return parseDan();
   }
   function parseDan() {
     let g = parseCmp();
@@ -2138,7 +2235,11 @@ async function evalExprSansEntreeAsync(str, ctx) {
 
   async function parseOr() {
     let g = await parseAnd();
-    while (peek() && peek().type === 'or') { next(); let d = await parseAnd(); g = estVrai(g) || estVrai(d); }
+    while (peek() && peek().type === 'or') {
+      next();
+      if (estVrai(g)) { pos = sauterOperandeBooleen(tokens, pos, 'or'); g = true; }
+      else { g = estVrai(await parseAnd()); }
+    }
     return g;
   }
   // Lit UN argument d'appel de fonction : soit nomParam~expr (argument nomme, style Monlangage,
@@ -2154,9 +2255,17 @@ async function evalExprSansEntreeAsync(str, ctx) {
     return await parseOr();
   }
   async function parseAnd() {
-    let g = await parseDan();
-    while (peek() && peek().type === 'and') { next(); let d = await parseDan(); g = estVrai(g) && estVrai(d); }
+    let g = await parseNot();
+    while (peek() && peek().type === 'and') {
+      next();
+      if (!estVrai(g)) { pos = sauterOperandeBooleen(tokens, pos, 'and'); g = false; }
+      else { g = estVrai(await parseNot()); }
+    }
     return g;
+  }
+  async function parseNot() {
+    if (peek() && peek().type === 'not') { next(); return !estVrai(await parseNot()); }
+    return await parseDan();
   }
   async function parseDan() {
     let g = await parseCmp();
@@ -4467,12 +4576,18 @@ let aideCommandes = [
       "== egalite, != difference, < strictement inferieur, > strictement superieur, <= inferieur ou egal, >= superieur ou egal.",
       "Fonctionne aussi element par element sur les vecteurs et les matrices (renvoie alors un vecteur/une matrice de VRAI/FAUX), avec recyclage comme + et -."
     ], exemple: "3 == 3   ->   VRAI\nc(1,2,3) > 2   ->   [1] FAUX FAUX VRAI" },
-  { noms: ["et", "ou"], categorie: "Operateurs", syntaxe: "condition1 et condition2  /  condition1 ou condition2", description: [
-      "Combine deux conditions booleennes.",
+  { noms: ["et", "ou", "non"], categorie: "Operateurs", syntaxe: "condition1 et condition2  /  condition1 ou condition2  /  non condition", description: [
+      "Combine ou inverse des conditions booleennes.",
       "et : VRAI seulement si les deux conditions sont vraies.",
       "ou : VRAI si au moins une des deux conditions est vraie.",
+      "non : inverse une condition (VRAI devient FAUX et inversement). S'applique a toute la",
+      "comparaison qui suit : non x>5 equivaut a non(x>5), pas a (non x)>5.",
+      "et/ou sont COURT-CIRCUITES (comme en Python/JS/C) : la partie droite n'est evaluee que",
+      "si elle est necessaire pour determiner le resultat. Utile pour se proteger d'une erreur :",
+      "x!=0 et 10/x>2 ne divise jamais par zero, meme si x vaut 0, car et s'arrete des que",
+      "x!=0 est FAUX sans jamais evaluer 10/x.",
       "Utilises typiquement dans si(...), tanqer(...), sision(...)."
-    ], exemple: "si(x>0 et x<10){ affi(|entre 0 et 10|) }\nsi(jour==|samedi| ou jour==|dimanche|){ affi(|weekend|) }" },
+    ], exemple: "si(x>0 et x<10){ affi(|entre 0 et 10|) }\nsi(jour==|samedi| ou jour==|dimanche|){ affi(|weekend|) }\nsi(non estVide){ affi(|il y a des elements|) }\nsi(x!=0 et 10/x>2){ affi(|sans risque de division par zero|) }" },
 
   { noms: ["sin"], categorie: "Fonctions mathematiques", syntaxe: "sin(x)", description: [
       "Sinus de x (x en radians).",
@@ -4559,6 +4674,12 @@ let aideCommandes = [
       "Renvoie le nombre de millisecondes ecoulees depuis une origine fixe (comme Date.now() en JS).",
       "N'a de sens que par difference entre deux appels : sert a chronometrer une portion de code (ex: une boucle)."
     ], exemple: "t1~temps()\npou(i,1,1000,1){ x~i*i }\nt2~temps()\naffi(t2-t1, |ms|)" },
+
+  { noms: ["date"], categorie: "Console", syntaxe: "date()", description: [
+      "Renvoie la date et l'heure ACTUELLES, lisibles, sous forme de texte \"JJ/MM/AAAA HH:MM:SS\".",
+      "Contrairement a temps() (millisecondes brutes, utile seulement par difference entre deux",
+      "appels), date() donne une date/heure directement lisible et affichable."
+    ], exemple: "affi(|Execute le |, date())   ->   Execute le 13/09/2026 10:08:32" },
 
   { noms: ["trac"], categorie: "Graphique", syntaxe: "trac(x, y, ...)  ou  trac(y, ...)", description: [
       "Trace une courbe dans la console, sous forme d'image (canvas) — comme plot(x,y) en Scilab.",
@@ -5623,6 +5744,17 @@ function enregistrerFonctionsBase() {
     fonctionsBase["temps"] = fonctionsExpression["temps"] = async function(args, ctxExpr) {
         if (args.length !== 0) throw new Error("temps() n'attend aucun argument");
         return Date.now();
+    };
+
+    // date() : date et heure ACTUELLES, lisibles, sous forme de texte "JJ/MM/AAAA HH:MM:SS"
+    // (contrairement a temps(), qui donne des millisecondes brutes utiles seulement par
+    // difference entre deux appels, pas comme date lisible).
+    fonctionsBase["date"] = fonctionsExpression["date"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("date() n'attend aucun argument");
+        let d = new Date();
+        let deuxChiffres = (n) => String(n).padStart(2, "0");
+        return deuxChiffres(d.getDate()) + "/" + deuxChiffres(d.getMonth() + 1) + "/" + d.getFullYear()
+             + " " + deuxChiffres(d.getHours()) + ":" + deuxChiffres(d.getMinutes()) + ":" + deuxChiffres(d.getSeconds());
     };
 
     // conver.nombr(var) / conver.text(var) / conver.vecteu(var) / conver.matric(var) : conversions de type.
@@ -6697,16 +6829,11 @@ if (Object.prototype.hasOwnProperty.call(fonctionsBase, nom)) {
 }
   // Dans la console : une simple expression (ex: 3+4) est evaluee et son resultat affiche,
   // sans avoir besoin de passer par affi(...)
-  if (modeConsoleCommande) {
-    try {
-      let val = await evalExpr(ligne, ctxExpr);
-      if (val !== undefined) printValeur(formatValeur(val));
-      return;
-    } catch (e) {
-      // pas une expression valide non plus : on retombe sur l'erreur "commande inconnue" ci-dessous
-    }
-  }
-
+  // Ces 4 formes ont une erreur SPECIFIQUE plus utile que le message generique qu'evalExpr
+  // produirait en les prenant a tort pour une expression (ex: "sinon" seul serait interprete
+  // comme un nom de variable et donnerait "Variable non definie: sinon" au lieu du message
+  // ci-dessous, qui explique le vrai probleme) -- elles doivent donc etre reconnues AVANT
+  // la tentative d'evaluation generale en mode console.
   if (/^sinon\s+si\(/.test(ligne)) {
     throw new Error("sinon si doit suivre directement un bloc si(...){...} ou sinon si(...){...}, sans instruction entre les deux : " + ligne);
   }
@@ -6719,6 +6846,19 @@ if (Object.prototype.hasOwnProperty.call(fonctionsBase, nom)) {
   if (/^[a-zA-Z_][a-zA-Z0-9_.]*\(/.test(ligne)) {
     throw new Error("Appel de fonction mal forme (parenthese fermante manquante ou en trop) : " + ligne);
   }
+
+  if (modeConsoleCommande) {
+    // Toute autre ligne : on tente de l'evaluer comme une expression (ex: "5/0", "x+1",
+    // "maVariable"). Si evalExpr echoue, c'est une VRAIE erreur (division par zero, variable
+    // inconnue, type invalide...) qui doit remonter telle quelle -- elle n'est plus avalee au
+    // profit d'un "Commande inconnue" trompeur (bug corrige : avant ce correctif, "5/0" tape
+    // dans la console affichait a tort "Commande inconnue: 5/0" au lieu de l'erreur de
+    // division par zero).
+    let val = await evalExpr(ligne, ctxExpr);
+    if (val !== undefined) printValeur(formatValeur(val));
+    return;
+  }
+
   throw new Error("Commande inconnue: " + ligne);
 }
 
