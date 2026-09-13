@@ -486,6 +486,63 @@ let modules = {};
 let pileImportEnCours = [];   // chemins en cours de chargement -- detecte les imports circulaires
 let fonctionsBase = {};
 let fonctionsExpression = {};   // sous-ensemble de fonctionsBase utilisable directement dans une expression (ex: entr)
+
+// ===================== Cache de classification de ligne (executerCommandeSimple) =====================
+// Cache BORNE (eviction FIFO) des resultats des tests regex FIXES qui reconnaissent la forme
+// d'une ligne (affectation, appel de methode, indexation, ...). Ces regex sont des constantes du
+// moteur -- elles ne dependent jamais de l'etat runtime -- donc pour un TEXTE de ligne donne, le
+// resultat d'un match() est toujours identique d'une iteration a l'autre. Seul ce qui est fait
+// APRES un match (evalExpr, setVar, resolution de variables, effets de bord...) depend des
+// valeurs runtime et n'est jamais mis en cache ici : seule la RECONNAISSANCE de la forme l'est.
+// Borne a _CACHE_LIGNE_TAILLE_MAX entrees pour ne pas grossir indefiniment sur une longue
+// session ou beaucoup de lignes distinctes sont executees (ex: code genere dynamiquement).
+const _CACHE_LIGNE_TAILLE_MAX = 500;
+let _cacheLigneRegex = new Map(); // ligne (texte exact) -> Map(cle de regex -> match|null)
+// Recupere (ou cree) l'entree de cache pour cette ligne. Eviction FIFO bornee (la plus
+// ANCIENNE entree inseree saute si on depasse _CACHE_LIGNE_TAILLE_MAX) plutot qu'une vraie LRU :
+// une LRU exige de "retoucher" la Map externe (delete+set) a chaque HIT pour la remonter en
+// position recente, ce qui s'est avere plus cher que le gain du cache lui-meme sur mesure reelle
+// (113ms avec LRU-par-regex vs 53ms sans cache du tout ; 24ms avec LRU-par-ligne corrigee ;
+// 19ms en FIFO sans aucun reordonnancement au hit -- cf mesures dans la conversation). Pour une
+// boucle chaude (le cas qui compte), les memes lignes reviennent sans cesse et ne sont jamais
+// evincees tant que le nombre de lignes DISTINCTES du script reste sous la limite -- la FIFO
+// suffit largement, sans le cout de la vraie LRU.
+function _obtenirEntreeLigne(ligne) {
+  let entree = _cacheLigneRegex.get(ligne);
+  if (entree !== undefined) return entree;
+  entree = new Map();
+  _cacheLigneRegex.set(ligne, entree);
+  if (_cacheLigneRegex.size > _CACHE_LIGNE_TAILLE_MAX) {
+    _cacheLigneRegex.delete(_cacheLigneRegex.keys().next().value);
+  }
+  return entree;
+}
+// Lookup/pose LEGER dans une entree deja recuperee via _obtenirEntreeLigne -- aucune operation
+// sur la Map externe ici.
+function _regexCache(entree, cle, ligne, regex) {
+  if (entree.has(cle)) return entree.get(cle);
+  let resultat = ligne.match(regex);
+  entree.set(cle, resultat);
+  return resultat;
+}
+
+// ===================== Cache d'analyse d'expression (extraireFonctionsExpression) =====================
+// Le decoupage d'une expression en "segments" (texte litteral / appel de fonction native a
+// evaluer / bloc fonc(...) a ne pas toucher) ne depend QUE du texte de l'expression et du JEU DE
+// NOMS actuellement enregistres dans fonctionsExpression (ce jeu peut grossir a l'execution via
+// import(...), qui enregistre des noms "alias.fonction" a la volee -- cf enregistrerAppelableModule
+// et enregistrerFonctionsBase). _versionFonctionsExpression est incremente a chaque fois que ce
+// jeu de noms change ; une entree de cache dont la version ne correspond plus est traitee comme
+// perimee et regeneree. Les VALEURS evaluees (appels a des fonctions avec effets de bord comme
+// entr(), resultats qui dependent des variables courantes) ne sont jamais mises en cache : seul
+// le decoupage syntaxique (quels sous-textes sont des appels, a quels noms, avec quels
+// arguments-texte) l'est. Borne (eviction FIFO, meme raisonnement que le cache de lignes
+// ci-dessus : pas de reordonnancement au hit, trop couteux pour le gain apporte) comme le cache
+// de lignes ci-dessus.
+let _versionFonctionsExpression = 0;
+const _CACHE_EXPR_TAILLE_MAX = 500;
+let _cacheSegmentsExpression = new Map(); // str -> { version, segments }
+
 // Numero de la ligne source EN COURS D'EXECUTION, mis a jour par executerTokens a chaque
 // instruction. Sert a donner un numero de ligne correct aux erreurs qui surviennent a
 // l'interieur d'une fonction anonyme (fonc(params) expr) : son corps synthetique n'a pas de
@@ -1672,14 +1729,20 @@ function demanderEmplacementLectureFichier() {
 // Cherche les appels aux fonctions de fonctionsExpression (ex: entr(...)) dans une expression,
 // les execute tout de suite (elles peuvent etre asynchrones / interactives), et remplace
 // chaque appel par une variable temporaire portant la valeur retournee.
-async function extraireFonctionsExpression(str) {
-  let resultat = "", i = 0, n = str.length, compteur = 0, temp = {};
+// Analyse PUREMENT SYNTAXIQUE de l'expression : decoupe str en segments (texte litteral /
+// appel fonc(...) a sauter tel quel / appel racineN(...) / appel d'une fonction native de
+// fonctionsExpression), SANS RIEN EVALUER. Ne depend que du texte str et du jeu de noms
+// actuellement dans fonctionsExpression -- resultat mis en cache par _obtenirSegmentsExpression.
+function _analyserSegmentsExpression(str) {
+  let segments = [], i = 0, n = str.length;
   let noms = Object.keys(fonctionsExpression);
+  let texteAccum = "";
+  function flushTexte() {
+    if (texteAccum !== "") { segments.push({ type: 'texte', valeur: texteAccum }); texteAccum = ""; }
+  }
   while (i < n) {
     let precedent = i > 0 ? str[i-1] : "";
-    let nomTrouve = null;
-    let mRacine = null;
-    let mFonc = null;
+    let nomTrouve = null, mRacine = null, mFonc = null;
     if (!/[a-zA-Z0-9_]/.test(precedent)) {
       mFonc = /^fonc\s*\(/.exec(str.slice(i));
       if (!mFonc) {
@@ -1691,18 +1754,11 @@ async function extraireFonctionsExpression(str) {
         }
       }
     }
-    // Fonction anonyme fonc(params) corps : ne JAMAIS descendre dans son corps pour y
-    // extraire au vol un appel a som/moy/entr/racine/... -- un tel appel utilise
-    // typiquement un PARAMETRE de cette fonction anonyme (ex: fonc(x) som(x)+100), qui
-    // n'existe pas encore dans la portee courante a ce stade (avant meme que la fonction
-    // anonyme soit construite et appelee avec x reellement lie). Bug reel corrige : sans
-    // ceci, suchaq(m, 1, fonc(x) som(x)+100) echouait avec "Variable non definie: x".
-    // On saute donc tout le fonc(...) ... (parametres + corps) SANS y toucher, en suivant
-    // la profondeur de parentheses/crochets pour reperer la meme frontiere de corps que
-    // trouverFinCorpsAnonyme determine plus tard au niveau des tokens (une ',' ou une ')'
-    // qui n'appartient pas au corps le termine).
     if (mFonc) {
-      let j = i + mFonc[0].length; // juste apres "fonc("
+      // Fonction anonyme fonc(params) corps : voir commentaire original -- on saute tout le
+      // bloc (parametres + corps) SANS y toucher, en suivant la profondeur de parentheses/
+      // crochets pour reperer la meme frontiere de corps que trouverFinCorpsAnonyme.
+      let j = i + mFonc[0].length;
       let depth = 1, dansTexteLocal = false;
       while (j < n && depth > 0) {
         let c2 = str[j];
@@ -1727,13 +1783,14 @@ async function extraireFonctionsExpression(str) {
         }
         j++;
       }
-      resultat += str.slice(i, j);
+      flushTexte();
+      segments.push({ type: 'skip', debut: i, fin: j });
       i = j;
       continue;
     }
     if (mRacine) {
       let n2 = mRacine[1] === "" ? 2 : parseInt(mRacine[1], 10);
-      let longueurNom = mRacine[0].length - 1; // sans le '('
+      let longueurNom = mRacine[0].length - 1;
       let debutArgs = i + longueurNom + 1;
       let depth = 1, j = debutArgs;
       while (j < n && depth > 0) {
@@ -1741,15 +1798,16 @@ async function extraireFonctionsExpression(str) {
         if (str[j] === ')') depth--;
         j++;
       }
-      if (depth !== 0) throw new Error("Parenthese fermante manquante pour " + nomRacine(n2) + "(...)");
+      flushTexte();
+      if (depth !== 0) {
+        segments.push({ type: 'erreur', message: "Parenthese fermante manquante pour " + nomRacine(n2) + "(...)" });
+        break;
+      }
       let argStr = str.slice(debutArgs, j - 1).trim();
       let argExprs = argStr === "" ? [] : splitTopLevelComma(argStr);
-      if (argExprs.length !== 1) throw new Error(nomRacine(n2) + "(...) attend exactement 1 argument");
-      let valeur = appliquerRacineN(n2, await evalExpr(argExprs[0], ctxExpr));
-      let nomTemp = "__ext" + compteur + "__";
-      temp[nomTemp] = valeur;
-      compteur++;
-      resultat += nomTemp;
+      segments.push({ type: 'racine', n2: n2,
+        erreurArgs: argExprs.length !== 1 ? (nomRacine(n2) + "(...) attend exactement 1 argument") : null,
+        argExprs: argExprs });
       i = j;
       continue;
     }
@@ -1761,19 +1819,64 @@ async function extraireFonctionsExpression(str) {
         if (str[j] === ')') depth--;
         j++;
       }
-      if (depth !== 0) throw new Error("Parenthese fermante manquante pour " + nomTrouve + "(...)");
+      flushTexte();
+      if (depth !== 0) {
+        segments.push({ type: 'erreur', message: "Parenthese fermante manquante pour " + nomTrouve + "(...)" });
+        break;
+      }
       let argStr = str.slice(debutArgs, j - 1).trim();
       let argExprs = argStr === "" ? [] : splitTopLevelComma(argStr);
-      let valeur = await fonctionsExpression[nomTrouve](argExprs, ctxExpr);
+      segments.push({ type: 'appel', nom: nomTrouve, argExprs: argExprs });
+      i = j;
+    } else {
+      texteAccum += str[i];
+      i++;
+    }
+  }
+  flushTexte();
+  return segments;
+}
+
+// Cache borne (FIFO, voir _cacheSegmentsExpression) autour de _analyserSegmentsExpression :
+// invalide automatiquement des qu'un nouveau nom apparait dans fonctionsExpression (import
+// dynamique), via _versionFonctionsExpression. Aucun reordonnancement au hit (meme raisonnement
+// que _obtenirEntreeLigne ci-dessus) : juste un .get(), rien de plus sur le chemin chaud.
+function _obtenirSegmentsExpression(str) {
+  let entree = _cacheSegmentsExpression.get(str);
+  if (entree !== undefined && entree.version === _versionFonctionsExpression) {
+    return entree.segments;
+  }
+  let segments = _analyserSegmentsExpression(str);
+  let etaitPresente = _cacheSegmentsExpression.has(str);
+  _cacheSegmentsExpression.set(str, { version: _versionFonctionsExpression, segments: segments });
+  if (!etaitPresente && _cacheSegmentsExpression.size > _CACHE_EXPR_TAILLE_MAX) {
+    _cacheSegmentsExpression.delete(_cacheSegmentsExpression.keys().next().value);
+  }
+  return segments;
+}
+
+async function extraireFonctionsExpression(str) {
+  let segments = _obtenirSegmentsExpression(str);
+  let resultat = "", temp = {}, compteur = 0;
+  for (let seg of segments) {
+    if (seg.type === 'texte') { resultat += seg.valeur; continue; }
+    if (seg.type === 'skip') { resultat += str.slice(seg.debut, seg.fin); continue; }
+    if (seg.type === 'erreur') { throw new Error(seg.message); }
+    if (seg.type === 'racine') {
+      if (seg.erreurArgs) throw new Error(seg.erreurArgs);
+      let valeur = appliquerRacineN(seg.n2, await evalExpr(seg.argExprs[0], ctxExpr));
       let nomTemp = "__ext" + compteur + "__";
       temp[nomTemp] = valeur;
       compteur++;
       resultat += nomTemp;
-      i = j;
-    } else {
-      resultat += str[i];
-      i++;
+      continue;
     }
+    // seg.type === 'appel'
+    let valeur = await fonctionsExpression[seg.nom](seg.argExprs, ctxExpr);
+    let nomTemp = "__ext" + compteur + "__";
+    temp[nomTemp] = valeur;
+    compteur++;
+    resultat += nomTemp;
   }
   return { str: resultat, temp: temp };
 }
@@ -3822,6 +3925,7 @@ function enregistrerAppelableModule(alias, nom, type, moduleEnv) {
     }
   };
   fonctionsBase[cle] = fonctionsExpression[cle] = wrapper;
+  _versionFonctionsExpression++; // nouveau nom disponible -> le cache d'analyse d'expression perime
 }
 
 let __compteurImportTmp = 0;
@@ -4451,6 +4555,10 @@ let aideCommandes = [
       "voi() : sert a voir les noms de tout ce qui est actuellement stocker en memoire.",
       "voi(nom1, nom2, ...) : sert a voir si nom1, nom2, ... sont stocker en memoire."
     ], exemple: "voi()         ->   liste tous les elements stocker\nvoi(a, e)     ->   Oui, a et e sont stocker." },
+  { noms: ["temps"], categorie: "Console", syntaxe: "temps()", description: [
+      "Renvoie le nombre de millisecondes ecoulees depuis une origine fixe (comme Date.now() en JS).",
+      "N'a de sens que par difference entre deux appels : sert a chronometrer une portion de code (ex: une boucle)."
+    ], exemple: "t1~temps()\npou(i,1,1000,1){ x~i*i }\nt2~temps()\naffi(t2-t1, |ms|)" },
 
   { noms: ["trac"], categorie: "Graphique", syntaxe: "trac(x, y, ...)  ou  trac(y, ...)", description: [
       "Trace une courbe dans la console, sous forme d'image (canvas) — comme plot(x,y) en Scilab.",
@@ -4492,6 +4600,7 @@ let aideCommandes = [
 function enregistrerFonctionsBase() {
     fonctionsBase = {};
     fonctionsExpression = {};
+    _versionFonctionsExpression++; // jeu de noms repart de zero -> le cache d'analyse d'expression perime
 
     // affi() est aussi enregistree dans fonctionsExpression (comme texte/c/liste/... juste en
     // dessous) : sans ca, affi(...) ne fonctionne QUE comme instruction autonome (via
@@ -5509,6 +5618,13 @@ function enregistrerFonctionsBase() {
         return nomNature(v);
     };
 
+    // temps() : millisecondes ecoulees depuis une origine fixe (Date.now()). Sert a
+    // chronometrer un bloc de code par difference entre deux appels (benchmark).
+    fonctionsBase["temps"] = fonctionsExpression["temps"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("temps() n'attend aucun argument");
+        return Date.now();
+    };
+
     // conver.nombr(var) / conver.text(var) / conver.vecteu(var) / conver.matric(var) : conversions de type.
     fonctionsBase["conver.nombr"] = fonctionsExpression["conver.nombr"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("conver.nombr(...) attend exactement 1 argument");
@@ -6220,11 +6336,12 @@ function analyserEnTetePou(token) {
 /* ===================== INSTRUCTIONS SIMPLES ===================== */
 async function executerCommandeSimple(ligne) {
   if (ligne === "") return;
+  let _entreeLigne = _obtenirEntreeLigne(ligne); // recupere/cree l'entree de cache pour cette ligne
 
   // import(...) / de X import(...) : deja entierement traite par preRegistrerImports() avant
   // le debut de l'execution (comme fonc/classe, "hisses" en haut du script) -- on ne fait rien
   // de plus en le recroisant ici a sa position normale dans le texte.
-  if (/^import\(/.test(ligne) || /^de\s+\S/.test(ligne)) {
+  if (_regexCache(_entreeLigne, 'imp1', ligne, /^import\(/) || _regexCache(_entreeLigne, 'imp2', ligne, /^de\s+\S/)) {
     let desc = null;
     try { desc = analyserLigneImport(ligne); } catch (_) { desc = null; }
     if (desc) return;
@@ -6234,7 +6351,7 @@ async function executerCommandeSimple(ligne) {
   // "chemin" peut etre une variable simple (v[i]~...) ou un chemin d'attributs chaine
   // (moi.compte[i]~..., a.b.c[i]~...), pour rester coherent avec la lecture qui accepte
   // deja moi.comptes[i] dans une expression.
-  let mIdentCrochet = ligne.match(/^([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\[/);
+  let mIdentCrochet = _regexCache(_entreeLigne, 'crochet', ligne, /^([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\[/);
   if (mIdentCrochet) {
     let chemin = mIdentCrochet[1];
     let j = mIdentCrochet[0].length, depth = 1;
@@ -6275,7 +6392,7 @@ async function executerCommandeSimple(ligne) {
 
   // Methodes sur variable : nom.ajout(...), nom.miniscul(), nom.majuscul(), nom.suprespac()
   // Les methodes texte peuvent etre enchainees : var.miniscul().suprespac()
-  let mMethodesTexte = ligne.match(/^([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)((?:\.(?:miniscul|majuscul|suprespac)\(\s*\))+)$/);
+  let mMethodesTexte = _regexCache(_entreeLigne, 'methodesTexte', ligne, /^([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)((?:\.(?:miniscul|majuscul|suprespac)\(\s*\))+)$/);
   if (mMethodesTexte) {
     let chemin = mMethodesTexte[1];
     let cible = resoudreCheminCible(chemin);
@@ -6298,7 +6415,7 @@ async function executerCommandeSimple(ligne) {
   }
 
   // Methode sur vecteur/matrice : nom.ajout(elements)
-  let mMethode = ligne.match(/^([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\.(\w+)\((.*)\)$/);
+  let mMethode = _regexCache(_entreeLigne, 'methode', ligne, /^([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\.(\w+)\((.*)\)$/);
   if (mMethode && mMethode[1] !== "base" && mMethode[1] !== "conver" && mMethode[1] !== "est"
       && !Object.prototype.hasOwnProperty.call(fonctionsBase, mMethode[1] + "." + mMethode[2])) {
     let nomVar = mMethode[1], methode = mMethode[2], argsStr = mMethode[3].trim();
@@ -6396,7 +6513,7 @@ async function executerCommandeSimple(ligne) {
   // donc distingue de l'appel de methode ci-dessus). Ex: moi.nom ~ nom (dans une classe), ou
   // a.age ~ 10 (depuis l'exterieur). Ou ecriture d'un attribut PARTAGE (statique), avec le nom
   // de la classe elle-meme au lieu d'une instance : NomClasse.attribut ~ valeur.
-  let mAttribut = ligne.match(/^([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\s*~\s*(.*)$/);
+  let mAttribut = _regexCache(_entreeLigne, 'attribut', ligne, /^([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\s*~\s*(.*)$/);
   if (mAttribut) {
     let nomVar = mAttribut[1], nomAttr = mAttribut[2], valeurExpr = mAttribut[3].trim();
     let valeur;
@@ -6441,7 +6558,7 @@ async function executerCommandeSimple(ligne) {
   }
 
   // Assignation : nom ~ valeur
-  let mAssign = ligne.match(/^([a-zA-Z_]\w*)\s*~\s*(.*)$/);
+  let mAssign = _regexCache(_entreeLigne, 'assign', ligne, /^([a-zA-Z_]\w*)\s*~\s*(.*)$/);
   if (mAssign) {
     let nom = mAssign[1], valeur = mAssign[2].trim();
     let elementsAssign = splitTopLevelComma(valeur);
@@ -6483,7 +6600,7 @@ async function executerCommandeSimple(ligne) {
   // ne matche plus ici et retombe correctement sur l'evaluation d'expression generale ci-dessous.
   let matchAppel = null;
   {
-    let mIdent = ligne.match(/^([a-zA-Z_][a-zA-Z0-9_.]*)\(/);
+    let mIdent = _regexCache(_entreeLigne, 'identAppel', ligne, /^([a-zA-Z_][a-zA-Z0-9_.]*)\(/);
     if (mIdent) {
       let depth = 1, k = mIdent[0].length, dansTexte = false;
       while (k < ligne.length && depth > 0) {
