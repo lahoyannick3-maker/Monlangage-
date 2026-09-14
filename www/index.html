@@ -4723,16 +4723,20 @@ let aideCommandes = [
       "pour un rappel fiable meme app fermee)."
     ], exemple: "tanqer(VRAI){\n    attendre(secondesJusquaProchain(1, 9, 0))\n    affi(|Lundi 9h : debut de semaine|)\n}" },
 
-  { noms: ["planifier", "planifier.liste", "planifier.annuler", "planifier.modifier", "planifier.tout.annuler"], categorie: "Controle", syntaxe: "planifier(jourSemaine, heure, minute, message) / planifier.liste() / planifier.annuler(id) ou planifier.annuler(jourSemaine, heure, minute, message) / planifier.modifier(id, champ~valeur, ...) / planifier.tout.annuler()", description: [
-      "planifier() programme une VRAIE alarme systeme Android pour la prochaine occurrence du jour de semaine (1=lundi..7=dimanche) et de l'heure:minute donnes, qui affichera le message en notification meme si l'app est fermee. Se re-programme automatiquement chaque semaine.",
-      "Contrairement a attendre()/secondesJusquaProchain(), planifier() NE BLOQUE PAS : le script continue immediatement et l'alarme vit dans le systeme.",
-      "planifier.liste() affiche les planifications actuellement enregistrees sous la forme ID : planification.",
-      "planifier.annuler(id) annule une planification par son ID. planifier.annuler(jour, heure, minute, message) annule une planification correspondant exactement aux quatre valeurs donnees.",
-      "planifier.modifier(id, champ~valeur, ...) modifie une planification existante en conservant son ID. Les champs sont facultatifs et les champs non fournis restent inchanges. Chaque modification doit garder le ~ avant la valeur. Les noms peuvent etre abrégés (ex: h~10 ou he~10, mi~30 ou min~30, j~3 ou jo~3, me~|Nouveau message|, msg~|Nouveau message| ou messa~|Nouveau message|).",
-      "planifier.tout.annuler() annule toutes les planifications enregistrees.",
-      "Appeler planifier() une 2e fois sur le meme jour/heure/minute remplace le message de cette planification.",
-      "Necessite l'app native (indisponible dans l'apercu Chrome) et les permissions notifications + alarme exacte au premier appel si besoin."
-    ], exemple: "planifier(1, 9, 0, |Lundi 9h : debut de semaine|)\nplanifier.liste()\nplanifier.annuler(1)" },
+  { noms: ["planifier", "planifier.annuler"], categorie: "Controle", syntaxe: "planifier(jourSemaine, heure, minute, message)  /  planifier.annuler(jourSemaine, heure, minute)", description: [
+      "Programme une VRAIE alarme systeme Android pour la prochaine occurrence du jour de",
+      "semaine (1=lundi..7=dimanche) et de l'heure:minute donnes, qui affichera \"message\" en",
+      "notification a ce moment-la -- MEME SI L'APP EST FERMEE, et meme apres un redemarrage",
+      "du telephone. Se re-programme automatiquement chaque semaine.",
+      "Contrairement a attendre()/secondesJusquaProchain(), planifier() NE BLOQUE PAS : le",
+      "script continue immediatement apres, et peut meme se terminer -- l'alarme vit dans le",
+      "systeme, pas dans le script.",
+      "Appeler planifier() une 2e fois sur le meme jour/heure/minute remplace le message.",
+      "planifier.annuler(jourSemaine, heure, minute) annule une alarme programmee sur ce",
+      "creneau.",
+      "Necessite l'app native (indisponible dans l'apercu Chrome) et demande les permissions",
+      "notifications + alarme exacte au premier appel si besoin (a accorder puis relancer)."
+    ], exemple: "planifier(1, 9, 0, |Lundi 9h : debut de semaine|)\naffi(|Alarme programmee, je continue mon travail|)" },
 
   { noms: ["trac"], categorie: "Graphique", syntaxe: "trac(x, y, ...)  ou  trac(y, ...)", description: [
       "Trace une courbe dans la console, sous forme d'image (canvas) — comme plot(x,y) en Scilab.",
@@ -5952,111 +5956,18 @@ function enregistrerFonctionsBase() {
         return undefined;
     };
 
-    fonctionsBase["planifier.liste"] = fonctionsExpression["planifier.liste"] = async function(args, ctxExpr) {
-        if (args.length !== 0) throw new Error("planifier.liste() n'attend aucun argument");
-        if (!(window.MonLangage && typeof window.MonLangage.listerPlanifications === "function")) throw new Error("planifier.liste() necessite l'app native (rebuild requis) -- indisponible dans l'apercu Chrome.");
-        let liste = JSON.parse(window.MonLangage.listerPlanifications() || "[]");
-        if (!liste.length) { printValeur("Aucune planification"); await respirer(true); return undefined; }
-        const jours = ["", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"];
-        let lignes = liste.map(p => p.id + " : " + (jours[p.jour] || ("jour " + p.jour)) + " " + String(p.heure).padStart(2,"0") + ":" + String(p.minute).padStart(2,"0") + " — " + p.message);
-        printValeur(lignes.join("\n"));
-        await respirer(true);
-        return undefined;
-    };
-
-    // planifier.annuler(id) ou planifier.annuler(jour, heure, minute, message).
+    // planifier.annuler(jourSemaine, heure, minute) : annule une alarme programmee par
+    // planifier(...) sur ce meme creneau.
     fonctionsBase["planifier.annuler"] = fonctionsExpression["planifier.annuler"] = async function(args, ctxExpr) {
-        if (args.length !== 1 && args.length !== 4) throw new Error("planifier.annuler(...) attend 1 argument (ID) ou 4 arguments (jourSemaine, heure, minute, message)");
-        if (!(window.MonLangage && typeof window.MonLangage.annulerAlarme === "function" && typeof window.MonLangage.annulerAlarmeId === "function")) throw new Error("planifier.annuler(...) necessite l'app native (rebuild requis) -- indisponible dans l'apercu Chrome.");
-        if (args.length === 1) {
-            let id = await evalExpr(args[0], ctxExpr);
-            if (!Number.isInteger(id) || id < 1) throw new Error("planifier.annuler(id) : ID invalide");
-            window.MonLangage.annulerAlarmeId(id);
-        } else {
-            let jour = await evalExpr(args[0], ctxExpr), heure = await evalExpr(args[1], ctxExpr), minute = await evalExpr(args[2], ctxExpr), message = await evalExpr(args[3], ctxExpr);
-            validerCreneauSemaine(jour, heure, minute, "planifier.annuler");
-            if (typeof message !== "string") throw new Error("planifier.annuler(...) : message doit etre du texte");
-            let liste = JSON.parse(window.MonLangage.listerPlanifications() || "[]");
-            let trouve = liste.find(p => p.jour === jour && p.heure === heure && p.minute === minute && p.message === message);
-            if (!trouve) throw new Error("planification exacte introuvable");
-            window.MonLangage.annulerAlarmeId(trouve.id);
+        if (args.length !== 3) throw new Error("planifier.annuler(...) attend exactement 3 arguments (jourSemaine, heure, minute)");
+        let jourSemaine = await evalExpr(args[0], ctxExpr);
+        let heureCible = await evalExpr(args[1], ctxExpr);
+        let minuteCible = await evalExpr(args[2], ctxExpr);
+        validerCreneauSemaine(jourSemaine, heureCible, minuteCible, "planifier.annuler");
+        if (!(window.MonLangage && typeof window.MonLangage.annulerAlarme === "function")) {
+            throw new Error("planifier.annuler(...) necessite l'app native (rebuild requis) -- indisponible dans l'apercu Chrome.");
         }
-        return undefined;
-    };
-
-    // Reconnaît les noms abrégés des champs de planifier.modifier().
-    // Les champs doivent toujours être écrits sous la forme nom~valeur.
-    // Exemples acceptés : msg~|Cours|, me~|Cours|, messa~|Cours|,
-    // heure~10, he~10, minute~30, min~30, jour~3, jo~3.
-    function normaliserChampPlanifierModifier(nom) {
-        let n = String(nom || "").trim().toLowerCase();
-        if (!n) return null;
-        if (n === "msg" || n === "mesg" || n.startsWith("me")) return "message";
-        if (n.startsWith("heu")) return "heure";
-        if (n.startsWith("min")) return "minute";
-        if (n.startsWith("jour")) return "jour";
-        if (n === "h" || n === "he" || n === "heur") return "heure";
-        if (n === "mi") return "minute";
-        if (n === "j" || n === "jo" || n === "jou") return "jour";
-        return null;
-    }
-
-    fonctionsBase["planifier.modifier"] = fonctionsExpression["planifier.modifier"] = async function(args, ctxExpr) {
-        if (args.length < 2) throw new Error("planifier.modifier(...) attend l'ID puis au moins un champ nommé (ex: heure~10)");
-
-        // Les appels de fonctions de base écrits seuls sur une ligne arrivent encore ici
-        // sous forme de textes bruts (ex: "heure~19"). Les appels dans une expression
-        // arrivent déjà sous forme {__argNomme, valeur}. On accepte donc les deux formes.
-        async function evaluerArgModifier(a) {
-            if (a && typeof a === "object" && Object.prototype.hasOwnProperty.call(a, "__argNomme")) {
-                return a;
-            }
-            if (typeof a === "string") {
-                return await evaluerArgumentAppelStmt(a.trim(), ctxExpr);
-            }
-            return { __argNomme: null, valeur: await evalExpr(a, ctxExpr) };
-        }
-
-        let premier = await evaluerArgModifier(args[0]);
-        let id = (premier && typeof premier === "object" && Object.prototype.hasOwnProperty.call(premier, "__argNomme"))
-            ? premier.valeur : premier;
-        if (!Number.isInteger(id) || id < 1) throw new Error("planifier.modifier(...) : ID invalide");
-        if (!(window.MonLangage && typeof window.MonLangage.listerPlanifications === "function" && typeof window.MonLangage.modifierAlarmeId === "function")) {
-            throw new Error("planifier.modifier(...) necessite l'app native (rebuild requis) -- indisponible dans l'apercu Chrome.");
-        }
-
-        let liste = JSON.parse(window.MonLangage.listerPlanifications() || "[]");
-        let actuel = liste.find(p => p.id === id);
-        if (!actuel) throw new Error("planification introuvable pour l'ID " + id);
-
-        let jour = actuel.jour, heure = actuel.heure, minute = actuel.minute, message = actuel.message;
-        let champsVus = {};
-        for (let i = 1; i < args.length; i++) {
-            let a = await evaluerArgModifier(args[i]);
-            if (!a || typeof a !== "object" || !Object.prototype.hasOwnProperty.call(a, "__argNomme") || !a.__argNomme) {
-                throw new Error("planifier.modifier(...) : chaque modification doit être écrite nom~valeur (ex: heure~10 ou message~|Nouveau message|");
-            }
-            let champ = normaliserChampPlanifierModifier(a.__argNomme);
-            if (!champ) throw new Error("planifier.modifier(...) : champ inconnu \"" + a.__argNomme + "\" (utiliser jour~, heure~, minute~ ou message~)");
-            if (champsVus[champ]) throw new Error("planifier.modifier(...) : le champ \"" + champ + "\" est fourni deux fois");
-            champsVus[champ] = true;
-            let valeur = a.valeur;
-            if (champ === "jour") jour = valeur;
-            else if (champ === "heure") heure = valeur;
-            else if (champ === "minute") minute = valeur;
-            else if (champ === "message") message = valeur;
-        }
-
-        validerCreneauSemaine(jour, heure, minute, "planifier.modifier");
-        if (typeof message !== "string") throw new Error("planifier.modifier(...) : message doit etre du texte");
-        window.MonLangage.modifierAlarmeId(id, jour, heure, minute, message);
-        return undefined;
-    };
-
-    fonctionsBase["planifier.tout.annuler"] = fonctionsExpression["planifier.tout.annuler"] = async function(args, ctxExpr) {
-        if (args.length !== 0) throw new Error("planifier.tout.annuler() n'attend aucun argument");
-        if (!(window.MonLangage && typeof window.MonLangage.annulerToutesAlarmes === "function")) throw new Error("planifier.tout.annuler() necessite l'app native (rebuild requis) -- indisponible dans l'apercu Chrome.");
-        window.MonLangage.annulerToutesAlarmes();
+        window.MonLangage.annulerAlarme(jourSemaine, heureCible, minuteCible);
         return undefined;
     };
 
