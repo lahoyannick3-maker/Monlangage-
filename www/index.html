@@ -2543,6 +2543,15 @@ function alphabetMajuscule() { let r = []; for (let i = 0; i < 26; i++) r.push(S
 // Nom d'affichage pour les messages d'erreur : racine() reste "racine", racine3() reste "racine3", etc.
 function nomRacine(n) { return "racine" + (n === 2 ? "" : n); }
 
+// Utilitaires partages par date()/datejour()/heure() : formatage a 2 chiffres et assemblage
+// "JJ/MM/AAAA HH:MM:SS" complet (date()), reutilises separement par datejour()/heure() pour
+// n'en garder qu'une moitie sans dupliquer la logique de formatage.
+function deuxChiffres(n) { return String(n).padStart(2, "0"); }
+function formaterDateHeure(d) {
+  return deuxChiffres(d.getDate()) + "/" + deuxChiffres(d.getMonth() + 1) + "/" + d.getFullYear()
+       + " " + deuxChiffres(d.getHours()) + ":" + deuxChiffres(d.getMinutes()) + ":" + deuxChiffres(d.getSeconds());
+}
+
 // Calcule la racine n-ieme d'un nombre. Les racines d'indice impair sont definies pour les
 // nombres negatifs (ex: racine3(-8) = -2) ; les racines d'indice pair ne le sont pas.
 function racineNieme(n, x) {
@@ -4681,6 +4690,54 @@ let aideCommandes = [
       "appels), date() donne une date/heure directement lisible et affichable."
     ], exemple: "affi(|Execute le |, date())   ->   Execute le 13/09/2026 10:08:32" },
 
+  { noms: ["datejour"], categorie: "Console", syntaxe: "datejour()", description: [
+      "Renvoie uniquement la DATE actuelle (sans l'heure), sous forme de texte \"JJ/MM/AAAA\"."
+    ], exemple: "affi(datejour())   ->   13/09/2026" },
+
+  { noms: ["heure"], categorie: "Console", syntaxe: "heure()", description: [
+      "Renvoie uniquement l'HEURE actuelle (sans la date), sous forme de texte \"HH:MM:SS\"."
+    ], exemple: "affi(heure())   ->   10:08:32" },
+
+  { noms: ["date.annee", "date.mois", "date.jour", "date.jourSemaine", "date.heure", "date.minute", "date.seconde"],
+    categorie: "Console", syntaxe: "date.annee()  /  date.mois()  /  date.jour()  /  date.jourSemaine()  /  date.heure()  /  date.minute()  /  date.seconde()", description: [
+      "Composants NUMERIQUES de la date/heure actuelle, pour faire des calculs et des",
+      "comparaisons -- contrairement a date()/datejour()/heure(), qui sont du texte pense pour",
+      "l'affichage seulement.",
+      "date.jourSemaine() : 1=lundi, 2=mardi, ..., 7=dimanche (norme francaise/ISO)."
+    ], exemple: "si(date.jourSemaine()==1){ affi(|C'est lundi|) }\nsi(date.heure()>=18){ affi(|Soiree|) }" },
+
+  { noms: ["attendre"], categorie: "Controle", syntaxe: "attendre(secondes)", description: [
+      "Suspend l'execution du script pendant le nombre de secondes donne (peut etre",
+      "fractionnaire, ex: attendre(0.5) pour une demi-seconde), sans bloquer l'appli et sans",
+      "consommer le processeur pendant l'attente.",
+      "Interrompable par le bouton Stop meme pendant une longue attente."
+    ], exemple: "affi(|Debut|)\nattendre(2)\naffi(|2 secondes plus tard|)" },
+
+  { noms: ["secondesJusquaProchain"], categorie: "Controle", syntaxe: "secondesJusquaProchain(jourSemaine, heure, minute)", description: [
+      "Calcule le nombre de secondes a attendre avant la PROCHAINE occurrence du jour de",
+      "semaine (1=lundi..7=dimanche) et de l'heure:minute donnes. Si le moment cible est deja",
+      "passe (ou en cours) aujourd'hui, calcule jusqu'a la semaine suivante.",
+      "Concu pour etre combine avec attendre() : declenche une action exactement une fois par",
+      "occurrence, sans boucle active ni drapeau de deduplication.",
+      "Limite : ne fonctionne que pendant que le script tourne activement (voir planifier()",
+      "pour un rappel fiable meme app fermee)."
+    ], exemple: "tanqer(VRAI){\n    attendre(secondesJusquaProchain(1, 9, 0))\n    affi(|Lundi 9h : debut de semaine|)\n}" },
+
+  { noms: ["planifier", "planifier.annuler"], categorie: "Controle", syntaxe: "planifier(jourSemaine, heure, minute, message)  /  planifier.annuler(jourSemaine, heure, minute)", description: [
+      "Programme une VRAIE alarme systeme Android pour la prochaine occurrence du jour de",
+      "semaine (1=lundi..7=dimanche) et de l'heure:minute donnes, qui affichera \"message\" en",
+      "notification a ce moment-la -- MEME SI L'APP EST FERMEE, et meme apres un redemarrage",
+      "du telephone. Se re-programme automatiquement chaque semaine.",
+      "Contrairement a attendre()/secondesJusquaProchain(), planifier() NE BLOQUE PAS : le",
+      "script continue immediatement apres, et peut meme se terminer -- l'alarme vit dans le",
+      "systeme, pas dans le script.",
+      "Appeler planifier() une 2e fois sur le meme jour/heure/minute remplace le message.",
+      "planifier.annuler(jourSemaine, heure, minute) annule une alarme programmee sur ce",
+      "creneau.",
+      "Necessite l'app native (indisponible dans l'apercu Chrome) et demande les permissions",
+      "notifications + alarme exacte au premier appel si besoin (a accorder puis relancer)."
+    ], exemple: "planifier(1, 9, 0, |Lundi 9h : debut de semaine|)\naffi(|Alarme programmee, je continue mon travail|)" },
+
   { noms: ["trac"], categorie: "Graphique", syntaxe: "trac(x, y, ...)  ou  trac(y, ...)", description: [
       "Trace une courbe dans la console, sous forme d'image (canvas) — comme plot(x,y) en Scilab.",
       "Les points doivent d'abord etre calcules (avec une boucle pou, ou une expression vectorielle comme y~x*x), puis on appelle trac.",
@@ -5751,10 +5808,167 @@ function enregistrerFonctionsBase() {
     // difference entre deux appels, pas comme date lisible).
     fonctionsBase["date"] = fonctionsExpression["date"] = async function(args, ctxExpr) {
         if (args.length !== 0) throw new Error("date() n'attend aucun argument");
+        return formaterDateHeure(new Date());
+    };
+
+    // datejour() : la partie DATE seule, sous forme de texte "JJ/MM/AAAA".
+    fonctionsBase["datejour"] = fonctionsExpression["datejour"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("datejour() n'attend aucun argument");
         let d = new Date();
-        let deuxChiffres = (n) => String(n).padStart(2, "0");
-        return deuxChiffres(d.getDate()) + "/" + deuxChiffres(d.getMonth() + 1) + "/" + d.getFullYear()
-             + " " + deuxChiffres(d.getHours()) + ":" + deuxChiffres(d.getMinutes()) + ":" + deuxChiffres(d.getSeconds());
+        return deuxChiffres(d.getDate()) + "/" + deuxChiffres(d.getMonth() + 1) + "/" + d.getFullYear();
+    };
+
+    // heure() : la partie HEURE seule, sous forme de texte "HH:MM:SS".
+    fonctionsBase["heure"] = fonctionsExpression["heure"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("heure() n'attend aucun argument");
+        let d = new Date();
+        return deuxChiffres(d.getHours()) + ":" + deuxChiffres(d.getMinutes()) + ":" + deuxChiffres(d.getSeconds());
+    };
+
+    // date.annee() / date.mois() / date.jour() / date.jourSemaine() / date.heure() /
+    // date.minute() / date.seconde() : composants NUMERIQUES de la date/heure actuelle, pour
+    // faire des calculs et des comparaisons (contrairement a date()/datejour()/heure(), qui sont
+    // du texte pense pour l'affichage). date.jourSemaine() est en 1=lundi ... 7=dimanche (norme
+    // ISO/France), pas 0=dimanche comme le getDay() natif de JS.
+    fonctionsBase["date.annee"] = fonctionsExpression["date.annee"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("date.annee() n'attend aucun argument");
+        return new Date().getFullYear();
+    };
+    fonctionsBase["date.mois"] = fonctionsExpression["date.mois"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("date.mois() n'attend aucun argument");
+        return new Date().getMonth() + 1;
+    };
+    fonctionsBase["date.jour"] = fonctionsExpression["date.jour"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("date.jour() n'attend aucun argument");
+        return new Date().getDate();
+    };
+    fonctionsBase["date.jourSemaine"] = fonctionsExpression["date.jourSemaine"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("date.jourSemaine() n'attend aucun argument");
+        let jsDay = new Date().getDay(); // JS : 0=dimanche..6=samedi
+        return jsDay === 0 ? 7 : jsDay; // converti en 1=lundi..7=dimanche
+    };
+    fonctionsBase["date.heure"] = fonctionsExpression["date.heure"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("date.heure() n'attend aucun argument");
+        return new Date().getHours();
+    };
+    fonctionsBase["date.minute"] = fonctionsExpression["date.minute"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("date.minute() n'attend aucun argument");
+        return new Date().getMinutes();
+    };
+    fonctionsBase["date.seconde"] = fonctionsExpression["date.seconde"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("date.seconde() n'attend aucun argument");
+        return new Date().getSeconds();
+    };
+
+    // attendre(secondes) : suspend l'execution du script pendant "secondes" (peut etre
+    // fractionnaire, ex: attendre(0.5)), SANS consommer le CPU en boucle (contrairement a une
+    // boucle d'attente active) et en restant INTERROMPABLE par le bouton Stop -- on verifie
+    // demandeArret toutes les 100ms au lieu de dormir d'un seul bloc, pour que Stop reste
+    // reactif meme pendant une longue attente (ex: attendre(3600)).
+    fonctionsBase["attendre"] = fonctionsExpression["attendre"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("attendre(...) attend exactement 1 argument (nombre de secondes)");
+        let secondes = await evalExpr(args[0], ctxExpr);
+        if (typeof secondes !== "number" || !isFinite(secondes) || secondes < 0) {
+            throw new Error("attendre(...) attend un nombre de secondes positif ou nul");
+        }
+        let resteMs = secondes * 1000;
+        const PAS_MS = 100;
+        while (resteMs > 0) {
+            if (demandeArret) throw new ExecutionInterrompue();
+            let pas = Math.min(PAS_MS, resteMs);
+            await new Promise((resolve) => setTimeout(resolve, pas));
+            resteMs -= pas;
+        }
+        if (demandeArret) throw new ExecutionInterrompue();
+        return undefined;
+    };
+
+    // secondesJusquaProchain(jourSemaine, heure, minute) : nombre de secondes a attendre avant
+    // la PROCHAINE occurrence du jour de semaine (1=lundi..7=dimanche) et de l'heure:minute
+    // donnes (secondes~0 dans la cible). Si le moment cible est deja passe aujourd'hui (ou n'est
+    // pas aujourd'hui), calcule jusqu'a la prochaine semaine. Concu pour etre utilise avec
+    // attendre() : "tanqer(VRAI){ attendre(secondesJusquaProchain(1,9,0)); ... }" declenche une
+    // action exactement une fois par occurrence, sans boucle active ni drapeau de deduplication.
+    // Validation partagee du triplet (jourSemaine, heure, minute) : utilisee par
+    // secondesJusquaProchain(), planifier() et planifier.annuler().
+    function validerCreneauSemaine(jourSemaine, heureCible, minuteCible, nomFonction) {
+        if (!Number.isInteger(jourSemaine) || jourSemaine < 1 || jourSemaine > 7) {
+            throw new Error(nomFonction + "(...) : jourSemaine doit etre un entier entre 1 (lundi) et 7 (dimanche)");
+        }
+        if (!Number.isInteger(heureCible) || heureCible < 0 || heureCible > 23) {
+            throw new Error(nomFonction + "(...) : heure doit etre un entier entre 0 et 23");
+        }
+        if (!Number.isInteger(minuteCible) || minuteCible < 0 || minuteCible > 59) {
+            throw new Error(nomFonction + "(...) : minute doit etre un entier entre 0 et 59");
+        }
+    }
+
+    fonctionsBase["secondesJusquaProchain"] = fonctionsExpression["secondesJusquaProchain"] = async function(args, ctxExpr) {
+        if (args.length !== 3) throw new Error("secondesJusquaProchain(...) attend exactement 3 arguments (jourSemaine, heure, minute)");
+        let jourSemaine = await evalExpr(args[0], ctxExpr);
+        let heureCible = await evalExpr(args[1], ctxExpr);
+        let minuteCible = await evalExpr(args[2], ctxExpr);
+        validerCreneauSemaine(jourSemaine, heureCible, minuteCible, "secondesJusquaProchain");
+        let maintenant = new Date();
+        let jourActuelJs = maintenant.getDay(); // 0=dimanche..6=samedi
+        let jourActuel = jourActuelJs === 0 ? 7 : jourActuelJs; // 1=lundi..7=dimanche
+        let cible = new Date(maintenant.getFullYear(), maintenant.getMonth(), maintenant.getDate(), heureCible, minuteCible, 0, 0);
+        let ecartJours = jourSemaine - jourActuel;
+        cible.setDate(cible.getDate() + ecartJours);
+        if (cible.getTime() <= maintenant.getTime()) cible.setDate(cible.getDate() + 7);
+        return (cible.getTime() - maintenant.getTime()) / 1000;
+    };
+
+    // planifier(jourSemaine, heure, minute, message) : programme une VRAIE alarme systeme
+    // (pas un timer JS) pour la prochaine occurrence du jour/heure/minute donnes -- se
+    // declenche meme si l'app est fermee, meme apres un redemarrage du telephone, et affiche
+    // "message" en notification. Se re-programme automatiquement chaque semaine. Necessite
+    // l'app native (indisponible dans l'apercu Chrome) et les permissions notifications +
+    // alarme exacte -- les demande automatiquement si besoin (a accorder puis relancer le
+    // script).
+    fonctionsBase["planifier"] = fonctionsExpression["planifier"] = async function(args, ctxExpr) {
+        if (args.length !== 4) throw new Error("planifier(...) attend exactement 4 arguments (jourSemaine, heure, minute, message)");
+        let jourSemaine = await evalExpr(args[0], ctxExpr);
+        let heureCible = await evalExpr(args[1], ctxExpr);
+        let minuteCible = await evalExpr(args[2], ctxExpr);
+        let message = await evalExpr(args[3], ctxExpr);
+        validerCreneauSemaine(jourSemaine, heureCible, minuteCible, "planifier");
+        if (typeof message !== "string") throw new Error("planifier(...) : message doit etre du texte");
+
+        if (!(window.MonLangage && typeof window.MonLangage.planifierAlarme === "function")) {
+            throw new Error("planifier(...) necessite l'app native (rebuild requis) -- indisponible dans l'apercu Chrome.");
+        }
+        if (typeof window.MonLangage.permissionNotificationsAccordee === "function" &&
+            !window.MonLangage.permissionNotificationsAccordee()) {
+            if (typeof window.MonLangage.demanderPermissionNotifications === "function") {
+                window.MonLangage.demanderPermissionNotifications();
+            }
+            throw new Error("MonLangage a besoin de l'autorisation d'afficher des notifications pour planifier(...). Accorde la permission puis relance le script.");
+        }
+        if (typeof window.MonLangage.permissionAlarmeExacteAccordee === "function" &&
+            !window.MonLangage.permissionAlarmeExacteAccordee()) {
+            if (typeof window.MonLangage.demanderPermissionAlarmeExacte === "function") {
+                window.MonLangage.demanderPermissionAlarmeExacte();
+            }
+            throw new Error("MonLangage a besoin de l'autorisation de programmer des alarmes exactes pour planifier(...). Sur l'ecran qui va s'ouvrir, autorise-la, puis relance le script.");
+        }
+        window.MonLangage.planifierAlarme(jourSemaine, heureCible, minuteCible, message);
+        return undefined;
+    };
+
+    // planifier.annuler(jourSemaine, heure, minute) : annule une alarme programmee par
+    // planifier(...) sur ce meme creneau.
+    fonctionsBase["planifier.annuler"] = fonctionsExpression["planifier.annuler"] = async function(args, ctxExpr) {
+        if (args.length !== 3) throw new Error("planifier.annuler(...) attend exactement 3 arguments (jourSemaine, heure, minute)");
+        let jourSemaine = await evalExpr(args[0], ctxExpr);
+        let heureCible = await evalExpr(args[1], ctxExpr);
+        let minuteCible = await evalExpr(args[2], ctxExpr);
+        validerCreneauSemaine(jourSemaine, heureCible, minuteCible, "planifier.annuler");
+        if (!(window.MonLangage && typeof window.MonLangage.annulerAlarme === "function")) {
+            throw new Error("planifier.annuler(...) necessite l'app native (rebuild requis) -- indisponible dans l'apercu Chrome.");
+        }
+        window.MonLangage.annulerAlarme(jourSemaine, heureCible, minuteCible);
+        return undefined;
     };
 
     // conver.nombr(var) / conver.text(var) / conver.vecteu(var) / conver.matric(var) : conversions de type.
