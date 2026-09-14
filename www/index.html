@@ -4723,7 +4723,7 @@ let aideCommandes = [
       "pour un rappel fiable meme app fermee)."
     ], exemple: "tanqer(VRAI){\n    attendre(secondesJusquaProchain(1, 9, 0))\n    affi(|Lundi 9h : debut de semaine|)\n}" },
 
-  { noms: ["planifier", "planifier.annuler"], categorie: "Controle", syntaxe: "planifier(jourSemaine, heure, minute, message)  /  planifier.annuler(jourSemaine, heure, minute)", description: [
+  { noms: ["planifier", "planifier.annuler", "planifier.liste", "planifier.annuler.parMessage", "planifier.annuler.tout"], categorie: "Controle", syntaxe: "planifier(jourSemaine, heure, minute, message)  /  planifier.annuler(jourSemaine, heure, minute)  /  planifier.liste()  /  planifier.annuler.parMessage(texte)  /  planifier.annuler.tout()", description: [
       "Programme une VRAIE alarme systeme Android pour la prochaine occurrence du jour de",
       "semaine (1=lundi..7=dimanche) et de l'heure:minute donnes, qui affichera \"message\" en",
       "notification a ce moment-la -- MEME SI L'APP EST FERMEE, et meme apres un redemarrage",
@@ -4733,10 +4733,19 @@ let aideCommandes = [
       "systeme, pas dans le script.",
       "Appeler planifier() une 2e fois sur le meme jour/heure/minute remplace le message.",
       "planifier.annuler(jourSemaine, heure, minute) annule une alarme programmee sur ce",
-      "creneau.",
+      "creneau, et renvoie VRAI si elle existait vraiment (FAUX si le creneau donne n'etait",
+      "pas programme -- rien n'est alors annule).",
+      "planifier.liste() renvoie toutes les alarmes actuellement programmees, sous forme de",
+      "liste de liste(jourSemaine, heure, minute, message) -- pratique pour retrouver un",
+      "creneau exact avant de l'annuler, sans avoir a le connaitre par coeur.",
+      "planifier.annuler.parMessage(texte) annule directement toutes les alarmes dont le",
+      "message est exactement \"texte\" (il peut y en avoir plusieurs, sur des creneaux",
+      "differents) -- renvoie le nombre d'alarmes annulees.",
+      "planifier.annuler.tout() annule d'un coup TOUTES les alarmes programmees -- renvoie",
+      "le nombre d'alarmes annulees.",
       "Necessite l'app native (indisponible dans l'apercu Chrome) et demande les permissions",
       "notifications + alarme exacte au premier appel si besoin (a accorder puis relancer)."
-    ], exemple: "planifier(1, 9, 0, |Lundi 9h : debut de semaine|)\naffi(|Alarme programmee, je continue mon travail|)" },
+    ], exemple: "planifier(1, 9, 0, |Lundi 9h : debut de semaine|)\naffi(|Alarme programmee, je continue mon travail|)\n\npou a dan planifier.liste(){\n    affi(a[0], |/|, a[1], |:|, a[2], | - |, a[3])\n}\n\nn~planifier.annuler.parMessage(|Reunion|)\naffi(n, | alarme(s) annulee(s)|)" },
 
   { noms: ["trac"], categorie: "Graphique", syntaxe: "trac(x, y, ...)  ou  trac(y, ...)", description: [
       "Trace une courbe dans la console, sous forme d'image (canvas) — comme plot(x,y) en Scilab.",
@@ -5957,7 +5966,8 @@ function enregistrerFonctionsBase() {
     };
 
     // planifier.annuler(jourSemaine, heure, minute) : annule une alarme programmee par
-    // planifier(...) sur ce meme creneau.
+    // planifier(...) sur ce meme creneau. Renvoie VRAI si un creneau etait effectivement
+    // programme (et a donc ete annule), FAUX si le creneau n'existait pas.
     fonctionsBase["planifier.annuler"] = fonctionsExpression["planifier.annuler"] = async function(args, ctxExpr) {
         if (args.length !== 3) throw new Error("planifier.annuler(...) attend exactement 3 arguments (jourSemaine, heure, minute)");
         let jourSemaine = await evalExpr(args[0], ctxExpr);
@@ -5967,8 +5977,72 @@ function enregistrerFonctionsBase() {
         if (!(window.MonLangage && typeof window.MonLangage.annulerAlarme === "function")) {
             throw new Error("planifier.annuler(...) necessite l'app native (rebuild requis) -- indisponible dans l'apercu Chrome.");
         }
-        window.MonLangage.annulerAlarme(jourSemaine, heureCible, minuteCible);
-        return undefined;
+        return !!window.MonLangage.annulerAlarme(jourSemaine, heureCible, minuteCible);
+    };
+
+    // planifier.liste() : renvoie la liste de toutes les alarmes actuellement programmees par
+    // planifier(...), chacune sous forme de liste(jourSemaine, heure, minute, message) (meme
+    // convention 1=lundi..7=dimanche). liste() vide si aucune alarme programmee. Necessite
+    // l'app native (indisponible dans l'apercu Chrome).
+    fonctionsBase["planifier.liste"] = fonctionsExpression["planifier.liste"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("planifier.liste() ne prend aucun argument");
+        if (!(window.MonLangage && typeof window.MonLangage.listerAlarmes === "function")) {
+            throw new Error("planifier.liste() necessite l'app native (rebuild requis) -- indisponible dans l'apercu Chrome.");
+        }
+        let brut;
+        try {
+            brut = JSON.parse(window.MonLangage.listerAlarmes());
+        } catch (e) {
+            throw new Error("planifier.liste() : reponse native invalide.");
+        }
+        let elements = brut.map(a => ({
+            __type: "liste",
+            elements: [a.jourSemaine, a.heure, a.minute, a.message]
+        }));
+        return { __type: "liste", elements: elements };
+    };
+
+    // planifier.annuler.parMessage(texte) : annule TOUTES les alarmes programmees dont le
+    // message est exactement egal a "texte" (il peut y en avoir plusieurs, sur des creneaux
+    // differents). Renvoie le nombre d'alarmes annulees (0 si aucune ne correspondait).
+    fonctionsBase["planifier.annuler.parMessage"] = fonctionsExpression["planifier.annuler.parMessage"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("planifier.annuler.parMessage(texte) attend exactement 1 argument (message)");
+        let message = await evalExpr(args[0], ctxExpr);
+        if (typeof message !== "string") throw new Error("planifier.annuler.parMessage(...) : message doit etre du texte");
+        if (!(window.MonLangage && typeof window.MonLangage.listerAlarmes === "function" && typeof window.MonLangage.annulerAlarme === "function")) {
+            throw new Error("planifier.annuler.parMessage(...) necessite l'app native (rebuild requis) -- indisponible dans l'apercu Chrome.");
+        }
+        let brut;
+        try {
+            brut = JSON.parse(window.MonLangage.listerAlarmes());
+        } catch (e) {
+            throw new Error("planifier.annuler.parMessage(...) : reponse native invalide.");
+        }
+        let compteur = 0;
+        for (let a of brut) {
+            if (a.message === message && window.MonLangage.annulerAlarme(a.jourSemaine, a.heure, a.minute)) compteur++;
+        }
+        return compteur;
+    };
+
+    // planifier.annuler.tout() : annule TOUTES les alarmes actuellement programmees, sans
+    // exception. Renvoie le nombre d'alarmes annulees (0 si aucune n'etait programmee).
+    fonctionsBase["planifier.annuler.tout"] = fonctionsExpression["planifier.annuler.tout"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("planifier.annuler.tout() ne prend aucun argument");
+        if (!(window.MonLangage && typeof window.MonLangage.listerAlarmes === "function" && typeof window.MonLangage.annulerAlarme === "function")) {
+            throw new Error("planifier.annuler.tout() necessite l'app native (rebuild requis) -- indisponible dans l'apercu Chrome.");
+        }
+        let brut;
+        try {
+            brut = JSON.parse(window.MonLangage.listerAlarmes());
+        } catch (e) {
+            throw new Error("planifier.annuler.tout() : reponse native invalide.");
+        }
+        let compteur = 0;
+        for (let a of brut) {
+            if (window.MonLangage.annulerAlarme(a.jourSemaine, a.heure, a.minute)) compteur++;
+        }
+        return compteur;
     };
 
     // conver.nombr(var) / conver.text(var) / conver.vecteu(var) / conver.matric(var) : conversions de type.
