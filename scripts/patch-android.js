@@ -475,13 +475,14 @@ public class AlarmScheduler {
         return jourSemaine * 10000 + heure * 100 + minute;
     }
 
-    // Programme (ou re-programme) l'alarme pour la PROCHAINE occurrence, et sauvegarde le
-    // creneau pour survivre a un redemarrage (BootReceiver).
+    // Programme (ou re-programme) l'alarme pour la PROCHAINE occurrence. Le requestCode
+    // Android utilise l'ID stable de la planification, et non plus le creneau : ainsi une
+    // modification de jour/heure/minute ne laisse jamais l'ancienne PendingIntent active.
     public static void programmer(Context context, int jourSemaine, int heure, int minute, String message) {
         long delaiMs = calculerDelaiMs(jourSemaine, heure, minute);
-        int id = idPour(jourSemaine, heure, minute);
+        int id = obtenirOuCreerId(context, jourSemaine, heure, minute);
         programmerAvecDelai(context, id, jourSemaine, heure, minute, message, delaiMs);
-        sauvegarder(context, jourSemaine, heure, minute, message);
+        sauvegarderMessage(context, jourSemaine, heure, minute, message);
     }
 
     static void programmerAvecDelai(Context context, int id, int jourSemaine, int heure, int minute, String message, long delaiMs) {
@@ -508,34 +509,61 @@ public class AlarmScheduler {
         return jourSemaine + "_" + heure + "_" + minute;
     }
 
+    private static void annulerPendingIntent(Context context, int requestCode) {
+        Intent intent = new Intent(context, AlarmReceiver.class);
+        PendingIntent pi = PendingIntent.getBroadcast(context, requestCode, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        AlarmManager gestionnaire = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+        gestionnaire.cancel(pi);
+        pi.cancel();
+    }
+
     private static void annulerCle(Context context, String cle) {
         String[] parties = cle.split("_");
         if (parties.length != 3) return;
         int jourSemaine = Integer.parseInt(parties[0]);
         int heure = Integer.parseInt(parties[1]);
         int minute = Integer.parseInt(parties[2]);
-        int idAlarme = idPour(jourSemaine, heure, minute);
-        Intent intent = new Intent(context, AlarmReceiver.class);
-        PendingIntent pi = PendingIntent.getBroadcast(context, idAlarme, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        AlarmManager gestionnaire = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
-        gestionnaire.cancel(pi);
-        pi.cancel();
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+
+        // Nouveau format : l'ID stable est le requestCode Android.
+        int idStable = prefs.getInt("id_" + cle, -1);
+        if (idStable > 0) annulerPendingIntent(context, idStable);
+
+        // Compatibilite avec les alarmes creees par les anciennes versions : elles utilisaient
+        // idPour(jour, heure, minute) comme requestCode. On annule les deux formes.
+        int ancienIdAlarme = idPour(jourSemaine, heure, minute);
+        if (ancienIdAlarme != idStable) annulerPendingIntent(context, ancienIdAlarme);
+
         supprimerSauvegarde(context, jourSemaine, heure, minute);
     }
 
-    private static void sauvegarder(Context context, int jourSemaine, int heure, int minute, String message) {
+    // Retourne l'ID stable existant ou en attribue un nouveau.
+    private static int obtenirOuCreerId(Context context, int jourSemaine, int heure, int minute) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        String cle = clePour(jourSemaine, heure, minute);
+        int id = prefs.getInt("id_" + cle, 0);
+        if (id > 0) return id;
+        int prochainId = prefs.getInt("prochain_id", 1);
+        prefs.edit().putInt("id_" + cle, prochainId).putInt("prochain_id", prochainId + 1).apply();
+        Set<String> cles = new HashSet<>(prefs.getStringSet("cles", new HashSet<>()));
+        cles.add(cle);
+        prefs.edit().putStringSet("cles", cles).apply();
+        return prochainId;
+    }
+
+    private static void sauvegarderMessage(Context context, int jourSemaine, int heure, int minute, String message) {
         SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         String cle = clePour(jourSemaine, heure, minute);
         Set<String> cles = new HashSet<>(prefs.getStringSet("cles", new HashSet<>()));
-        SharedPreferences.Editor ed = prefs.edit();
-        if (!cles.contains(cle)) {
-            int prochainId = prefs.getInt("prochain_id", 1);
-            ed.putInt("id_" + cle, prochainId);
-            ed.putInt("prochain_id", prochainId + 1);
-            cles.add(cle);
-        }
-        ed.putStringSet("cles", cles).putString("msg_" + cle, message).apply();
+        cles.add(cle);
+        prefs.edit().putStringSet("cles", cles).putString("msg_" + cle, message).apply();
+    }
+
+    // Ancienne signature conservee uniquement pour les appels internes historiques.
+    private static void sauvegarder(Context context, int jourSemaine, int heure, int minute, String message) {
+        obtenirOuCreerId(context, jourSemaine, heure, minute);
+        sauvegarderMessage(context, jourSemaine, heure, minute, message);
     }
 
     private static void supprimerSauvegarde(Context context, int jourSemaine, int heure, int minute) {
@@ -560,10 +588,7 @@ public class AlarmScheduler {
                 int heure = Integer.parseInt(parties[1]);
                 int minute = Integer.parseInt(parties[2]);
                 int id = prefs.getInt("id_" + cle, 0);
-                if (id == 0) {
-                    id = prefs.getInt("prochain_id", 1);
-                    prefs.edit().putInt("id_" + cle, id).putInt("prochain_id", id + 1).apply();
-                }
+                if (id == 0) id = obtenirOuCreerId(context, jour, heure, minute);
                 org.json.JSONObject objet = new org.json.JSONObject();
                 objet.put("id", id);
                 objet.put("jour", jour);
@@ -601,11 +626,20 @@ public class AlarmScheduler {
         if (!ancienneCle.equals(nouvelleCle) && prefs.getStringSet("cles", new HashSet<>()).contains(nouvelleCle)) {
             throw new IllegalArgumentException("une planification existe deja sur ce creneau");
         }
+
+        // 1) Annulation REELLE de l'ancienne PendingIntent, y compris les anciens requestCode.
         annulerCle(context, ancienneCle);
-        programmer(context, jourSemaine, heure, minute, message);
-        // Conserve l'ID de la planification modifiee.
-        SharedPreferences p2 = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        p2.edit().putInt("id_" + nouvelleCle, id).apply();
+
+        // 2) Le meme ID utilisateur est conserve pour la nouvelle planification.
+        SharedPreferences p = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        Set<String> cles = new HashSet<>(p.getStringSet("cles", new HashSet<>()));
+        cles.remove(ancienneCle);
+        cles.add(nouvelleCle);
+        long delaiMs = calculerDelaiMs(jourSemaine, heure, minute);
+        programmerAvecDelai(context, id, jourSemaine, heure, minute, message, delaiMs);
+        p.edit().putStringSet("cles", cles)
+            .remove("msg_" + ancienneCle).remove("id_" + ancienneCle)
+            .putInt("id_" + nouvelleCle, id).putString("msg_" + nouvelleCle, message).apply();
     }
 
     // Re-arme TOUTES les alarmes sauvegardees (appele par BootReceiver juste apres un
@@ -622,7 +656,8 @@ public class AlarmScheduler {
                 int minute = Integer.parseInt(parties[2]);
                 String message = prefs.getString("msg_" + cle, "");
                 long delaiMs = calculerDelaiMs(jourSemaine, heure, minute);
-                int id = idPour(jourSemaine, heure, minute);
+                int id = prefs.getInt("id_" + cle, 0);
+                if (id <= 0) id = obtenirOuCreerId(context, jourSemaine, heure, minute);
                 programmerAvecDelai(context, id, jourSemaine, heure, minute, message, delaiMs);
             } catch (NumberFormatException ignoree) { }
         }
