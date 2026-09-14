@@ -227,10 +227,18 @@ public class MainActivity extends BridgeActivity {
         }
 
         // planifier.annuler(jourSemaine, heure, minute) cote MonLangage : annule une alarme
-        // programmee par planifierAlarme(...) sur ce meme creneau.
+        // programmee par planifierAlarme(...) sur ce meme creneau. Renvoie VRAI si un creneau
+        // etait effectivement programme (et a donc ete annule), FAUX sinon.
         @JavascriptInterface
-        public void annulerAlarme(int jourSemaine, int heure, int minute) {
-            AlarmScheduler.annuler(MainActivity.this, jourSemaine, heure, minute);
+        public boolean annulerAlarme(int jourSemaine, int heure, int minute) {
+            return AlarmScheduler.annuler(MainActivity.this, jourSemaine, heure, minute);
+        }
+
+        // planifier.liste() cote MonLangage : liste toutes les alarmes actuellement
+        // programmees, en JSON.
+        @JavascriptInterface
+        public String listerAlarmes() {
+            return AlarmScheduler.listerJson(MainActivity.this);
         }
 
         // Liste le contenu d'un dossier : [{"nom":"...", "dossier":true/false}, ...],
@@ -410,6 +418,8 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import org.json.JSONArray;
+import org.json.JSONObject;
 import java.util.Calendar;
 import java.util.HashSet;
 import java.util.Set;
@@ -479,7 +489,16 @@ public class AlarmScheduler {
     }
 
     // Annule l'alarme d'un creneau et sa sauvegarde (plus reprogrammee apres reboot non plus).
-    public static void annuler(Context context, int jourSemaine, int heure, int minute) {
+    // Renvoie VRAI si un creneau etait effectivement programme (et a donc ete annule), FAUX
+    // si on appelle annuler(...) sur un creneau qui n'existait pas -- AlarmManager.cancel(...)
+    // ne signale jamais lui-meme si l'alarme existait vraiment, d'ou cette verification
+    // prealable dans notre propre sauvegarde (meme source de verite que listerJson/
+    // reprogrammerTout).
+    public static boolean annuler(Context context, int jourSemaine, int heure, int minute) {
+        String cle = jourSemaine + "_" + heure + "_" + minute;
+        SharedPreferences prefsCheck = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        boolean existait = prefsCheck.getStringSet("cles", new HashSet<>()).contains(cle);
+
         int id = idPour(jourSemaine, heure, minute);
         Intent intent = new Intent(context, AlarmReceiver.class);
         PendingIntent pi = PendingIntent.getBroadcast(context, id, intent,
@@ -488,6 +507,32 @@ public class AlarmScheduler {
         gestionnaire.cancel(pi);
         pi.cancel();
         supprimerSauvegarde(context, jourSemaine, heure, minute);
+        return existait;
+    }
+
+    // Liste toutes les alarmes actuellement programmees et sauvegardees, en JSON :
+    // [{"jourSemaine":1,"heure":7,"minute":30,"message":"..."}, ...]. "[]" si aucune.
+    public static String listerJson(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        Set<String> cles = prefs.getStringSet("cles", new HashSet<>());
+        JSONArray tableau = new JSONArray();
+        for (String cle : cles) {
+            String[] parties = cle.split("_");
+            if (parties.length != 3) continue;
+            try {
+                int jourSemaine = Integer.parseInt(parties[0]);
+                int heure = Integer.parseInt(parties[1]);
+                int minute = Integer.parseInt(parties[2]);
+                String message = prefs.getString("msg_" + cle, "");
+                JSONObject o = new JSONObject();
+                o.put("jourSemaine", jourSemaine);
+                o.put("heure", heure);
+                o.put("minute", minute);
+                o.put("message", message);
+                tableau.put(o);
+            } catch (Exception ignoree) { }
+        }
+        return tableau.toString();
     }
 
     private static void sauvegarder(Context context, int jourSemaine, int heure, int minute, String message) {
