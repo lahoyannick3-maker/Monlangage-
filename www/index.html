@@ -4728,7 +4728,7 @@ let aideCommandes = [
       "Contrairement a attendre()/secondesJusquaProchain(), planifier() NE BLOQUE PAS : le script continue immediatement et l'alarme vit dans le systeme.",
       "planifier.liste() affiche les planifications actuellement enregistrees sous la forme ID : planification.",
       "planifier.annuler(id) annule une planification par son ID. planifier.annuler(jour, heure, minute, message) annule une planification correspondant exactement aux quatre valeurs donnees.",
-      "planifier.modifier(id, champ~valeur, ...) modifie une planification existante en conservant son ID. Les champs sont facultatifs et les champs non fournis restent inchanges. Les noms peuvent etre abrégés par préfixe (ex: he~10, min~30, me~|Nouveau message| ou msg~|Nouveau message|).",
+      "planifier.modifier(id, champ~valeur, ...) modifie une planification existante en conservant son ID. Les champs sont facultatifs et les champs non fournis restent inchanges. Chaque modification doit garder le ~ avant la valeur. Les noms peuvent etre abrégés (ex: h~10 ou he~10, mi~30 ou min~30, j~3 ou jo~3, me~|Nouveau message|, msg~|Nouveau message| ou messa~|Nouveau message|).",
       "planifier.tout.annuler() annule toutes les planifications enregistrees.",
       "Appeler planifier() une 2e fois sur le meme jour/heure/minute remplace le message de cette planification.",
       "Necessite l'app native (indisponible dans l'apercu Chrome) et les permissions notifications + alarme exacte au premier appel si besoin."
@@ -6003,8 +6003,23 @@ function enregistrerFonctionsBase() {
 
     fonctionsBase["planifier.modifier"] = fonctionsExpression["planifier.modifier"] = async function(args, ctxExpr) {
         if (args.length < 2) throw new Error("planifier.modifier(...) attend l'ID puis au moins un champ nommé (ex: heure~10)");
-        let id = (args[0] && typeof args[0] === "object" && Object.prototype.hasOwnProperty.call(args[0], "__argNomme"))
-            ? args[0].valeur : await evalExpr(args[0], ctxExpr);
+
+        // Les appels de fonctions de base écrits seuls sur une ligne arrivent encore ici
+        // sous forme de textes bruts (ex: "heure~19"). Les appels dans une expression
+        // arrivent déjà sous forme {__argNomme, valeur}. On accepte donc les deux formes.
+        async function evaluerArgModifier(a) {
+            if (a && typeof a === "object" && Object.prototype.hasOwnProperty.call(a, "__argNomme")) {
+                return a;
+            }
+            if (typeof a === "string") {
+                return await evaluerArgumentAppelStmt(a.trim(), ctxExpr);
+            }
+            return { __argNomme: null, valeur: await evalExpr(a, ctxExpr) };
+        }
+
+        let premier = await evaluerArgModifier(args[0]);
+        let id = (premier && typeof premier === "object" && Object.prototype.hasOwnProperty.call(premier, "__argNomme"))
+            ? premier.valeur : premier;
         if (!Number.isInteger(id) || id < 1) throw new Error("planifier.modifier(...) : ID invalide");
         if (!(window.MonLangage && typeof window.MonLangage.listerPlanifications === "function" && typeof window.MonLangage.modifierAlarmeId === "function")) {
             throw new Error("planifier.modifier(...) necessite l'app native (rebuild requis) -- indisponible dans l'apercu Chrome.");
@@ -6017,8 +6032,8 @@ function enregistrerFonctionsBase() {
         let jour = actuel.jour, heure = actuel.heure, minute = actuel.minute, message = actuel.message;
         let champsVus = {};
         for (let i = 1; i < args.length; i++) {
-            let a = args[i];
-            if (!a || typeof a !== "object" || !Object.prototype.hasOwnProperty.call(a, "__argNomme")) {
+            let a = await evaluerArgModifier(args[i]);
+            if (!a || typeof a !== "object" || !Object.prototype.hasOwnProperty.call(a, "__argNomme") || !a.__argNomme) {
                 throw new Error("planifier.modifier(...) : chaque modification doit être écrite nom~valeur (ex: heure~10 ou message~|Nouveau message|");
             }
             let champ = normaliserChampPlanifierModifier(a.__argNomme);
