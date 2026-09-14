@@ -226,11 +226,31 @@ public class MainActivity extends BridgeActivity {
             AlarmScheduler.programmer(MainActivity.this, jourSemaine, heure, minute, message);
         }
 
-        // planifier.annuler(jourSemaine, heure, minute) cote MonLangage : annule une alarme
-        // programmee par planifierAlarme(...) sur ce meme creneau.
+        // planifier.annuler(...) : annule une planification par son creneau exact.
         @JavascriptInterface
         public void annulerAlarme(int jourSemaine, int heure, int minute) {
             AlarmScheduler.annuler(MainActivity.this, jourSemaine, heure, minute);
+        }
+
+        // Consultation et gestion des planifications existantes.
+        @JavascriptInterface
+        public String listerPlanifications() {
+            return AlarmScheduler.lister(MainActivity.this);
+        }
+
+        @JavascriptInterface
+        public void annulerAlarmeId(int id) {
+            AlarmScheduler.annulerParId(MainActivity.this, id);
+        }
+
+        @JavascriptInterface
+        public void annulerToutesAlarmes() {
+            AlarmScheduler.annulerTout(MainActivity.this);
+        }
+
+        @JavascriptInterface
+        public void modifierAlarmeId(int id, int jourSemaine, int heure, int minute, String message) {
+            AlarmScheduler.modifierParId(MainActivity.this, id, jourSemaine, heure, minute, message);
         }
 
         // Liste le contenu d'un dossier : [{"nom":"...", "dossier":true/false}, ...],
@@ -480,9 +500,23 @@ public class AlarmScheduler {
 
     // Annule l'alarme d'un creneau et sa sauvegarde (plus reprogrammee apres reboot non plus).
     public static void annuler(Context context, int jourSemaine, int heure, int minute) {
-        int id = idPour(jourSemaine, heure, minute);
+        String cle = clePour(jourSemaine, heure, minute);
+        annulerCle(context, cle);
+    }
+
+    private static String clePour(int jourSemaine, int heure, int minute) {
+        return jourSemaine + "_" + heure + "_" + minute;
+    }
+
+    private static void annulerCle(Context context, String cle) {
+        String[] parties = cle.split("_");
+        if (parties.length != 3) return;
+        int jourSemaine = Integer.parseInt(parties[0]);
+        int heure = Integer.parseInt(parties[1]);
+        int minute = Integer.parseInt(parties[2]);
+        int idAlarme = idPour(jourSemaine, heure, minute);
         Intent intent = new Intent(context, AlarmReceiver.class);
-        PendingIntent pi = PendingIntent.getBroadcast(context, id, intent,
+        PendingIntent pi = PendingIntent.getBroadcast(context, idAlarme, intent,
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         AlarmManager gestionnaire = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
         gestionnaire.cancel(pi);
@@ -492,18 +526,86 @@ public class AlarmScheduler {
 
     private static void sauvegarder(Context context, int jourSemaine, int heure, int minute, String message) {
         SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        String cle = jourSemaine + "_" + heure + "_" + minute;
+        String cle = clePour(jourSemaine, heure, minute);
         Set<String> cles = new HashSet<>(prefs.getStringSet("cles", new HashSet<>()));
-        cles.add(cle);
-        prefs.edit().putStringSet("cles", cles).putString("msg_" + cle, message).apply();
+        SharedPreferences.Editor ed = prefs.edit();
+        if (!cles.contains(cle)) {
+            int prochainId = prefs.getInt("prochain_id", 1);
+            ed.putInt("id_" + cle, prochainId);
+            ed.putInt("prochain_id", prochainId + 1);
+            cles.add(cle);
+        }
+        ed.putStringSet("cles", cles).putString("msg_" + cle, message).apply();
     }
 
     private static void supprimerSauvegarde(Context context, int jourSemaine, int heure, int minute) {
         SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        String cle = jourSemaine + "_" + heure + "_" + minute;
+        String cle = clePour(jourSemaine, heure, minute);
         Set<String> cles = new HashSet<>(prefs.getStringSet("cles", new HashSet<>()));
         cles.remove(cle);
-        prefs.edit().putStringSet("cles", cles).remove("msg_" + cle).apply();
+        prefs.edit().putStringSet("cles", cles).remove("msg_" + cle).remove("id_" + cle).apply();
+    }
+
+    public static String lister(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        Set<String> cles = new HashSet<>(prefs.getStringSet("cles", new HashSet<>()));
+        org.json.JSONArray resultat = new org.json.JSONArray();
+        java.util.List<String> triees = new java.util.ArrayList<>(cles);
+        java.util.Collections.sort(triees, (a,b) -> Integer.compare(prefs.getInt("id_" + a, Integer.MAX_VALUE), prefs.getInt("id_" + b, Integer.MAX_VALUE)));
+        for (String cle : triees) {
+            String[] parties = cle.split("_");
+            if (parties.length != 3) continue;
+            try {
+                int jour = Integer.parseInt(parties[0]);
+                int heure = Integer.parseInt(parties[1]);
+                int minute = Integer.parseInt(parties[2]);
+                int id = prefs.getInt("id_" + cle, 0);
+                if (id == 0) {
+                    id = prefs.getInt("prochain_id", 1);
+                    prefs.edit().putInt("id_" + cle, id).putInt("prochain_id", id + 1).apply();
+                }
+                org.json.JSONObject objet = new org.json.JSONObject();
+                objet.put("id", id);
+                objet.put("jour", jour);
+                objet.put("heure", heure);
+                objet.put("minute", minute);
+                objet.put("message", prefs.getString("msg_" + cle, ""));
+                resultat.put(objet);
+            } catch (Exception ignoree) { }
+        }
+        return resultat.toString();
+    }
+
+    private static String trouverCleParId(Context context, int idRecherche) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        for (String cle : prefs.getStringSet("cles", new HashSet<>())) {
+            if (prefs.getInt("id_" + cle, -1) == idRecherche) return cle;
+        }
+        throw new IllegalArgumentException("planification introuvable : ID " + idRecherche);
+    }
+
+    public static void annulerParId(Context context, int id) {
+        annulerCle(context, trouverCleParId(context, id));
+    }
+
+    public static void annulerTout(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        Set<String> cles = new HashSet<>(prefs.getStringSet("cles", new HashSet<>()));
+        for (String cle : new HashSet<>(cles)) annulerCle(context, cle);
+    }
+
+    public static void modifierParId(Context context, int id, int jourSemaine, int heure, int minute, String message) {
+        String ancienneCle = trouverCleParId(context, id);
+        String nouvelleCle = clePour(jourSemaine, heure, minute);
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        if (!ancienneCle.equals(nouvelleCle) && prefs.getStringSet("cles", new HashSet<>()).contains(nouvelleCle)) {
+            throw new IllegalArgumentException("une planification existe deja sur ce creneau");
+        }
+        annulerCle(context, ancienneCle);
+        programmer(context, jourSemaine, heure, minute, message);
+        // Conserve l'ID de la planification modifiee.
+        SharedPreferences p2 = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        p2.edit().putInt("id_" + nouvelleCle, id).apply();
     }
 
     // Re-arme TOUTES les alarmes sauvegardees (appele par BootReceiver juste apres un
