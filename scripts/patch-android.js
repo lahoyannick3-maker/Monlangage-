@@ -66,6 +66,22 @@ if (!manifest.includes('ACCESS_NETWORK_STATE')) {
   console.log('[patch-android] AndroidManifest.xml : permissions reseau/sms ajoutees.');
 }
 
+// Depuis Android 11 (API 30), un package ne "voit" plus les autres apps installees par
+// defaut (visibilite des paquets) : PackageManager.getLaunchIntentForPackage("com.whatsapp")
+// renvoie null MEME SI WhatsApp est installe, tant que le paquet n'est pas declare ici. Sans
+// ca, whatsapp.ouvrir() bascule TOUJOURS sur le repli web (https://www.whatsapp.com/) au lieu
+// d'ouvrir l'app. On declare WhatsApp classique + WhatsApp Business.
+const queriesWhatsapp =
+`    <queries>
+        <package android:name="com.whatsapp" />
+        <package android:name="com.whatsapp.w4b" />
+    </queries>
+`;
+if (!manifest.includes('<queries>')) {
+  manifest = manifest.replace('<application', queriesWhatsapp + '\n    <application');
+  console.log('[patch-android] AndroidManifest.xml : bloc <queries> ajoute (visibilite WhatsApp).');
+}
+
 const intentFilterMlg =
 `        <intent-filter>
             <action android:name="android.intent.action.VIEW" />
@@ -143,7 +159,12 @@ const mainActivityPath = path.join(mainActivityDir, 'MainActivity.java');
 
 const mainActivityContent = `package ${appId};
 
+import android.app.Activity;
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -161,7 +182,11 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 // Activite Android native de MonLangage.
 // Fournit un pont JavaScript (window.MonLangage) qui donne un acces direct au
@@ -461,14 +486,36 @@ public class MainActivity extends BridgeActivity {
             return tableau.toString();
         }
 
-        // sms.envoyer(numero, message) cote MonLangage : envoie un SMS. Les messages longs
-        // (>160 caracteres) sont automatiquement decoupes en plusieurs parties (SMS
-        // multipart) et renvoyes comme un seul message reassemble chez le destinataire.
+        // VRAI si l'app a le droit de lire l'etat du telephone (necessaire uniquement pour
+        // choisir explicitement une SIM avec sms.envoyer(numero, message, sim)).
+        @JavascriptInterface
+        public boolean permissionTelephoneAccordee() {
+            return checkSelfPermission(android.Manifest.permission.READ_PHONE_STATE)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        }
+
+        // Demande la permission de lecture d'etat telephone (boite de dialogue systeme).
+        @JavascriptInterface
+        public void demanderPermissionTelephone() {
+            runOnUiThread(() ->
+                requestPermissions(new String[] { android.Manifest.permission.READ_PHONE_STATE }, 2004)
+            );
+        }
+
+        // sms.envoyer(numero, message, sim) cote MonLangage : envoie un SMS et attend la
+        // confirmation REELLE d'envoi (broadcast systeme SMS_SENT, pas seulement le fait
+        // qu'Android ait accepte la demande). Renvoie VRAI seulement si CHAQUE partie du
+        // message (les messages longs sont decoupes en plusieurs parties SMS, reassemblees
+        // en un seul message chez le destinataire) a ete confirmee envoyee par le systeme.
+        // Attend au maximum 15 secondes ; au-dela, considere l'envoi comme un echec (reseau
+        // injoignable, par exemple).
         @JavascriptInterface
         public boolean envoyerSms(String numero, String message, int sim) {
+            BroadcastReceiver recepteur = null;
             try {
                 android.telephony.SmsManager gestionnaireSms;
                 if (sim == 1 || sim == 2) {
+                    if (!permissionTelephoneAccordee()) return false;
                     android.telephony.SubscriptionManager subscriptions =
                         (android.telephony.SubscriptionManager) getSystemService(TELEPHONY_SUBSCRIPTION_SERVICE);
                     if (subscriptions == null) return false;
@@ -479,15 +526,47 @@ public class MainActivity extends BridgeActivity {
                 } else {
                     gestionnaireSms = android.telephony.SmsManager.getDefault();
                 }
-                java.util.ArrayList<String> parties = gestionnaireSms.divideMessage(message);
-                if (parties.size() > 1) {
-                    gestionnaireSms.sendMultipartTextMessage(numero, null, parties, null, null);
+
+                ArrayList<String> parties = gestionnaireSms.divideMessage(message);
+                int nbParties = Math.max(parties.size(), 1);
+                String action = "${appId}.SMS_ENVOYE_" + System.nanoTime();
+
+                CountDownLatch verrou = new CountDownLatch(nbParties);
+                AtomicInteger echecs = new AtomicInteger(0);
+                recepteur = new BroadcastReceiver() {
+                    @Override
+                    public void onReceive(Context context, Intent intent) {
+                        if (getResultCode() != Activity.RESULT_OK) echecs.incrementAndGet();
+                        verrou.countDown();
+                    }
+                };
+                if (Build.VERSION.SDK_INT >= 33) {
+                    registerReceiver(recepteur, new IntentFilter(action), Context.RECEIVER_NOT_EXPORTED);
                 } else {
-                    gestionnaireSms.sendTextMessage(numero, null, message, null, null);
+                    registerReceiver(recepteur, new IntentFilter(action));
                 }
-                return true;
+
+                if (parties.size() > 1) {
+                    ArrayList<PendingIntent> intentsEnvoi = new ArrayList<>();
+                    for (int i = 0; i < parties.size(); i++) {
+                        intentsEnvoi.add(PendingIntent.getBroadcast(MainActivity.this, i,
+                            new Intent(action), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE));
+                    }
+                    gestionnaireSms.sendMultipartTextMessage(numero, null, parties, intentsEnvoi, null);
+                } else {
+                    PendingIntent intentEnvoi = PendingIntent.getBroadcast(MainActivity.this, 0,
+                        new Intent(action), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                    gestionnaireSms.sendTextMessage(numero, null, message, intentEnvoi, null);
+                }
+
+                boolean toutRecu = verrou.await(15, TimeUnit.SECONDS);
+                return toutRecu && echecs.get() == 0;
             } catch (Exception e) {
                 return false;
+            } finally {
+                if (recepteur != null) {
+                    try { unregisterReceiver(recepteur); } catch (Exception ignoree) { }
+                }
             }
         }
 
@@ -508,6 +587,7 @@ public class MainActivity extends BridgeActivity {
             startActivity(intent);
         }
 
+        @JavascriptInterface
         public void ouvrirWhatsapp(String numero, String message) {
             String numeroPropre = numero.replaceAll("[^0-9]", "");
             String url = "https://wa.me/" + numeroPropre + "?text=" + Uri.encode(message);
