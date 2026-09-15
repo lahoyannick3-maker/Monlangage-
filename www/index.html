@@ -4657,6 +4657,13 @@ let aideCommandes = [
       "Pour une ligne vide toute seule dans affi(), on peut aussi ecrire affi(||) ou affi( | |)."
     ], exemple: "affi(|Programme de calcul|, saulig, |----------|)\necrire(|notes|, |Titre|, saulig, |Sous-titre|)   ** liste() : \"Titre\", \"\\n\", \"Sous-titre\" **" },
 
+  { noms: ["conver.ms.ms", "conver.ms.seconde", "conver.ms.minute", "conver.ms.heure", "conver.seconde.ms", "conver.seconde.seconde", "conver.seconde.minute", "conver.seconde.heure", "conver.minute.ms", "conver.minute.seconde", "conver.minute.minute", "conver.minute.heure", "conver.heure.ms", "conver.heure.seconde", "conver.heure.minute", "conver.heure.heure", "conver.octet.octet", "conver.octet.Ko", "conver.octet.Mo", "conver.octet.Go", "conver.octet.Tera", "conver.Ko.octet", "conver.Ko.Ko", "conver.Ko.Mo", "conver.Ko.Go", "conver.Ko.Tera", "conver.Mo.octet", "conver.Mo.Ko", "conver.Mo.Mo", "conver.Mo.Go", "conver.Mo.Tera", "conver.Go.octet", "conver.Go.Ko", "conver.Go.Mo", "conver.Go.Go", "conver.Go.Tera", "conver.Tera.octet", "conver.Tera.Ko", "conver.Tera.Mo", "conver.Tera.Go", "conver.Tera.Tera"], categorie: "Base", syntaxe: "conver.source.cible(valeur)", description: [
+      "Convertit une valeur d'une unite vers une autre avec la forme generale conver.source.cible(valeur).",
+      "Temps : ms, seconde, minute, heure. La seconde est l'unite de reference : conver.minute.seconde(5) -> 300 ; conver.ms.seconde(500) -> 0.5.",
+      "Tailles : octet, Ko, Mo, Go, Tera. Les conversions sont binaires : 1 Ko = 1024 octets, 1 Mo = 1024 Ko, 1 Go = 1024 Mo, 1 Tera = 1024 Go.",
+      "Les conversions peuvent aussi etre faites dans l'autre sens : conver.seconde.heure(3600) -> 1 ; conver.seconde.ms(1) -> 1000 ; conver.Mo.Ko(1) -> 1024.",
+      "La valeur doit etre un nombre positif ou nul. Le resultat peut etre fractionnaire."
+    ], exemple: "conver.minute.seconde(5)  ->  300\nconver.heure.seconde(2)    ->  7200\nconver.ms.seconde(500)     ->  0.5\nconver.seconde.heure(3600)  ->  1\nconver.octet.Ko(1024)      ->  1\nconver.Mo.Ko(1)            ->  1024" },
   { noms: ["texte"], categorie: "Texte", syntaxe: "texte(a, b, ...)", description: [
       "Concatene plusieurs parties en UN SEUL texte, exactement comme les arguments de affi()/entr()/~ (avec |texte| et saulig pour un saut de ligne).",
       "Contrairement a affi(), ne s'affiche pas : renvoie le texte concatene comme une valeur, utilisable dans une expression.",
@@ -4747,6 +4754,15 @@ let aideCommandes = [
       "notifications + alarme exacte au premier appel si besoin (a accorder puis relancer)."
     ], exemple: "planifier(1, 9, 0, |Lundi 9h : debut de semaine|)\naffi(|Alarme programmee, je continue mon travail|)\n\npou a dan planifier.liste(){\n    affi(a[0], |/|, a[1], |:|, a[2], | - |, a[3])\n}\n\nn~planifier.annuler.parMessage(|Reunion|)\naffi(n, | alarme(s) annulee(s)|)" },
 
+  { noms: ["notif.envoyer"], categorie: "Controle", syntaxe: "notif.envoyer(message)", description: [
+      "Affiche immediatement une notification systeme Android contenant le message donne.",
+      "La notification reste visible meme apres la fin du script et peut etre touchee pour",
+      "rouvrir MonLangage.",
+      "Renvoie VRAI si Android accepte la notification, FAUX sinon.",
+      "Necessite l'application native et, sur Android 13+, l'autorisation d'afficher des",
+      "notifications (demandee automatiquement au premier appel si besoin)."
+    ], exemple: "notif.envoyer(|Nouveau message recu|)" },
+
   { noms: ["connexion.disponible", "connexion.type"], categorie: "Controle", syntaxe: "connexion.disponible()  /  connexion.type()", description: [
       "connexion.disponible() : VRAI si une connexion internet (wifi ou data mobile) est",
       "active MAINTENANT, FAUX sinon. Ne surveille rien en arriere-plan -- a verifier dans",
@@ -4775,7 +4791,7 @@ let aideCommandes = [
       "dernieres secondes, chacun en liste(numero, message, dateEpochMs) -- le plus recent",
       "en premier. liste() vide si aucun. Ne surveille rien en arriere-plan -- a verifier",
       "dans une boucle (tanqer/attendre) si tu veux reagir a un SMS recu.",
-      "sms.envoyer(numero, message) : envoie un SMS (les messages longs sont automatiquement",
+      "sms.envoyer(numero, message[, sim]) : envoie un SMS et renvoie VRAI si la demande d'envoi a ete acceptee par Android, FAUX si elle n'a pas pu etre envoyee. sim est optionnel : 1 ou 2 pour choisir directement la SIM ; sans sim, utilise la SIM par defaut du telephone. Les messages longs sont automatiquement",
       "decoupes en plusieurs parties, recus comme un seul message chez le destinataire).",
       "Necessite l'app native et les permissions de lecture/envoi de SMS -- les demande",
       "automatiquement si besoin (a accorder puis relancer le script). Android peut",
@@ -4783,8 +4799,8 @@ let aideCommandes = [
       "de destinataires differents en peu de temps (protection systeme anti-spam)."
     ], exemple: "pou msg dan sms.recus(60){\n    si msg[1] == |stop|{\n        sms.envoyer(msg[0], |Bien recu, arret confirme.|)\n    }\n}" },
 
-  { noms: ["whatsapp.ouvrir", "messenger.ouvrir"], categorie: "Controle", syntaxe: "whatsapp.ouvrir(numero, message)  /  messenger.ouvrir(destinataire, message)", description: [
-      "Ouvre WhatsApp (ou Messenger) sur la conversation avec ce destinataire, texte deja",
+  { noms: ["whatsapp.ouvrir", "messenger.ouvrir"], categorie: "Controle", syntaxe: "whatsapp.ouvrir()  /  whatsapp.ouvrir(numero, message)  /  messenger.ouvrir(destinataire, message)", description: [
+      "whatsapp.ouvrir() ouvre simplement WhatsApp. whatsapp.ouvrir(numero, message) ouvre la conversation avec le numero et pre-remplit le message. messenger.ouvrir(destinataire, message) ouvre Messenger avec le texte pre-rempli.",
       "rempli dans le champ de saisie. IMPORTANT : Android n'autorise pas une app tierce a",
       "appuyer sur Envoyer a la place de l'utilisateur dans une autre app -- contrairement a",
       "sms.envoyer(), c'est donc un RACCOURCI (l'app s'ouvre pretes a envoyer), pas un envoi",
@@ -5899,6 +5915,40 @@ function enregistrerFonctionsBase() {
         return deuxChiffres(d.getHours()) + ":" + deuxChiffres(d.getMinutes()) + ":" + deuxChiffres(d.getSeconds());
     };
 
+    // conver.source.cible(valeur) : conversions d'unites.
+    // Les unites de temps utilisent la seconde comme unite de reference ;
+    // les tailles utilisent l'octet comme unite de reference (base 1024).
+    const __facteursConver = {
+        ms: 0.001,
+        seconde: 1,
+        minute: 60,
+        heure: 3600,
+        octet: 1,
+        Ko: 1024,
+        Mo: 1024 ** 2,
+        Go: 1024 ** 3,
+        Tera: 1024 ** 4
+    };
+    const __groupesConver = [
+        ["ms", "seconde", "minute", "heure"],
+        ["octet", "Ko", "Mo", "Go", "Tera"]
+    ];
+    for (let groupe of __groupesConver) {
+        for (let source of groupe) {
+            for (let cible of groupe) {
+                let nomConver = "conver." + source + "." + cible;
+                fonctionsBase[nomConver] = fonctionsExpression[nomConver] = async function(args, ctxExpr) {
+                    if (args.length !== 1) throw new Error(nomConver + "(...) attend exactement 1 argument");
+                    let n = await evalExpr(args[0], ctxExpr);
+                    if (typeof n !== "number" || !Number.isFinite(n) || n < 0) {
+                        throw new ErreurTypeInvalide(nomConver + "(...) attend un nombre positif ou nul");
+                    }
+                    return n * (__facteursConver[source] / __facteursConver[cible]);
+                };
+            }
+        }
+    }
+
     // date.annee() / date.mois() / date.jour() / date.jourSemaine() / date.heure() /
     // date.minute() / date.seconde() : composants NUMERIQUES de la date/heure actuelle, pour
     // faire des calculs et des comparaisons (contrairement a date()/datejour()/heure(), qui sont
@@ -6111,6 +6161,27 @@ function enregistrerFonctionsBase() {
         return compteur;
     };
 
+    // notif.envoyer(message) : affiche IMMEDIATEMENT une notification systeme Android.
+    // La notification reste independante du script apres son affichage. Renvoie VRAI si
+    // Android accepte la notification, FAUX sinon. Necessite l'app native et, sur Android
+    // 13+, l'autorisation POST_NOTIFICATIONS.
+    fonctionsBase["notif.envoyer"] = fonctionsExpression["notif.envoyer"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("notif.envoyer(message) attend exactement 1 argument");
+        let message = await evalExpr(args[0], ctxExpr);
+        if (typeof message !== "string") throw new ErreurTypeInvalide("notif.envoyer(...) : message doit etre du texte");
+        if (!(window.MonLangage && typeof window.MonLangage.envoyerNotification === "function")) {
+            throw new ErreurIndisponibleHorsApp("notif.envoyer(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        if (typeof window.MonLangage.permissionNotificationsAccordee === "function" &&
+            !window.MonLangage.permissionNotificationsAccordee()) {
+            if (typeof window.MonLangage.demanderPermissionNotifications === "function") {
+                window.MonLangage.demanderPermissionNotifications();
+            }
+            throw new ErreurPermissionRefusee("MonLangage a besoin de l'autorisation d'afficher des notifications pour notif.envoyer(...). Accorde la permission puis relance le script.");
+        }
+        return !!window.MonLangage.envoyerNotification(message);
+    };
+
     // connexion.disponible() : VRAI si une connexion internet (wifi ou data mobile) est
     // active en ce moment, FAUX sinon. A appeler dans une boucle (tanqer/attendre) pour
     // reagir a un changement de connexion -- ne surveille rien en arriere-plan.
@@ -6219,11 +6290,18 @@ function enregistrerFonctionsBase() {
     // Android peut demander une confirmation supplementaire si trop de SMS partent d'un coup
     // vers trop de destinataires differents en peu de temps (protection systeme anti-spam).
     fonctionsBase["sms.envoyer"] = fonctionsExpression["sms.envoyer"] = async function(args, ctxExpr) {
-        if (args.length !== 2) throw new Error("sms.envoyer(numero, message) attend exactement 2 arguments");
+        if (args.length !== 2 && args.length !== 3) throw new Error("sms.envoyer(numero, message[, sim]) attend 2 ou 3 arguments");
         let numero = await evalExpr(args[0], ctxExpr);
         let message = await evalExpr(args[1], ctxExpr);
         if (typeof numero !== 'string') throw new ErreurTypeInvalide("sms.envoyer(...) : numero doit etre du texte");
         if (typeof message !== 'string') throw new ErreurTypeInvalide("sms.envoyer(...) : message doit etre du texte");
+        let sim = 0;
+        if (args.length === 3) {
+            sim = await evalExpr(args[2], ctxExpr);
+            if (typeof sim !== 'number' || !Number.isInteger(sim) || (sim !== 1 && sim !== 2)) {
+                throw new ErreurTypeInvalide("sms.envoyer(...) : sim doit etre 1 ou 2");
+            }
+        }
         if (!(window.MonLangage && typeof window.MonLangage.envoyerSms === "function")) {
             throw new ErreurIndisponibleHorsApp("sms.envoyer(...) : disponible uniquement dans l'app installee (rebuild requis)");
         }
@@ -6234,8 +6312,7 @@ function enregistrerFonctionsBase() {
             }
             throw new ErreurPermissionRefusee("MonLangage a besoin de l'autorisation d'envoyer des SMS pour sms.envoyer(...). Accorde la permission puis relance le script.");
         }
-        window.MonLangage.envoyerSms(numero, message);
-        return undefined;
+        return !!window.MonLangage.envoyerSms(numero, message, sim);
     };
 
     // whatsapp.ouvrir(numero, message) : ouvre WhatsApp sur la conversation avec ce numero,
@@ -6244,14 +6321,18 @@ function enregistrerFonctionsBase() {
     // l'indicatif pays (ex: 33612345678). Necessite l'app native. Necessite une connexion
     // (verifiable avant avec connexion.disponible()).
     fonctionsBase["whatsapp.ouvrir"] = fonctionsExpression["whatsapp.ouvrir"] = async function(args, ctxExpr) {
-        if (args.length !== 2) throw new Error("whatsapp.ouvrir(numero, message) attend exactement 2 arguments");
+        if (args.length !== 0 && args.length !== 2) throw new Error("whatsapp.ouvrir() ou whatsapp.ouvrir(numero, message)");
+        if (!(window.MonLangage && typeof window.MonLangage.ouvrirWhatsapp === "function")) {
+            throw new ErreurIndisponibleHorsApp("whatsapp.ouvrir(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        if (args.length === 0) {
+            window.MonLangage.ouvrirWhatsapp();
+            return undefined;
+        }
         let numero = await evalExpr(args[0], ctxExpr);
         let message = await evalExpr(args[1], ctxExpr);
         if (typeof numero !== 'string') throw new ErreurTypeInvalide("whatsapp.ouvrir(...) : numero doit etre du texte");
         if (typeof message !== 'string') throw new ErreurTypeInvalide("whatsapp.ouvrir(...) : message doit etre du texte");
-        if (!(window.MonLangage && typeof window.MonLangage.ouvrirWhatsapp === "function")) {
-            throw new ErreurIndisponibleHorsApp("whatsapp.ouvrir(...) : disponible uniquement dans l'app installee (rebuild requis)");
-        }
         window.MonLangage.ouvrirWhatsapp(numero, message);
         return undefined;
     };
@@ -6611,22 +6692,69 @@ let categorieCouleurs = {
 };
 // Construit nom -> couleur a partir de aideCommandes (uniquement les noms "mots", pas
 // les symboles comme +, -, [, ], qui restent geres a part).
+// Les fonctions sont colorees comme fonctions uniquement lorsqu'une parenthese
+// est requise juste apres leur nom (avec espaces eventuels). Les commandes MLG
+// qui se reconnaissent sans parenthese restent des commandes, meme si leur aide
+// contient aussi une autre forme avec parentheses. Exemples :
+//   temps() -> fonction coloree
+//   temps~0 -> variable normale
+//   de module import(...) -> "de" reste colore comme commande
+//   si(condition){...}, pou(...), tanqer(...) -> commandes de controle reconnues
+//   stop, continu, retour valeur, classe Nom... -> commandes sans parentheses
 let commandeCouleur = {};
+let fonctionsCouleur = {};
 for (let e of aideCommandes) {
   if (!categorieCouleurs[e.categorie]) continue;
   for (let nom of e.noms) {
-    if (/^[a-zA-Z_]\w*$/.test(nom)) commandeCouleur[nom] = categorieCouleurs[e.categorie];
+    if (!/^[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\s+[a-zA-Z_]\w*)*$/.test(nom)) continue;
+
+    // Une commande est une fonction lorsqu'elle est suivie de la premiere
+    // parenthese ouvrante : nom(...). On ne depend donc plus de la position
+    // du nom dans la chaine "syntaxe" de l'aide. Cela corrige notamment les
+    // entrees regroupant plusieurs fonctions (planifier.*, date.*, sms.*, ...).
+    let nomEchappe = nom.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    let syntaxe = String(e.syntaxe || '');
+    let estFonction = new RegExp('(?:^|[^a-zA-Z0-9_.])' + nomEchappe + '\\s*\\(').test(syntaxe);
+
+    // Certaines familles sont documentees avec une syntaxe generique
+    // (ex. conver.source.cible(valeur)). Tous les noms de cette entree sont
+    // alors des fonctions, meme si leur nom concret n'apparait pas dans la
+    // syntaxe generique.
+    if (!estFonction && /\bconver\.source\.cible\s*\(/.test(syntaxe)) {
+      estFonction = true;
+    }
+
+    if (estFonction) {
+      fonctionsCouleur[nom] = categorieCouleurs[e.categorie];
+    } else {
+      commandeCouleur[nom] = categorieCouleurs[e.categorie];
+    }
   }
 }
-// conver.nombr, est.text, existe.fichier, voir.cle, supri.cle, etc. contiennent un '.' :
-// ils ne passent pas le test ci-dessus. On colore au moins le prefixe.
-commandeCouleur["conver"] = categorieCouleurs["Base"];
-commandeCouleur["est"] = categorieCouleurs["Base"];
-commandeCouleur["existe"] = categorieCouleurs["Sauvegarde"];
-commandeCouleur["voir"] = categorieCouleurs["Sauvegarde"];
-commandeCouleur["supri"] = categorieCouleurs["Sauvegarde"];
+
+// Un seul passage sur les noms reconnus évite qu'une premiere coloration
+// (commande) empiete sur une seconde (fonction). Les noms les plus longs sont
+// places en premier pour que "planifier.annuler" passe avant "planifier" et
+// "sinon si" avant "sinon".
+let nomsCouleur = Array.from(new Set([
+  ...Object.keys(commandeCouleur),
+  ...Object.keys(fonctionsCouleur)
+])).sort((a, b) => b.length - a.length);
+
+// Les fonctions et les commandes sont reconnues separement.
+// Une fonction est coloree UNIQUEMENT lorsque sa premiere parenthese ouvrante
+// suit son nom (espaces eventuels autorises). Une commande sans parentheses est
+// coloree directement. Ainsi "conver.vecteu" reste un identifiant normal,
+// tandis que "conver.vecteu(...)" est colore comme fonction.
 let regexCommandeCouleur = Object.keys(commandeCouleur).length
-  ? new RegExp('\\b(' + Object.keys(commandeCouleur).join('|') + ')\\b', 'g')
+  ? new RegExp('(?<![a-zA-Z0-9_])(' + Object.keys(commandeCouleur)
+      .sort((a, b) => b.length - a.length)
+      .map(n => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join('|') + ')(?![a-zA-Z0-9_])', 'g')
+  : null;
+let regexFonctionCouleur = Object.keys(fonctionsCouleur).length
+  ? new RegExp('(?<![a-zA-Z0-9_])(' + Object.keys(fonctionsCouleur)
+      .sort((a, b) => b.length - a.length)
+      .map(n => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join('|') + ')(?=\\s*\\()', 'g')
   : null;
 
 function echapperHTML(texte) {
@@ -6639,9 +6767,16 @@ function echapperHTML(texte) {
 function colorerCode(texte) {
   let html = echapperHTML(texte);
   html = html.replace(/~/g, '<span class="operateur">~</span>');
+  // Fonctions : la parenthese ouvrante est obligatoire pour la coloration.
+  if (regexFonctionCouleur) {
+    html = html.replace(regexFonctionCouleur, function(match, nom) {
+      return '<span style="color:' + fonctionsCouleur[nom] + '; font-weight:bold;">' + match + '</span>';
+    });
+  }
+  // Commandes sans parentheses : coloration independante de la presence de "(".
   if (regexCommandeCouleur) {
-    html = html.replace(regexCommandeCouleur, function(match) {
-      return '<span style="color:' + commandeCouleur[match] + '; font-weight:bold;">' + match + '</span>';
+    html = html.replace(regexCommandeCouleur, function(match, nom) {
+      return '<span style="color:' + commandeCouleur[nom] + '; font-weight:bold;">' + match + '</span>';
     });
   }
   html = html.replace(/\b(VRAI|FAUX|pasdefini)\b/g, '<span style="color:#56d4dd; font-weight:bold;">$1</span>');
@@ -6654,7 +6789,7 @@ function colorerCode(texte) {
   // deux consideres comme des caracteres de mot).
   html = html.replace(/(?<![a-zA-Z_])(mod|enti)(?![a-zA-Z_])/gi, '<span class="operateur">$1</span>');
   // et/ou restent des mots complets en minuscules (comme dans le tokeniseur), non colles a un chiffre.
-  html = html.replace(/\b(et|ou|dan)\b/g, '<span class="operateur">$1</span>');
+  html = html.replace(/\b(et|ou|non|dan)\b/g, '<span class="operateur">$1</span>');
   // Nombres : evalues apres mod/enti pour que 3enti4 colore bien le 3 et le 4 (le mod/enti deja
   // isole dans une balise <span> cree la coupure necessaire pour que \b fonctionne).
   html = html.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="nombre">$1</span>');
@@ -6691,12 +6826,72 @@ function genererHTMLColore(texte) {
 
 function colorerLigne(texte) { return genererHTMLColore(texte); }
 
+// Les messages d'erreur sont entièrement rouges par défaut. On ne leur applique
+// PAS la coloration syntaxique générale : un nom de commande cité dans une erreur
+// (par exemple dans sa correction syntaxique) reste donc rouge et ne devient pas
+// une fausse commande colorée. La seule exception concerne les codes d'erreur
+// officiellement indexés par le langage (DIVISION_ZERO, SYNTAXE, etc.), qui peuvent
+// conserver la coloration réservée aux constantes d'erreur.
+function colorerMessageErreur(texte) {
+  texte = String(texte);
+
+  // Le message d'erreur reste rouge, mais lorsque le moteur indique explicitement
+  // la ligne/source fautive après ": ", cette partie est du CODE MLG et doit
+  // recevoir la coloration syntaxique normale. Exemple :
+  // "Appel de fonction mal forme ... : temps(" -> seul "temps(" est colore.
+  // On limite volontairement cette regle a ce message precis pour ne pas colorer
+  // par erreur du texte normal contenu dans d'autres messages d'erreur.
+  const prefixAppelMalForme = "Appel de fonction mal forme (parenthese fermante manquante ou en trop) : ";
+
+  // Affichage des erreurs avec numero de ligne :
+  // "Erreur ligne 1: ... : temps("
+  // - le numero de ligne est colore comme un nombre MLG ;
+  // - le texte explicatif reste entierement rouge ;
+  // - le morceau de code fautif apres ": " est recolore comme du code MLG.
+  const matchErreurLigne = texte.match(/^(Erreur ligne )(\d+)(: )(.*)$/);
+  if (matchErreurLigne) {
+    const prefix = echapperHTML(matchErreurLigne[1]);
+    const numeroLigne = '<span class="nombre">' + matchErreurLigne[2] + '</span>';
+    const separateur = echapperHTML(matchErreurLigne[3]);
+    const message = matchErreurLigne[4];
+
+    if (message.startsWith(prefixAppelMalForme)) {
+      const messagePrefix = echapperHTML(message.slice(0, prefixAppelMalForme.length));
+      const codeFautif = message.slice(prefixAppelMalForme.length);
+      return prefix + numeroLigne + separateur + messagePrefix + colorerLigne(codeFautif);
+    }
+
+    return prefix + numeroLigne + separateur + echapperHTML(message);
+  }
+
+  // Cas ou le message est utilise sans le prefixe "Erreur ligne X: ".
+  if (texte.startsWith(prefixAppelMalForme)) {
+    const prefix = texte.slice(0, prefixAppelMalForme.length);
+    const codeFautif = texte.slice(prefixAppelMalForme.length);
+    return echapperHTML(prefix) + colorerLigne(codeFautif);
+  }
+
+  let html = echapperHTML(texte);
+  if (typeof CODES_ERREUR_RECONNUS !== "undefined" && CODES_ERREUR_RECONNUS.size) {
+    let codes = Array.from(CODES_ERREUR_RECONNUS)
+      .sort((a, b) => b.length - a.length)
+      .map(c => c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    if (codes.length) {
+      let regexCodes = new RegExp('(?<![a-zA-Z0-9_])(' + codes.join('|') + ')(?![a-zA-Z0-9_])', 'g');
+      html = html.replace(regexCodes, '<span style="color:' + categorieCouleurs["Constantes"] + '; font-weight:bold;">$1</span>');
+    }
+  }
+  return html;
+}
+
 function print(texte, classe = "") {
   let div = document.createElement("div");
   let classes = classe;
   if (modeConsoleCommande) classes = (classes ? classes + " " : "") + "resultatConsole";
   if (classes) div.className = classes;
-  div.innerHTML = colorerLigne(texte);
+  div.innerHTML = classe && classe.split(/\s+/).includes("erreur")
+    ? colorerMessageErreur(texte)
+    : colorerLigne(texte);
   outputDiv.appendChild(div);
   outputDiv.scrollTop = outputDiv.scrollHeight;
 }
@@ -7579,8 +7774,16 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
         if (!mAttrape) throw new Error("essai{...} doit etre suivi directement de attrape{...}, attrape(msg){...} ou attrape(msg, code){...}, sans instruction entre les deux");
         if (!tokens[curseurAttrape+1] || tokens[curseurAttrape+1].texte !== "{") throw new Error("Manque { apres attrape");
         let finBlocAttrape = trouverFinBloc(tokens, curseurAttrape + 2, ligneActuelle);
-        let nomVarErreur = mAttrape[1] || null;
-        let nomVarCode = mAttrape[2] || null;
+        let nomVarErreur = null;
+        let nomVarCode = null;
+        if (mAttrape[2]) {
+          nomVarErreur = mAttrape[1];
+          nomVarCode = mAttrape[2];
+        } else if (mAttrape[1] === "code") {
+          nomVarCode = "code";
+        } else {
+          nomVarErreur = mAttrape[1] || null;
+        }
 
         let messageErreur = null, codeErreur = null, resEssai = null;
         try {
