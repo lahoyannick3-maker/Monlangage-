@@ -4325,7 +4325,7 @@ let aideCommandes = [
       "Repete le bloc entre accolades. Deux syntaxes possibles.",
       "1) pou(var, debut, fin, pas) : var prend d'abord la valeur debut, puis debut+pas, et ainsi de suite jusqu'a fin (fin incluse). pas est facultatif : vaut 1 par defaut, et peut etre negatif (pour compter a l'envers).",
       "debut, fin et pas peuvent etre des expressions complexes (avec des parentheses, ^, des appels de fonction, etc.), separees par des virgules.",
-      "2) pou(var dan objet) : var prend tour a tour chaque valeur de objet, qui doit etre un vecteur.",
+      "2) pou(var dan objet) : var prend tour a tour chaque valeur de objet, qui doit etre un vecteur ou une liste() (chaque element de la liste, pas ses indices).",
       "stop permet d'arreter la boucle avant la fin (voir aide(stop))."
     ], exemple: "pou(i, 1, 5){ affi(i) }   ->   affiche 1 2 3 4 5\npou(i, 10, 1, -1){ affi(i) }   ->   compte a l'envers de 10 a 1\npou(x dan c(3,7,9)){ affi(x) }   ->   affiche 3 7 9" },
   { noms: ["stop"], categorie: "Controle", syntaxe: "stop", description: [
@@ -4746,6 +4746,71 @@ let aideCommandes = [
       "Necessite l'app native (indisponible dans l'apercu Chrome) et demande les permissions",
       "notifications + alarme exacte au premier appel si besoin (a accorder puis relancer)."
     ], exemple: "planifier(1, 9, 0, |Lundi 9h : debut de semaine|)\naffi(|Alarme programmee, je continue mon travail|)\n\npou a dan planifier.liste(){\n    affi(a[0], |/|, a[1], |:|, a[2], | - |, a[3])\n}\n\nn~planifier.annuler.parMessage(|Reunion|)\naffi(n, | alarme(s) annulee(s)|)" },
+
+  { noms: ["connexion.disponible", "connexion.type"], categorie: "Controle", syntaxe: "connexion.disponible()  /  connexion.type()", description: [
+      "connexion.disponible() : VRAI si une connexion internet (wifi ou data mobile) est",
+      "active MAINTENANT, FAUX sinon. Ne surveille rien en arriere-plan -- a verifier dans",
+      "une boucle (tanqer/attendre) si tu veux reagir a un changement de connexion.",
+      "connexion.type() : \"wifi\", \"mobile\", \"ethernet\", \"autre\" ou \"aucune\".",
+      "Necessite l'app native, aucune permission a accorder."
+    ], exemple: "tanqer VRAI{\n    si connexion.disponible(){\n        affi(|Connecte en |, connexion.type())\n        stop\n    }\n    attendre(5)\n}" },
+
+  { noms: ["batterie.niveau", "batterie.encharge"], categorie: "Controle", syntaxe: "batterie.niveau()  /  batterie.encharge()", description: [
+      "batterie.niveau() : pourcentage de batterie restant, de 0 a 100.",
+      "batterie.encharge() : VRAI si le telephone est en train de charger (cable ou sans",
+      "fil) ou deja completement charge.",
+      "Necessite l'app native, aucune permission a accorder."
+    ], exemple: "si batterie.niveau() < 20 ET non batterie.encharge(){\n    affi(|Pense a charger le telephone|)\n}" },
+
+  { noms: ["dossier.liste"], categorie: "Sauvegarde", syntaxe: "dossier.liste()  ou  dossier.liste(dossier)", description: [
+      "Liste les NOMS de TOUS les fichiers d'un dossier (contrairement a voir.fichier(), pas",
+      "seulement les .mld). Sans argument, utilise le dossier racine du stockage de",
+      "l'appareil. Utile pour detecter l'apparition d'un nouveau fichier, en comparant deux",
+      "appels successifs a intervalle regulier (tanqer/attendre).",
+      "Necessite l'app native et la permission de stockage (comme voir.fichier())."
+    ], exemple: "avant ~ dossier.liste(|/sdcard/Download|)\ntanqer VRAI{\n    attendre(10)\n    maintenant ~ dossier.liste(|/sdcard/Download|)\n    pou f dan maintenant{\n        si non (f dan avant){ affi(|Nouveau fichier : |, f) }\n    }\n    avant ~ maintenant\n}" },
+
+  { noms: ["sms.recus", "sms.envoyer"], categorie: "Controle", syntaxe: "sms.recus(depuisSecondes)  /  sms.envoyer(numero, message)", description: [
+      "sms.recus(depuisSecondes) : liste des SMS recus au cours des \"depuisSecondes\"",
+      "dernieres secondes, chacun en liste(numero, message, dateEpochMs) -- le plus recent",
+      "en premier. liste() vide si aucun. Ne surveille rien en arriere-plan -- a verifier",
+      "dans une boucle (tanqer/attendre) si tu veux reagir a un SMS recu.",
+      "sms.envoyer(numero, message) : envoie un SMS (les messages longs sont automatiquement",
+      "decoupes en plusieurs parties, recus comme un seul message chez le destinataire).",
+      "Necessite l'app native et les permissions de lecture/envoi de SMS -- les demande",
+      "automatiquement si besoin (a accorder puis relancer le script). Android peut",
+      "demander une confirmation supplementaire si trop de SMS partent d'un coup vers trop",
+      "de destinataires differents en peu de temps (protection systeme anti-spam)."
+    ], exemple: "pou msg dan sms.recus(60){\n    si msg[1] == |stop|{\n        sms.envoyer(msg[0], |Bien recu, arret confirme.|)\n    }\n}" },
+
+  { noms: ["whatsapp.ouvrir", "messenger.ouvrir"], categorie: "Controle", syntaxe: "whatsapp.ouvrir(numero, message)  /  messenger.ouvrir(destinataire, message)", description: [
+      "Ouvre WhatsApp (ou Messenger) sur la conversation avec ce destinataire, texte deja",
+      "rempli dans le champ de saisie. IMPORTANT : Android n'autorise pas une app tierce a",
+      "appuyer sur Envoyer a la place de l'utilisateur dans une autre app -- contrairement a",
+      "sms.envoyer(), c'est donc un RACCOURCI (l'app s'ouvre pretes a envoyer), pas un envoi",
+      "automatique complet.",
+      "whatsapp.ouvrir : destinataire = numero de telephone avec indicatif pays (ex:",
+      "33612345678, sans le 0 initial).",
+      "messenger.ouvrir : destinataire = NOM D'UTILISATEUR Facebook (pas un numero -- Messenger",
+      "n'identifie pas les gens par numero comme WhatsApp).",
+      "Necessite l'app native et une connexion internet (verifiable avant avec",
+      "connexion.disponible())."
+    ], exemple: "si connexion.disponible(){\n    whatsapp.ouvrir(|33612345678|, |Salut !|)\n} sinon {\n    sms.envoyer(|33612345678|, |Salut !|)\n}" },
+
+  { noms: ["partager.fichier"], categorie: "Sauvegarde", syntaxe: "partager.fichier(chemin)", description: [
+      "Ouvre le selecteur de partage standard Android (Bluetooth, email, Drive, n'importe",
+      "quelle app acceptant un fichier) pour ce fichier -- PAS specifique a une messagerie,",
+      "c'est le meme selecteur \"Partager\" que dans n'importe quelle app Android.",
+      "Erreur si le fichier n'existe pas a ce chemin (verifiable avant avec",
+      "existe.fichier(...)).",
+      "Necessite l'app native et la permission de stockage."
+    ], exemple: "partager.fichier(|/sdcard/Download/rapport.pdf|)" },
+
+  { noms: ["taille.fichier"], categorie: "Sauvegarde", syntaxe: "taille.fichier(chemin)", description: [
+      "Taille du fichier en OCTETS. Erreur si le fichier n'existe pas a ce chemin",
+      "(verifiable avant avec existe.fichier(...)).",
+      "Necessite l'app native et la permission de stockage."
+    ], exemple: "affi(taille.fichier(|/sdcard/Download/rapport.pdf|) / 1000, | Ko|)" },
 
   { noms: ["trac"], categorie: "Graphique", syntaxe: "trac(x, y, ...)  ou  trac(y, ...)", description: [
       "Trace une courbe dans la console, sous forme d'image (canvas) — comme plot(x,y) en Scilab.",
@@ -5995,11 +6060,12 @@ function enregistrerFonctionsBase() {
         } catch (e) {
             throw new Error("planifier.liste() : reponse native invalide.");
         }
-        let elements = brut.map(a => ({
+        // Vecteur (pas liste()) en conteneur exterieur : pou(var dan objet) exige un vecteur
+        // (Array.isArray) -- chaque alarme reste elle-meme une liste() indexable (a[0]...).
+        return brut.map(a => ({
             __type: "liste",
             elements: [a.jourSemaine, a.heure, a.minute, a.message]
         }));
-        return { __type: "liste", elements: elements };
     };
 
     // planifier.annuler.parMessage(texte) : annule TOUTES les alarmes programmees dont le
@@ -6043,6 +6109,203 @@ function enregistrerFonctionsBase() {
             if (window.MonLangage.annulerAlarme(a.jourSemaine, a.heure, a.minute)) compteur++;
         }
         return compteur;
+    };
+
+    // connexion.disponible() : VRAI si une connexion internet (wifi ou data mobile) est
+    // active en ce moment, FAUX sinon. A appeler dans une boucle (tanqer/attendre) pour
+    // reagir a un changement de connexion -- ne surveille rien en arriere-plan.
+    // Necessite l'app native, aucune permission a accorder.
+    fonctionsBase["connexion.disponible"] = fonctionsExpression["connexion.disponible"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("connexion.disponible() ne prend aucun argument");
+        if (!(window.MonLangage && typeof window.MonLangage.connexionDisponible === "function")) {
+            throw new ErreurIndisponibleHorsApp("connexion.disponible() : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        return !!window.MonLangage.connexionDisponible();
+    };
+
+    // connexion.type() : "wifi", "mobile", "ethernet", "autre" ou "aucune".
+    // Necessite l'app native, aucune permission a accorder.
+    fonctionsBase["connexion.type"] = fonctionsExpression["connexion.type"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("connexion.type() ne prend aucun argument");
+        if (!(window.MonLangage && typeof window.MonLangage.connexionType === "function")) {
+            throw new ErreurIndisponibleHorsApp("connexion.type() : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        return window.MonLangage.connexionType();
+    };
+
+    // batterie.niveau() : pourcentage de batterie restant, de 0 a 100.
+    // Necessite l'app native, aucune permission a accorder.
+    fonctionsBase["batterie.niveau"] = fonctionsExpression["batterie.niveau"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("batterie.niveau() ne prend aucun argument");
+        if (!(window.MonLangage && typeof window.MonLangage.batterieNiveau === "function")) {
+            throw new ErreurIndisponibleHorsApp("batterie.niveau() : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        return window.MonLangage.batterieNiveau();
+    };
+
+    // batterie.encharge() : VRAI si le telephone charge (cable/sans fil) ou est deja plein.
+    // Necessite l'app native, aucune permission a accorder.
+    fonctionsBase["batterie.encharge"] = fonctionsExpression["batterie.encharge"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("batterie.encharge() ne prend aucun argument");
+        if (!(window.MonLangage && typeof window.MonLangage.batterieEnCharge === "function")) {
+            throw new ErreurIndisponibleHorsApp("batterie.encharge() : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        return !!window.MonLangage.batterieEnCharge();
+    };
+
+    // dossier.liste() ou dossier.liste(dossier) : liste les NOMS de TOUS les fichiers d'un
+    // dossier (contrairement a voir.fichier(), pas seulement les .mld) -- utile pour detecter
+    // un nouveau fichier en comparant deux appels successifs dans une boucle. Sans argument,
+    // utilise le dossier racine du stockage de l'appareil. Necessite l'app native et la
+    // permission de stockage (comme voir.fichier()).
+    fonctionsBase["dossier.liste"] = fonctionsExpression["dossier.liste"] = async function(args, ctxExpr) {
+        if (args.length > 1) throw new Error("dossier.liste(dossier) attend 0 ou 1 argument");
+        if (!(window.MonLangage && typeof window.MonLangage.listerDossier === "function")) {
+            throw new ErreurIndisponibleHorsApp("dossier.liste(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        if (!verifierPermissionStockage()) {
+            throw new ErreurPermissionRefusee("dossier.liste(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
+        }
+        let dossier;
+        if (args.length === 1) {
+            dossier = await evalExpr(args[0], ctxExpr);
+            if (typeof dossier !== 'string') throw new ErreurTypeInvalide("dossier.liste(dossier) : dossier doit etre du texte");
+        } else {
+            dossier = (typeof window.MonLangage.dossierRacine === "function") ? window.MonLangage.dossierRacine() : null;
+            if (!dossier) throw new Error("dossier.liste(...) : impossible de determiner le dossier par defaut, precise un dossier");
+        }
+        let elements;
+        try { elements = JSON.parse(window.MonLangage.listerDossier(dossier) || "[]"); }
+        catch (e) { elements = []; }
+        return elements.map(el => el.nom);
+    };
+
+    // sms.recus(depuisSecondes) : liste des SMS recus au cours des "depuisSecondes"
+    // dernieres secondes, chacun en liste(numero, message, dateEpochMs), le plus recent en
+    // premier. liste() vide si aucun. A appeler dans une boucle pour reagir a un SMS recu --
+    // ne surveille rien en arriere-plan. Necessite l'app native et la permission de lecture
+    // des SMS (demandee automatiquement au premier appel si besoin -- accorder puis relancer
+    // le script).
+    fonctionsBase["sms.recus"] = fonctionsExpression["sms.recus"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("sms.recus(depuisSecondes) attend exactement 1 argument");
+        let depuisSecondes = await evalExpr(args[0], ctxExpr);
+        if (typeof depuisSecondes !== 'number' || depuisSecondes < 0) throw new ErreurTypeInvalide("sms.recus(depuisSecondes) : depuisSecondes doit etre un nombre positif");
+        if (!(window.MonLangage && typeof window.MonLangage.smsRecus === "function")) {
+            throw new ErreurIndisponibleHorsApp("sms.recus(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        if (typeof window.MonLangage.permissionSmsLectureAccordee === "function" &&
+            !window.MonLangage.permissionSmsLectureAccordee()) {
+            if (typeof window.MonLangage.demanderPermissionSmsLecture === "function") {
+                window.MonLangage.demanderPermissionSmsLecture();
+            }
+            throw new ErreurPermissionRefusee("MonLangage a besoin de l'autorisation de lire les SMS pour sms.recus(...). Accorde la permission puis relance le script.");
+        }
+        let brut;
+        try {
+            brut = JSON.parse(window.MonLangage.smsRecus(depuisSecondes));
+        } catch (e) {
+            throw new Error("sms.recus(...) : reponse native invalide.");
+        }
+        return brut.map(s => ({
+            __type: "liste",
+            elements: [s.numero, s.message, s.date]
+        }));
+    };
+
+    // sms.envoyer(numero, message) : envoie un SMS. Les messages longs sont automatiquement
+    // decoupes en plusieurs parties par le systeme (recus comme un seul message chez le
+    // destinataire). Necessite l'app native et la permission d'envoi de SMS (demandee
+    // automatiquement au premier appel si besoin -- accorder puis relancer le script).
+    // Android peut demander une confirmation supplementaire si trop de SMS partent d'un coup
+    // vers trop de destinataires differents en peu de temps (protection systeme anti-spam).
+    fonctionsBase["sms.envoyer"] = fonctionsExpression["sms.envoyer"] = async function(args, ctxExpr) {
+        if (args.length !== 2) throw new Error("sms.envoyer(numero, message) attend exactement 2 arguments");
+        let numero = await evalExpr(args[0], ctxExpr);
+        let message = await evalExpr(args[1], ctxExpr);
+        if (typeof numero !== 'string') throw new ErreurTypeInvalide("sms.envoyer(...) : numero doit etre du texte");
+        if (typeof message !== 'string') throw new ErreurTypeInvalide("sms.envoyer(...) : message doit etre du texte");
+        if (!(window.MonLangage && typeof window.MonLangage.envoyerSms === "function")) {
+            throw new ErreurIndisponibleHorsApp("sms.envoyer(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        if (typeof window.MonLangage.permissionSmsEnvoiAccordee === "function" &&
+            !window.MonLangage.permissionSmsEnvoiAccordee()) {
+            if (typeof window.MonLangage.demanderPermissionSmsEnvoi === "function") {
+                window.MonLangage.demanderPermissionSmsEnvoi();
+            }
+            throw new ErreurPermissionRefusee("MonLangage a besoin de l'autorisation d'envoyer des SMS pour sms.envoyer(...). Accorde la permission puis relance le script.");
+        }
+        window.MonLangage.envoyerSms(numero, message);
+        return undefined;
+    };
+
+    // whatsapp.ouvrir(numero, message) : ouvre WhatsApp sur la conversation avec ce numero,
+    // texte deja rempli -- TOI (ou l'utilisateur) dois appuyer sur Envoyer, le script ne peut
+    // pas le faire a ta place (Android l'interdit pour une app tierce). numero : garder
+    // l'indicatif pays (ex: 33612345678). Necessite l'app native. Necessite une connexion
+    // (verifiable avant avec connexion.disponible()).
+    fonctionsBase["whatsapp.ouvrir"] = fonctionsExpression["whatsapp.ouvrir"] = async function(args, ctxExpr) {
+        if (args.length !== 2) throw new Error("whatsapp.ouvrir(numero, message) attend exactement 2 arguments");
+        let numero = await evalExpr(args[0], ctxExpr);
+        let message = await evalExpr(args[1], ctxExpr);
+        if (typeof numero !== 'string') throw new ErreurTypeInvalide("whatsapp.ouvrir(...) : numero doit etre du texte");
+        if (typeof message !== 'string') throw new ErreurTypeInvalide("whatsapp.ouvrir(...) : message doit etre du texte");
+        if (!(window.MonLangage && typeof window.MonLangage.ouvrirWhatsapp === "function")) {
+            throw new ErreurIndisponibleHorsApp("whatsapp.ouvrir(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        window.MonLangage.ouvrirWhatsapp(numero, message);
+        return undefined;
+    };
+
+    // messenger.ouvrir(destinataire, message) : meme principe que whatsapp.ouvrir(...), pour
+    // Messenger (Facebook). ATTENTION : destinataire est un NOM D'UTILISATEUR Facebook, pas
+    // un numero de telephone -- Messenger n'identifie pas les gens par numero comme
+    // WhatsApp. Necessite l'app native. Necessite une connexion.
+    fonctionsBase["messenger.ouvrir"] = fonctionsExpression["messenger.ouvrir"] = async function(args, ctxExpr) {
+        if (args.length !== 2) throw new Error("messenger.ouvrir(destinataire, message) attend exactement 2 arguments");
+        let destinataire = await evalExpr(args[0], ctxExpr);
+        let message = await evalExpr(args[1], ctxExpr);
+        if (typeof destinataire !== 'string') throw new ErreurTypeInvalide("messenger.ouvrir(...) : destinataire doit etre du texte");
+        if (typeof message !== 'string') throw new ErreurTypeInvalide("messenger.ouvrir(...) : message doit etre du texte");
+        if (!(window.MonLangage && typeof window.MonLangage.ouvrirMessenger === "function")) {
+            throw new ErreurIndisponibleHorsApp("messenger.ouvrir(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        window.MonLangage.ouvrirMessenger(destinataire, message);
+        return undefined;
+    };
+
+    // partager.fichier(chemin) : ouvre le selecteur de partage standard Android (Bluetooth,
+    // email, Drive, n'importe quelle app acceptant un fichier) pour ce fichier -- PAS
+    // specifique a une messagerie. Necessite l'app native et la permission de stockage.
+    fonctionsBase["partager.fichier"] = fonctionsExpression["partager.fichier"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("partager.fichier(chemin) attend exactement 1 argument");
+        let chemin = await evalExpr(args[0], ctxExpr);
+        if (typeof chemin !== 'string') throw new ErreurTypeInvalide("partager.fichier(...) : chemin doit etre du texte");
+        if (!(window.MonLangage && typeof window.MonLangage.partagerFichier === "function")) {
+            throw new ErreurIndisponibleHorsApp("partager.fichier(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        if (!verifierPermissionStockage()) {
+            throw new ErreurPermissionRefusee("partager.fichier(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
+        }
+        let succes = window.MonLangage.partagerFichier(chemin);
+        if (!succes) throw new Error("partager.fichier(...) : fichier introuvable a ce chemin");
+        return undefined;
+    };
+
+    // taille.fichier(chemin) : taille du fichier en octets. Necessite l'app native et la
+    // permission de stockage.
+    fonctionsBase["taille.fichier"] = fonctionsExpression["taille.fichier"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("taille.fichier(chemin) attend exactement 1 argument");
+        let chemin = await evalExpr(args[0], ctxExpr);
+        if (typeof chemin !== 'string') throw new ErreurTypeInvalide("taille.fichier(...) : chemin doit etre du texte");
+        if (!(window.MonLangage && typeof window.MonLangage.tailleFichier === "function")) {
+            throw new ErreurIndisponibleHorsApp("taille.fichier(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        if (!verifierPermissionStockage()) {
+            throw new ErreurPermissionRefusee("taille.fichier(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
+        }
+        let taille = window.MonLangage.tailleFichier(chemin);
+        if (taille < 0) throw new Error("taille.fichier(...) : fichier introuvable a ce chemin");
+        return taille;
     };
 
     // conver.nombr(var) / conver.text(var) / conver.vecteu(var) / conver.matric(var) : conversions de type.
@@ -7361,8 +7624,11 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
 
         if (entete.type === 'dan') {
           let objetVal = await evalExpr(entete.objetExpr, ctxExpr);
-          if (!estVecteur(objetVal)) throw new ErreurTypeInvalide("pou(var dan objet) : objet doit etre un vecteur");
-          for (let val of objetVal) {
+          let iterable;
+          if (estVecteur(objetVal)) iterable = objetVal;
+          else if (estListe(objetVal)) iterable = objetVal.elements;
+          else throw new ErreurTypeInvalide("pou(var dan objet) : objet doit etre un vecteur ou une liste");
+          for (let val of iterable) {
             await respirer();
             setVar(entete.varNom, val);
             let res = await executerTokens(tokens, index + 2, finBloc - 1);
