@@ -541,7 +541,11 @@ public class MainActivity extends BridgeActivity {
                     }
                 };
                 if (Build.VERSION.SDK_INT >= 33) {
-                    registerReceiver(recepteur, new IntentFilter(action), Context.RECEIVER_NOT_EXPORTED);
+                    // Le broadcast SMS_SENT est emis par le processus telephonie systeme (pas
+                    // par MonLangage lui-meme) : RECEIVER_NOT_EXPORTED le bloquerait (l'appel
+                    // repond alors toujours FAUX apres le delai de 15s, meme si le SMS est
+                    // reellement parti chez le destinataire). Il faut RECEIVER_EXPORTED ici.
+                    registerReceiver(recepteur, new IntentFilter(action), Context.RECEIVER_EXPORTED);
                 } else {
                     registerReceiver(recepteur, new IntentFilter(action));
                 }
@@ -1067,4 +1071,23 @@ fs.writeFileSync(path.join(mainActivityDir, 'AlarmScheduler.java'), alarmSchedul
 fs.writeFileSync(path.join(mainActivityDir, 'AlarmReceiver.java'), alarmReceiverContent);
 fs.writeFileSync(path.join(mainActivityDir, 'BootReceiver.java'), bootReceiverContent);
 console.log('[patch-android] AlarmScheduler.java / AlarmReceiver.java / BootReceiver.java ecrits.');
+
+/* ---------- 4) android/app/build.gradle : versionCode qui change a chaque build ---------- */
+// "cap add android" regenere systematiquement build.gradle avec versionCode 1 fige. Sans
+// versionCode different a chaque build, Android refuse d'installer la nouvelle APK par-dessus
+// l'ancienne (protection anti-downgrade) et Yannick doit desinstaller l'app avant chaque
+// nouvelle install manuelle. GITHUB_RUN_NUMBER augmente automatiquement de 1 a chaque
+// execution du workflow (fourni par GitHub Actions) : utilise comme versionCode, il garantit
+// une valeur toujours strictement croissante. En dehors de la CI (test local), on retombe sur
+// l'horodatage courant en secondes (croissant lui aussi, largement sous la limite Android de
+// 2 100 000 000).
+const buildGradlePath = path.join('android', 'app', 'build.gradle');
+let buildGradle = fs.readFileSync(buildGradlePath, 'utf8');
+const nouveauVersionCode = parseInt(process.env.GITHUB_RUN_NUMBER, 10) || Math.floor(Date.now() / 1000);
+const nouveauVersionName = "1.0." + nouveauVersionCode;
+buildGradle = buildGradle.replace(/versionCode\s+\d+/, 'versionCode ' + nouveauVersionCode);
+buildGradle = buildGradle.replace(/versionName\s+"[^"]*"/, 'versionName "' + nouveauVersionName + '"');
+fs.writeFileSync(buildGradlePath, buildGradle);
+console.log('[patch-android] android/app/build.gradle : versionCode=' + nouveauVersionCode + ' versionName=' + nouveauVersionName + '.');
+
 
