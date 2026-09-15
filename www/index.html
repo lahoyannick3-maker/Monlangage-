@@ -4664,6 +4664,10 @@ let aideCommandes = [
       "Les conversions peuvent aussi etre faites dans l'autre sens : conver.seconde.heure(3600) -> 1 ; conver.seconde.ms(1) -> 1000 ; conver.Mo.Ko(1) -> 1024.",
       "La valeur doit etre un nombre positif ou nul. Le resultat peut etre fractionnaire."
     ], exemple: "conver.minute.seconde(5)  ->  300\nconver.heure.seconde(2)    ->  7200\nconver.ms.seconde(500)     ->  0.5\nconver.seconde.heure(3600)  ->  1\nconver.octet.Ko(1024)      ->  1\nconver.Mo.Ko(1)            ->  1024" },
+  { noms: ["conver.ms.date"], categorie: "Base", syntaxe: "conver.ms.date(valeur)", description: [
+      "Convertit un horodatage brut en millisecondes (epoch, ex: celui renvoye par temps()) en date/heure lisible, meme format que date() : \"JJ/MM/AAAA HH:MM:SS\".",
+      "La valeur doit etre un nombre positif ou nul."
+    ], exemple: "conver.ms.date(0)  ->  |01/01/1970 01:00:00|" },
   { noms: ["texte"], categorie: "Texte", syntaxe: "texte(a, b, ...)", description: [
       "Concatene plusieurs parties en UN SEUL texte, exactement comme les arguments de affi()/entr()/~ (avec |texte| et saulig pour un saut de ligne).",
       "Contrairement a affi(), ne s'affiche pas : renvoie le texte concatene comme une valeur, utilisable dans une expression.",
@@ -4788,10 +4792,11 @@ let aideCommandes = [
 
   { noms: ["sms.recus", "sms.envoyer"], categorie: "Controle", syntaxe: "sms.recus(depuisSecondes)  /  sms.envoyer(numero, message)", description: [
       "sms.recus(depuisSecondes) : liste des SMS recus au cours des \"depuisSecondes\"",
-      "dernieres secondes, chacun en liste(numero, message, dateEpochMs) -- le plus recent",
-      "en premier. liste() vide si aucun. Ne surveille rien en arriere-plan -- a verifier",
-      "dans une boucle (tanqer/attendre) si tu veux reagir a un SMS recu.",
-      "sms.envoyer(numero, message[, sim]) : envoie un SMS et renvoie VRAI si la demande d'envoi a ete acceptee par Android, FAUX si elle n'a pas pu etre envoyee. sim est optionnel : 1 ou 2 pour choisir directement la SIM ; sans sim, utilise la SIM par defaut du telephone. Les messages longs sont automatiquement",
+      "dernieres secondes, chacun en liste(numero, message, dateHeure) -- dateHeure deja",
+      "lisible (\"JJ/MM/AAAA HH:MM:SS\", meme format que date()), le plus recent en premier.",
+      "liste() vide si aucun. Ne surveille rien en arriere-plan -- a verifier dans une",
+      "boucle (tanqer/attendre) si tu veux reagir a un SMS recu.",
+      "sms.envoyer(numero, message[, sim]) : envoie un SMS et attend la confirmation reelle (jusqu'a 15s) que le message est bien parti -- renvoie VRAI seulement si le systeme confirme l'envoi, FAUX sinon (echec ou delai depasse). sim est optionnel : 1 ou 2 pour choisir directement la SIM (demande la permission d'etat telephone au besoin) ; sans sim, utilise la SIM par defaut du telephone. Les messages longs sont automatiquement",
       "decoupes en plusieurs parties, recus comme un seul message chez le destinataire).",
       "Necessite l'app native et les permissions de lecture/envoi de SMS -- les demande",
       "automatiquement si besoin (a accorder puis relancer le script). Android peut",
@@ -5949,6 +5954,18 @@ function enregistrerFonctionsBase() {
         }
     }
 
+    // conver.ms.date(valeur) : convertit un horodatage brut en millisecondes (epoch, ex: celui
+    // renvoye par sms.recus() ou temps()) en date/heure lisible "JJ/MM/AAAA HH:MM:SS". A part
+    // du groupe ms/seconde/minute/heure ci-dessus car le resultat est du texte, pas un nombre.
+    fonctionsBase["conver.ms.date"] = fonctionsExpression["conver.ms.date"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("conver.ms.date(...) attend exactement 1 argument");
+        let ms = await evalExpr(args[0], ctxExpr);
+        if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) {
+            throw new ErreurTypeInvalide("conver.ms.date(...) attend un nombre positif ou nul (millisecondes epoch)");
+        }
+        return formaterDateHeure(new Date(ms));
+    };
+
     // date.annee() / date.mois() / date.jour() / date.jourSemaine() / date.heure() /
     // date.minute() / date.seconde() : composants NUMERIQUES de la date/heure actuelle, pour
     // faire des calculs et des comparaisons (contrairement a date()/datejour()/heure(), qui sont
@@ -6279,7 +6296,7 @@ function enregistrerFonctionsBase() {
         }
         return brut.map(s => ({
             __type: "liste",
-            elements: [s.numero, s.message, s.date]
+            elements: [s.numero, s.message, formaterDateHeure(new Date(s.date))]
         }));
     };
 
