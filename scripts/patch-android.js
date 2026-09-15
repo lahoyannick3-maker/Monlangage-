@@ -51,6 +51,20 @@ if (!manifest.includes('SCHEDULE_EXACT_ALARM')) {
   console.log('[patch-android] AndroidManifest.xml : permissions alarmes/notifications ajoutees.');
 }
 
+// Permissions necessaires pour connexion.disponible()/connexion.type() (ACCESS_NETWORK_STATE,
+// permission "normale" sans popup), batterie.niveau()/batterie.encharge() (aucune permission
+// requise), et sms.recus()/sms.envoyer() (READ_SMS/SEND_SMS, permissions "dangereuses" :
+// popup d'accord explicite demande a l'execution, meme mecanique que POST_NOTIFICATIONS).
+const permissionsEtatAutomatisation =
+`    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+`;
+if (!manifest.includes('ACCESS_NETWORK_STATE')) {
+  manifest = manifest.replace('<application', permissionsEtatAutomatisation + '\n    <application');
+  console.log('[patch-android] AndroidManifest.xml : permissions reseau/sms ajoutees.');
+}
+
 const intentFilterMlg =
 `        <intent-filter>
             <action android:name="android.intent.action.VIEW" />
@@ -87,7 +101,40 @@ if (!manifest.includes('.AlarmReceiver')) {
   console.log('[patch-android] AndroidManifest.xml : receivers AlarmReceiver/BootReceiver ajoutes.');
 }
 
+// FileProvider : necessaire pour partager.fichier() -- Android interdit de partager un
+// chemin de fichier direct (file://) avec une autre application depuis Android 7 ; il faut
+// passer par un FileProvider qui genere une URI temporaire (content://) avec permission de
+// lecture accordee juste a l'app destinataire du partage.
+const authoriteFileProvider = appId + '.fileprovider';
+const providerFileProvider =
+`        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${authoriteFileProvider}"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>`;
+if (!manifest.includes('FileProvider')) {
+  manifest = manifest.replace('</application>', providerFileProvider);
+  console.log('[patch-android] AndroidManifest.xml : FileProvider ajoute (partager.fichier()).');
+}
+
 fs.writeFileSync(manifestPath, manifest);
+
+/* ---------- res/xml/file_paths.xml (chemins autorises pour le FileProvider) ---------- */
+const filePathsDir = path.join('android', 'app', 'src', 'main', 'res', 'xml');
+if (!fs.existsSync(filePathsDir)) fs.mkdirSync(filePathsDir, { recursive: true });
+const filePathsPath = path.join(filePathsDir, 'file_paths.xml');
+const filePathsContent = `<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <external-path name="stockage_externe" path="." />
+</paths>
+`;
+fs.writeFileSync(filePathsPath, filePathsContent);
+console.log('[patch-android] res/xml/file_paths.xml : ecrit (partager.fichier()).');
 
 /* ---------- 2) MainActivity.java ---------- */
 const mainActivityDir = path.join('android', 'app', 'src', 'main', 'java', ...appId.split('.'));
@@ -102,6 +149,8 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.provider.Settings;
 import android.webkit.JavascriptInterface;
+import android.webkit.MimeTypeMap;
+import androidx.core.content.FileProvider;
 import com.getcapacitor.BridgeActivity;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -239,6 +288,216 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public String listerAlarmes() {
             return AlarmScheduler.listerJson(MainActivity.this);
+        }
+
+        // connexion.disponible() cote MonLangage : VRAI si une connexion internet (wifi ou
+        // data mobile) est active ET validee (verifie un vrai acces internet, pas juste
+        // "associe a un reseau"). Ne necessite aucune permission a l'execution
+        // (ACCESS_NETWORK_STATE est une permission "normale", accordee automatiquement).
+        @JavascriptInterface
+        public boolean connexionDisponible() {
+            android.net.ConnectivityManager gestionnaireReseau =
+                (android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            if (gestionnaireReseau == null) return false;
+            android.net.Network reseauActif = gestionnaireReseau.getActiveNetwork();
+            if (reseauActif == null) return false;
+            android.net.NetworkCapabilities capacites = gestionnaireReseau.getNetworkCapabilities(reseauActif);
+            return capacites != null
+                && capacites.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                && capacites.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+        }
+
+        // connexion.type() cote MonLangage : "wifi", "mobile", "ethernet", "autre" ou
+        // "aucune".
+        @JavascriptInterface
+        public String connexionType() {
+            android.net.ConnectivityManager gestionnaireReseau =
+                (android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            if (gestionnaireReseau == null) return "aucune";
+            android.net.Network reseauActif = gestionnaireReseau.getActiveNetwork();
+            if (reseauActif == null) return "aucune";
+            android.net.NetworkCapabilities capacites = gestionnaireReseau.getNetworkCapabilities(reseauActif);
+            if (capacites == null) return "aucune";
+            if (capacites.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)) return "wifi";
+            if (capacites.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR)) return "mobile";
+            if (capacites.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)) return "ethernet";
+            return "autre";
+        }
+
+        // batterie.niveau() cote MonLangage : pourcentage de batterie restant (0-100).
+        // Aucune permission requise.
+        @JavascriptInterface
+        public int batterieNiveau() {
+            android.os.BatteryManager gestionnaireBatterie =
+                (android.os.BatteryManager) getSystemService(BATTERY_SERVICE);
+            if (gestionnaireBatterie == null) return -1;
+            return gestionnaireBatterie.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY);
+        }
+
+        // batterie.encharge() cote MonLangage : VRAI si le telephone est en train de charger
+        // (cable ou sans fil) ou deja completement charge. Aucune permission requise.
+        @JavascriptInterface
+        public boolean batterieEnCharge() {
+            android.content.IntentFilter filtre = new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+            Intent etatBatterie = registerReceiver(null, filtre);
+            if (etatBatterie == null) return false;
+            int statut = etatBatterie.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1);
+            return statut == android.os.BatteryManager.BATTERY_STATUS_CHARGING
+                || statut == android.os.BatteryManager.BATTERY_STATUS_FULL;
+        }
+
+        // VRAI si l'app a le droit de lire les SMS recus (Android : accord explicite
+        // requis, popup systeme).
+        @JavascriptInterface
+        public boolean permissionSmsLectureAccordee() {
+            return checkSelfPermission(android.Manifest.permission.READ_SMS)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        }
+
+        // Demande la permission de lecture des SMS a l'utilisateur (boite de dialogue
+        // systeme).
+        @JavascriptInterface
+        public void demanderPermissionSmsLecture() {
+            runOnUiThread(() ->
+                requestPermissions(new String[] { android.Manifest.permission.READ_SMS }, 2002)
+            );
+        }
+
+        // VRAI si l'app a le droit d'envoyer des SMS (accord explicite requis, popup
+        // systeme).
+        @JavascriptInterface
+        public boolean permissionSmsEnvoiAccordee() {
+            return checkSelfPermission(android.Manifest.permission.SEND_SMS)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        }
+
+        // Demande la permission d'envoi de SMS a l'utilisateur (boite de dialogue systeme).
+        @JavascriptInterface
+        public void demanderPermissionSmsEnvoi() {
+            runOnUiThread(() ->
+                requestPermissions(new String[] { android.Manifest.permission.SEND_SMS }, 2003)
+            );
+        }
+
+        // sms.recus(depuisSecondes) cote MonLangage : SMS recus dans la boite de reception
+        // au cours des "depuisSecondes" dernieres secondes, en JSON :
+        // [{"numero":"...","message":"...","date":epochMillis}, ...], plus recent en premier.
+        // "[]" si aucun ou en cas d'erreur (permission refusee entre-temps, par exemple).
+        @JavascriptInterface
+        public String smsRecus(long depuisSecondes) {
+            long seuil = System.currentTimeMillis() - (depuisSecondes * 1000L);
+            JSONArray tableau = new JSONArray();
+            android.net.Uri uriBoite = android.provider.Telephony.Sms.Inbox.CONTENT_URI;
+            String[] colonnes = {
+                android.provider.Telephony.Sms.ADDRESS,
+                android.provider.Telephony.Sms.BODY,
+                android.provider.Telephony.Sms.DATE
+            };
+            String selection = android.provider.Telephony.Sms.DATE + " >= ?";
+            String[] argsSelection = { String.valueOf(seuil) };
+            String tri = android.provider.Telephony.Sms.DATE + " DESC";
+            try (android.database.Cursor curseur = getContentResolver().query(
+                    uriBoite, colonnes, selection, argsSelection, tri)) {
+                if (curseur != null) {
+                    int iAdresse = curseur.getColumnIndex(android.provider.Telephony.Sms.ADDRESS);
+                    int iCorps = curseur.getColumnIndex(android.provider.Telephony.Sms.BODY);
+                    int iDate = curseur.getColumnIndex(android.provider.Telephony.Sms.DATE);
+                    while (curseur.moveToNext()) {
+                        try {
+                            JSONObject o = new JSONObject();
+                            o.put("numero", curseur.getString(iAdresse));
+                            o.put("message", curseur.getString(iCorps));
+                            o.put("date", curseur.getLong(iDate));
+                            tableau.put(o);
+                        } catch (Exception ignoree) { }
+                    }
+                }
+            } catch (Exception e) {
+                return "[]";
+            }
+            return tableau.toString();
+        }
+
+        // sms.envoyer(numero, message) cote MonLangage : envoie un SMS. Les messages longs
+        // (>160 caracteres) sont automatiquement decoupes en plusieurs parties (SMS
+        // multipart) et renvoyes comme un seul message reassemble chez le destinataire.
+        @JavascriptInterface
+        public void envoyerSms(String numero, String message) {
+            android.telephony.SmsManager gestionnaireSms = android.telephony.SmsManager.getDefault();
+            java.util.ArrayList<String> parties = gestionnaireSms.divideMessage(message);
+            if (parties.size() > 1) {
+                gestionnaireSms.sendMultipartTextMessage(numero, null, parties, null, null);
+            } else {
+                gestionnaireSms.sendTextMessage(numero, null, message, null, null);
+            }
+        }
+
+        // whatsapp.ouvrir(numero, message) cote MonLangage : ouvre WhatsApp (ou le
+        // navigateur si l'app n'est pas installee) sur la conversation avec ce numero, texte
+        // deja rempli dans le champ de saisie -- l'utilisateur doit lui-meme appuyer sur
+        // Envoyer, Android n'autorise pas une app tierce a envoyer un message a la place de
+        // l'utilisateur dans une autre app. numero : n'importe quel format, les caracteres
+        // non numeriques (espaces, +, tirets) sont retires automatiquement -- garder
+        // l'indicatif pays (ex: 33612345678 pour la France, sans le 0 initial).
+        @JavascriptInterface
+        public void ouvrirWhatsapp(String numero, String message) {
+            String numeroPropre = numero.replaceAll("[^0-9]", "");
+            String url = "https://wa.me/" + numeroPropre + "?text=" + Uri.encode(message);
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            startActivity(intent);
+        }
+
+        // messenger.ouvrir(destinataire, message) cote MonLangage : meme principe que
+        // whatsapp.ouvrir(...), mais pour Messenger (Facebook). ATTENTION : destinataire est
+        // un NOM D'UTILISATEUR Facebook (pas un numero de telephone -- Messenger n'identifie
+        // pas les gens par numero comme WhatsApp).
+        @JavascriptInterface
+        public void ouvrirMessenger(String destinataire, String message) {
+            String url = "https://m.me/" + Uri.encode(destinataire) + "?text=" + Uri.encode(message);
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            startActivity(intent);
+        }
+
+        // partager.fichier(chemin) cote MonLangage : ouvre le selecteur de partage standard
+        // Android (Bluetooth, email, Drive, n'importe quelle app acceptant un fichier -- PAS
+        // specifique a une messagerie) pour ce fichier. Renvoie FAUX si le fichier n'existe
+        // pas (rien n'est ouvert dans ce cas), VRAI si le selecteur a ete ouvert (n'indique
+        // pas que le partage a ete complete, juste que le selecteur s'est ouvert).
+        @JavascriptInterface
+        public boolean partagerFichier(String cheminComplet) {
+            try {
+                File fichier = new File(cheminComplet);
+                if (!fichier.exists() || !fichier.isFile()) return false;
+                android.net.Uri uriFichier = FileProvider.getUriForFile(
+                    MainActivity.this, getPackageName() + ".fileprovider", fichier);
+                String type = getContentResolver().getType(uriFichier);
+                if (type == null) {
+                    String extension = MimeTypeMap.getFileExtensionFromUrl(fichier.getAbsolutePath());
+                    type = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
+                }
+                if (type == null) type = "*/*";
+                Intent intent = new Intent(Intent.ACTION_SEND);
+                intent.setType(type);
+                intent.putExtra(Intent.EXTRA_STREAM, uriFichier);
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivity(Intent.createChooser(intent, null));
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        // taille.fichier(chemin) cote MonLangage : taille du fichier en OCTETS. -1 si le
+        // fichier n'existe pas.
+        @JavascriptInterface
+        public long tailleFichier(String cheminComplet) {
+            try {
+                File fichier = new File(cheminComplet);
+                if (!fichier.exists() || !fichier.isFile()) return -1;
+                return fichier.length();
+            } catch (Exception e) {
+                return -1;
+            }
         }
 
         // Liste le contenu d'un dossier : [{"nom":"...", "dossier":true/false}, ...],
