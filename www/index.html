@@ -6312,6 +6312,13 @@ function enregistrerFonctionsBase() {
             }
             throw new ErreurPermissionRefusee("MonLangage a besoin de l'autorisation d'envoyer des SMS pour sms.envoyer(...). Accorde la permission puis relance le script.");
         }
+        if (sim !== 0 && typeof window.MonLangage.permissionTelephoneAccordee === "function" &&
+            !window.MonLangage.permissionTelephoneAccordee()) {
+            if (typeof window.MonLangage.demanderPermissionTelephone === "function") {
+                window.MonLangage.demanderPermissionTelephone();
+            }
+            throw new ErreurPermissionRefusee("MonLangage a besoin de l'autorisation de lire l'etat du telephone pour choisir une SIM avec sms.envoyer(numero, message, sim). Accorde la permission puis relance le script.");
+        }
         return !!window.MonLangage.envoyerSms(numero, message, sim);
     };
 
