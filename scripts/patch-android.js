@@ -59,6 +59,7 @@ const permissionsEtatAutomatisation =
 `    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
 `;
 if (!manifest.includes('ACCESS_NETWORK_STATE')) {
   manifest = manifest.replace('<application', permissionsEtatAutomatisation + '\n    <application');
@@ -236,6 +237,48 @@ public class MainActivity extends BridgeActivity {
             runOnUiThread(() ->
                 requestPermissions(new String[] { android.Manifest.permission.POST_NOTIFICATIONS }, 2001)
             );
+        }
+
+        // notif.envoyer(message) cote MonLangage : affiche immediatement une notification
+        // systeme Android. Renvoie VRAI si Android accepte la notification, FAUX en cas
+        // d'erreur. Le clic sur la notification rouvre l'application MonLangage.
+        @JavascriptInterface
+        public boolean envoyerNotification(String message) {
+            try {
+                android.app.NotificationManager gestionnaire =
+                    (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                if (gestionnaire == null) return false;
+
+                final String canalId = "monlangage_notif";
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    android.app.NotificationChannel canal = new android.app.NotificationChannel(
+                        canalId, "Notifications MonLangage", android.app.NotificationManager.IMPORTANCE_DEFAULT);
+                    gestionnaire.createNotificationChannel(canal);
+                }
+
+                int id = (int) (System.currentTimeMillis() & 0x7fffffff);
+                Intent ouvrirApp = getPackageManager().getLaunchIntentForPackage(getPackageName());
+                android.app.PendingIntent contenuIntent = null;
+                if (ouvrirApp != null) {
+                    contenuIntent = android.app.PendingIntent.getActivity(
+                        MainActivity.this, id, ouvrirApp,
+                        android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
+                }
+
+                android.app.Notification.Builder constructeur = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                    ? new android.app.Notification.Builder(MainActivity.this, canalId)
+                    : new android.app.Notification.Builder(MainActivity.this);
+                constructeur.setContentTitle("MonLangage")
+                            .setContentText(message)
+                            .setSmallIcon(android.R.drawable.ic_dialog_info)
+                            .setAutoCancel(true);
+                if (contenuIntent != null) constructeur.setContentIntent(contenuIntent);
+
+                gestionnaire.notify(id, constructeur.build());
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
         }
 
         // VRAI si l'app a le droit de programmer des alarmes EXACTES (Android 12+ : accord
@@ -422,13 +465,29 @@ public class MainActivity extends BridgeActivity {
         // (>160 caracteres) sont automatiquement decoupes en plusieurs parties (SMS
         // multipart) et renvoyes comme un seul message reassemble chez le destinataire.
         @JavascriptInterface
-        public void envoyerSms(String numero, String message) {
-            android.telephony.SmsManager gestionnaireSms = android.telephony.SmsManager.getDefault();
-            java.util.ArrayList<String> parties = gestionnaireSms.divideMessage(message);
-            if (parties.size() > 1) {
-                gestionnaireSms.sendMultipartTextMessage(numero, null, parties, null, null);
-            } else {
-                gestionnaireSms.sendTextMessage(numero, null, message, null, null);
+        public boolean envoyerSms(String numero, String message, int sim) {
+            try {
+                android.telephony.SmsManager gestionnaireSms;
+                if (sim == 1 || sim == 2) {
+                    android.telephony.SubscriptionManager subscriptions =
+                        (android.telephony.SubscriptionManager) getSystemService(TELEPHONY_SUBSCRIPTION_SERVICE);
+                    if (subscriptions == null) return false;
+                    android.telephony.SubscriptionInfo info =
+                        subscriptions.getActiveSubscriptionInfoForSimSlotIndex(sim - 1);
+                    if (info == null) return false;
+                    gestionnaireSms = android.telephony.SmsManager.getSmsManagerForSubscriptionId(info.getSubscriptionId());
+                } else {
+                    gestionnaireSms = android.telephony.SmsManager.getDefault();
+                }
+                java.util.ArrayList<String> parties = gestionnaireSms.divideMessage(message);
+                if (parties.size() > 1) {
+                    gestionnaireSms.sendMultipartTextMessage(numero, null, parties, null, null);
+                } else {
+                    gestionnaireSms.sendTextMessage(numero, null, message, null, null);
+                }
+                return true;
+            } catch (Exception e) {
+                return false;
             }
         }
 
@@ -440,6 +499,15 @@ public class MainActivity extends BridgeActivity {
         // non numeriques (espaces, +, tirets) sont retires automatiquement -- garder
         // l'indicatif pays (ex: 33612345678 pour la France, sans le 0 initial).
         @JavascriptInterface
+        public void ouvrirWhatsapp() {
+            Intent intent = getPackageManager().getLaunchIntentForPackage("com.whatsapp");
+            if (intent == null) {
+                intent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://www.whatsapp.com/"));
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        }
+
         public void ouvrirWhatsapp(String numero, String message) {
             String numeroPropre = numero.replaceAll("[^0-9]", "");
             String url = "https://wa.me/" + numeroPropre + "?text=" + Uri.encode(message);
