@@ -58,8 +58,8 @@
     #btnConsole:hover { background: #388bfd; }
     #btnRetour { background: #30363d; }
     #btnRetour:hover { background: #484f58; }
-    #btnArretUrgence { background: #da3633; }
-    #btnArretUrgence:hover { background: #b62324; }
+    #btnArretUrgence { background: #da3633; margin-left: auto; }
+    #btnArretUrgence:hover { background: #f85149; }
     #btnSauver {
       background: #8957e5;
       width: 46px;
@@ -365,13 +365,19 @@
 }
 #toastEnregistrement.succes .toastIcone { background: #238636; color: #c9d1d9; }
 #toastEnregistrement.echec .toastIcone { background: #da3633; color: #c9d1d9; }
+    .dialogueOverlay { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,.65); z-index: 3000; padding: 24px; }
+    .dialogueOverlay.ouvert { display: flex; }
+    .dialogueBoite { width: min(92vw, 420px); background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 22px; box-shadow: 0 12px 40px rgba(0,0,0,.55); }
+    .dialogueTitre { font-size: 17px; line-height: 1.45; color: #f0f6fc; margin-bottom: 22px; }
+    .dialogueActions { display: flex; justify-content: flex-end; gap: 10px; }
+    #btnDialogueNon { background: #30363d; }
+    #btnDialogueOui { background: #238636; }
   </style>
 </head>
 <body>
   <div id="editeur">
     <div id="barre">
       <button id="btnRun">▶ RUN</button>
-      <button id="btnArretUrgence" style="display:none">🛑 Arrêt d’urgence</button>
       <button id="btnConsole">Console</button>
       <button id="btnSauver" title="Enregistrer" aria-label="Enregistrer">💾</button>
       <div class="menuOuvrir">
@@ -441,21 +447,23 @@ affi(|Bonjour |, nom)</textarea>
     <div id="headerConsole" style="display:flex; align-items:center; gap:10px;">
       <button id="btnRetour">← Retour</button>
       <span>Console MonLangage v4.0</span>
+      <button id="btnArretUrgence" type="button" hidden>🛑 Arrêt d’urgence</button>
     </div>
     <div id="output"></div>
   </div>
 
-  <div id="indicateurAttente"><div class="spinnerAttente"></div><span id="texteIndicateurAttente">Execution en cours, patientez…</span></div>
-
-  <div id="modalArrierePlan" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.65);align-items:center;justify-content:center;">
-    <div style="width:min(88vw,380px);background:#161b22;border:1px solid #30363d;border-radius:14px;padding:20px;box-shadow:0 12px 40px rgba(0,0,0,.5);">
-      <div style="font-size:18px;font-weight:600;margin-bottom:18px;">Voulez-vous mettre ce script en arrière-plan ?</div>
-      <div style="display:flex;gap:10px;justify-content:flex-end;">
-        <button id="btnArrierePlanNon">Non</button>
-        <button id="btnArrierePlanOui">Oui</button>
+  <div id="dialogueArrierePlan" class="dialogueOverlay" aria-hidden="true">
+    <div class="dialogueBoite" role="dialog" aria-modal="true" aria-labelledby="titreDialogueArrierePlan">
+      <div id="titreDialogueArrierePlan" class="dialogueTitre">Voulez-vous mettre ce script en arrière-plan ?</div>
+      <div class="dialogueActions">
+        <button id="btnDialogueNon" type="button">Non</button>
+        <button id="btnDialogueOui" type="button">Oui</button>
       </div>
     </div>
   </div>
+
+  <div id="indicateurAttente"><div class="spinnerAttente"></div><span id="texteIndicateurAttente">Execution en cours, patientez…</span></div>
+
   <div id="toastEnregistrement"><span class="toastIcone"></span><span class="toastTexte"></span></div>
 
   <div id="modalFichiers" class="modalFichiersOverlay">
@@ -576,11 +584,6 @@ let btnFermerSpecification = document.getElementById("btnFermerSpecification");
 let btnConsole = document.getElementById("btnConsole");
 let btnRetour = document.getElementById("btnRetour");
 let btnArretUrgence = document.getElementById("btnArretUrgence");
-let modalArrierePlan = document.getElementById("modalArrierePlan");
-let btnArrierePlanOui = document.getElementById("btnArrierePlanOui");
-let btnArrierePlanNon = document.getElementById("btnArrierePlanNon");
-let scriptEnArrierePlan = false;
-let surveillanceService = null;
 let btnSauver = document.getElementById("btnSauver");
 let btnOuvrir = document.getElementById("btnOuvrir");
 let inputOuvrir = document.getElementById("inputOuvrir");
@@ -994,42 +997,42 @@ function fermerSpecification() {
 }
 btnFermerSpecification.addEventListener("click", fermerSpecification);
 btnConsole.addEventListener("click", afficherConsole);
-// Si une execution est en cours, quitter la console l'interrompt en plus de
-// ramener a l'ecran de l'editeur (il faudra rappuyer sur "Executer" pour reprendre).
-// Fonction partagee entre le bouton "Retour" et le bouton retour materiel Android.
+// Dialogue de sortie : quitter l'interface ne doit JAMAIS interrompre implicitement
+// un script. L'utilisateur choisit explicitement de le laisser continuer dans le service
+// Android ou de l'arreter.
+function afficherDialogueArrierePlan() {
+  const overlay = document.getElementById("dialogueArrierePlan");
+  if (!overlay) return;
+  overlay.classList.add("ouvert");
+  overlay.setAttribute("aria-hidden", "false");
+}
+function fermerDialogueArrierePlan() {
+  const overlay = document.getElementById("dialogueArrierePlan");
+  if (!overlay) return;
+  overlay.classList.remove("ouvert");
+  overlay.setAttribute("aria-hidden", "true");
+}
+
 function quitterConsole() {
-  if (executionEnCours) {
-    modalArrierePlan.style.display = "flex";
+  if (executionEnCours || (window.MonLangage && window.MonLangage.serviceScriptEnCours && window.MonLangage.serviceScriptEnCours())) {
+    afficherDialogueArrierePlan();
     return;
   }
   afficherEditeur();
 }
-function fermerQuestionArrierePlan() { modalArrierePlan.style.display = "none"; }
-function continuerEnArrierePlan() {
-  fermerQuestionArrierePlan();
-  scriptEnArrierePlan = true;
-  btnArretUrgence.style.display = "none";
-  afficherEditeur();
-}
-function interrompreEtQuitterConsole() {
-  fermerQuestionArrierePlan();
-  scriptEnArrierePlan = false;
-  demandeArret = true;
-  if (window.MonLangage && typeof window.MonLangage.arreterScriptService === "function") {
-    window.MonLangage.arreterScriptService();
-  }
-  if (annulerSaisieEnCours) annulerSaisieEnCours();
-  arreterIndicateurAttente();
-  executionEnCours = false;
-  afficherEditeur();
-}
-btnArrierePlanOui.addEventListener("click", continuerEnArrierePlan);
-btnArrierePlanNon.addEventListener("click", interrompreEtQuitterConsole);
 btnRetour.addEventListener("click", quitterConsole);
-btnArretUrgence.addEventListener("click", () => {
-  demandeArret = true;
-  if (window.MonLangage && typeof window.MonLangage.arreterScriptService === "function") window.MonLangage.arreterScriptService();
-});
+
+function confirmerArrierePlanOui() {
+  fermerDialogueArrierePlan();
+  scriptEnArrierePlan = true;
+  // On quitte uniquement l'interface : le service continue l'execution.
+  afficherEditeur();
+}
+function confirmerArrierePlanNon() {
+  fermerDialogueArrierePlan();
+  arreterScriptEnCours();
+  afficherEditeur();
+}
 
 /* ===================== INDICATEUR "EXECUTION EN COURS" ===================== */
 // Affiche un petit badge avec spinner, mais seulement si l'execution dure plus
@@ -8679,37 +8682,113 @@ btnCollerOutil.addEventListener('click', async () => {
   if (!ok) afficherToastEnregistrement(false, "Collage indisponible ici -- utilise l'appui long > Coller");
 });
 /* ===================== LANCEMENT DU SCRIPT ===================== */
+let scriptEnArrierePlan = false;
+let dernierIdServiceVu = 0;
+let resultatServiceAffiche = new Set();
+
+function serviceDisponible() {
+  return !!(window.MonLangage && typeof window.MonLangage.envoyerScriptService === "function");
+}
+
+function serviceScriptActif() {
+  try {
+    return !!(window.MonLangage && typeof window.MonLangage.serviceScriptEnCours === "function" && window.MonLangage.serviceScriptEnCours());
+  } catch (_) { return false; }
+}
+
+function arreterScriptEnCours() {
+  demandeArret = true;
+  if (annulerSaisieEnCours) annulerSaisieEnCours();
+  arreterIndicateurAttente();
+  if (serviceDisponible() && typeof window.MonLangage.arreterScriptService === "function") {
+    try { window.MonLangage.arreterScriptService(); } catch (_) {}
+  }
+  executionEnCours = false;
+  scriptEnArrierePlan = false;
+  btnArretUrgence.hidden = true;
+  btnRun.disabled = false;
+}
+
+function synchroniserEtatService() {
+  if (!serviceDisponible() || typeof window.MonLangage.serviceScriptEnCours !== "function") return;
+  let actif = serviceScriptActif();
+  if (actif) {
+    executionEnCours = true;
+    btnRun.disabled = true;
+    if (ecranConsole.classList.contains("actif")) btnArretUrgence.hidden = false;
+    return;
+  }
+  if (!executionEnCours) return;
+
+  let dernierId = 0;
+  let resultat = "";
+  try { dernierId = Number(window.MonLangage.dernierResultatServiceId()) || 0; } catch (_) {}
+  try { resultat = window.MonLangage.dernierResultatService() || ""; } catch (_) {}
+
+  // Si le service n'est plus actif mais n'a pas encore publie un nouveau resultat,
+  // l'execution peut simplement etre en cours de demarrage. Ne remettons donc PAS RUN
+  // a zero trop tot. La fin est reconnue par l'apparition d'un nouvel id d'execution.
+  if (dernierId <= dernierIdServiceVu) return;
+
+  dernierIdServiceVu = dernierId;
+  if (!resultatServiceAffiche.has(dernierId) && ecranConsole.classList.contains("actif")) {
+    resultatServiceAffiche.add(dernierId);
+    if (resultat) print(resultat);
+    print("=== FIN ===");
+  }
+  executionEnCours = false;
+  scriptEnArrierePlan = false;
+  demandeArret = false;
+  btnRun.disabled = false;
+  btnArretUrgence.hidden = true;
+  arreterIndicateurAttente();
+}
+
 async function runScript() {
-  // L'execution reelle est hebergee par le service Android. L'interface n'en est
-  // que le controleur : fermer/quitter l'application ne detruit donc pas le moteur.
-  if (!window.__MLG_SERVICE_HOST__ && window.MonLangage && typeof window.MonLangage.envoyerScriptService === "function") {
-    if (typeof window.MonLangage.scriptEnCoursService === "function" && window.MonLangage.scriptEnCoursService()) {
-      afficherToastEnregistrement(false, "Script en cours");
+  // Le bouton RUN de l'application ne lance plus l'interpréteur dans la WebView de
+  // l'éditeur. Il remet le script au service Android, qui possède sa propre WebView et
+  // reste vivant même quand l'interface est fermée.
+  if (serviceDisponible()) {
+    if (serviceScriptActif() || executionEnCours) {
+      print("Script en cours", "erreur");
       return;
     }
     let script = codeArea.value;
-    afficherConsole();
-    print("=== EXECUTION ===");
-    btnRun.disabled = true;
-    btnArretUrgence.style.display = "inline-block";
-    demandeArret = false;
-    executionEnCours = true;
-    scriptEnArrierePlan = false;
-    demarrerIndicateurAttente();
+    if (!script.trim()) {
+      afficherConsole();
+      print("Aucun script à exécuter.", "erreur");
+      return;
+    }
     try {
+      dernierIdServiceVu = Number(window.MonLangage.dernierResultatServiceId()) || 0;
+      scriptEnArrierePlan = false;
+      executionEnCours = true;
+      demandeArret = false;
+      afficherConsole();
+      clearConsole();
+      print("=== EXECUTION ===");
+      btnRun.disabled = true;
+      btnArretUrgence.hidden = false;
+      demarrerIndicateurAttente();
       window.MonLangage.envoyerScriptService(script);
-      surveillerExecutionService();
+      // Le service fait lui-même le contrôle anti-double-lancement. On resynchronise
+      // rapidement l'état pour couvrir la petite fenêtre entre l'envoi et sa réception.
+      setTimeout(synchroniserEtatService, 100);
+      return;
     } catch (e) {
       executionEnCours = false;
       btnRun.disabled = false;
-      btnArretUrgence.style.display = "none";
-      arreterIndicateurAttente();
-      print("Erreur: " + e.message, "erreur");
+      btnArretUrgence.hidden = true;
+      print("Erreur: impossible de démarrer le service: " + e.message, "erreur");
+      return;
     }
-    return;
   }
 
-  // Chemin utilise uniquement par la WebView du service.
+  // Repli navigateur uniquement hors application native.
+  await executerScriptLocal(codeArea.value);
+}
+
+async function executerScriptLocal(script) {
   scopes = [{}];
   profondeurAppel = 0;
   PROFONDEUR_APPEL_MAX = PROFONDEUR_APPEL_MAX_DEFAUT;
@@ -8720,11 +8799,11 @@ async function runScript() {
   afficherConsole();
   print("=== EXECUTION ===");
   btnRun.disabled = true;
+  btnArretUrgence.hidden = true;
   demandeArret = false;
   executionEnCours = true;
   demarrerIndicateurAttente();
   try {
-    let script = codeArea.value;
     let tokens = parser(script);
     preRegistrerFonctions(tokens);
     await preRegistrerClasses(tokens);
@@ -8739,50 +8818,43 @@ async function runScript() {
   arreterIndicateurAttente();
   executionEnCours = false;
   demandeArret = false;
-  printInvite();
   btnRun.disabled = false;
+  printInvite();
 }
 
-function surveillerExecutionService() {
-  clearInterval(surveillanceService);
-  surveillanceService = setInterval(() => {
-    let enCours = false;
-    try { enCours = !!(window.MonLangage && window.MonLangage.scriptEnCoursService && window.MonLangage.scriptEnCoursService()); } catch (e) {}
-    if (!enCours) {
-      clearInterval(surveillanceService);
-      surveillanceService = null;
-      executionEnCours = false;
-      scriptEnArrierePlan = false;
-      demandeArret = false;
-      btnRun.disabled = false;
-      btnArretUrgence.style.display = "none";
-      arreterIndicateurAttente();
-    }
-  }, 700);
-}
-
-// Pont pour l'execution en arriere-plan (MonLangageService, WebView headless sans
-// ecran). Injecte "code" dans l'editeur comme si l'utilisateur l'avait ecrit, lance
-// runScript() normalement (donc avec la meme reinitialisation scopes/fonctions/modules
-// qu'un lancement depuis l'interface), puis renvoie la sortie texte produite pendant
-// cette execution (equivalent de ce qui serait apparu dans la console). N'est jamais
-// appelee cote UI normale -- uniquement via webView.evaluateJavascript() depuis le
-// Service Android.
 window.executerScriptExterne = async function(code) {
   let codeOriginal = codeArea.value;
   codeArea.value = code;
   let debutSortie = outputDiv.children.length;
+  let resultat = "";
   try {
-    await runScript();
+    await executerScriptLocal(code);
     let lignes = Array.from(outputDiv.children).slice(debutSortie);
-    return lignes.map(el => el.innerText).join("\n");
+    resultat = lignes.map(el => el.innerText).join("\n");
+    return resultat;
   } finally {
-    // Ne modifie pas le code affiche dans l'editeur si l'app est ouverte en meme
-    // temps qu'une execution externe est demandee (rare, mais possible).
     codeArea.value = codeOriginal;
+    if (window.MonLangageServiceNative && typeof window.MonLangageServiceNative.executionTerminee === "function") {
+      try { window.MonLangageServiceNative.executionTerminee(resultat); } catch (_) {}
+    }
   }
 };
 
+window.arreterExecutionExterne = function() {
+  demandeArret = true;
+  if (annulerSaisieEnCours) annulerSaisieEnCours();
+  arreterIndicateurAttente();
+};
+
+btnArretUrgence.addEventListener("click", () => {
+  arreterScriptEnCours();
+  if (ecranConsole.classList.contains("actif")) print("=== EXECUTION ARRETEE ===", "erreur");
+});
+
+document.getElementById("btnDialogueOui").addEventListener("click", confirmerArrierePlanOui);
+document.getElementById("btnDialogueNon").addEventListener("click", confirmerArrierePlanNon);
+
+setInterval(synchroniserEtatService, 500);
 // Sur mobile, toucher la poignee du curseur ferme le clavier sans declencher
 // de blur() : le champ reste "actif" cote DOM mais visuellement inerte, et un
 // simple focus() ne fait alors plus rien (deja l'element actif). Un tap
