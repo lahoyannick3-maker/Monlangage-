@@ -51,6 +51,17 @@ if (!manifest.includes('SCHEDULE_EXACT_ALARM')) {
   console.log('[patch-android] AndroidManifest.xml : permissions alarmes/notifications ajoutees.');
 }
 
+// Permissions necessaires a MonLangageService (execution en arriere-plan, meme app
+// fermee -- cf commentaire complet au-dessus de la declaration <service> plus bas).
+const permissionsServiceArrierePlan =
+`    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+`;
+if (!manifest.includes('FOREGROUND_SERVICE"')) {
+  manifest = manifest.replace('<application', permissionsServiceArrierePlan + '\n    <application');
+  console.log('[patch-android] AndroidManifest.xml : permissions service arriere-plan ajoutees.');
+}
+
 // Permissions necessaires pour connexion.disponible()/connexion.type() (ACCESS_NETWORK_STATE,
 // permission "normale" sans popup), batterie.niveau()/batterie.encharge() (aucune permission
 // requise), et sms.recus()/sms.envoyer() (READ_SMS/SEND_SMS, permissions "dangereuses" :
@@ -116,6 +127,26 @@ const receiversAlarmes =
 if (!manifest.includes('.AlarmReceiver')) {
   manifest = manifest.replace('</application>', receiversAlarmes);
   console.log('[patch-android] AndroidManifest.xml : receivers AlarmReceiver/BootReceiver ajoutes.');
+}
+
+// MonLangageService : service premier-plan (notification permanente obligatoire des
+// Android 8+, comme celle de Termux) qui heberge sa propre WebView headless (jamais
+// affichee) chargeant www/index.html, pour executer un script MonLangage independamment
+// de MainActivity -- il continue de tourner meme apres fermeture de l'app. Declare
+// exported="true" : n'importe quelle app externe (ou un "am startservice" en shell)
+// peut lui envoyer une commande ou l'arreter, sur le meme principe que RUN_COMMAND de
+// Termux. android:process n'est PAS precise : le service tourne dans le meme processus
+// que l'app (obligatoire ici, une WebView Android ne peut etre pilotee que depuis le
+// thread principal du processus qui l'a creee).
+const serviceArrierePlan =
+`        <service
+            android:name=".MonLangageService"
+            android:exported="true"
+            android:foregroundServiceType="dataSync" />
+    </application>`;
+if (!manifest.includes('.MonLangageService')) {
+  manifest = manifest.replace('</application>', serviceArrierePlan);
+  console.log('[patch-android] AndroidManifest.xml : service MonLangageService declare.');
 }
 
 // FileProvider : necessaire pour partager.fichier() -- Android interdit de partager un
@@ -744,6 +775,37 @@ public class MainActivity extends BridgeActivity {
                 return null;
             }
         }
+
+        // service.demarrer() cote MonLangage : demarre MonLangageService (notification
+        // persistante "MonLangage actif" + bouton Arreter, comme Termux). Sans effet si
+        // deja demarre.
+        @JavascriptInterface
+        public void demarrerServiceArrierePlan() {
+            Intent intent = new Intent(MainActivity.this, MonLangageService.class);
+            intent.setAction(MonLangageService.ACTION_START);
+            androidx.core.content.ContextCompat.startForegroundService(MainActivity.this, intent);
+        }
+
+        // service.executer(script) cote MonLangage : envoie un script a executer par
+        // MonLangageService. Demarre le service automatiquement s'il n'est pas deja actif.
+        // Chaque appel est une execution independante (pas d'etat partage entre deux
+        // scripts envoyes au service -- voir commentaire dans MonLangageService.java).
+        @JavascriptInterface
+        public void envoyerScriptService(String script) {
+            Intent intent = new Intent(MainActivity.this, MonLangageService.class);
+            intent.setAction(MonLangageService.ACTION_RUN);
+            intent.putExtra(MonLangageService.EXTRA_SCRIPT, script);
+            androidx.core.content.ContextCompat.startForegroundService(MainActivity.this, intent);
+        }
+
+        // service.arreter() cote MonLangage : arrete MonLangageService (equivalent du
+        // bouton "Arreter" de la notification).
+        @JavascriptInterface
+        public void arreterServiceArrierePlan() {
+            Intent intent = new Intent(MainActivity.this, MonLangageService.class);
+            intent.setAction(MonLangageService.ACTION_STOP);
+            startService(intent);
+        }
     }
 
     private void envoyerTexteAuWebView(String texte, String nom) {
@@ -1071,6 +1133,224 @@ fs.writeFileSync(path.join(mainActivityDir, 'AlarmScheduler.java'), alarmSchedul
 fs.writeFileSync(path.join(mainActivityDir, 'AlarmReceiver.java'), alarmReceiverContent);
 fs.writeFileSync(path.join(mainActivityDir, 'BootReceiver.java'), bootReceiverContent);
 console.log('[patch-android] AlarmScheduler.java / AlarmReceiver.java / BootReceiver.java ecrits.');
+
+/* ---------- MonLangageService.java : execution en arriere-plan ---------- */
+// Service premier-plan qui heberge sa PROPRE WebView, creee par code et jamais
+// attachee a un ecran (headless) -- distincte de celle de MainActivity. Elle charge
+// le meme www/index.html (donc le meme interpreteur MonLangage complet, avec les
+// memes fonctions globales dont executerScriptExterne(), ajoutee cote index.html).
+// Comme cette WebView n'est liee a aucune Activity, elle survit a la fermeture de
+// l'app : tant que le Service est en vie (notification premiere-plan obligatoire
+// depuis Android 8+, comme celle de Termux), un script en cours continue de tourner.
+//
+// Choix retenu (Option "2a") : chaque script envoye via ACTION_RUN est une execution
+// INDEPENDANTE. runScript() (dans index.html) reinitialise scopes/fonctions/modules a
+// chaque appel -- donc deux scripts envoyes au service ne partagent PAS leurs
+// variables/fonctions entre eux, exactement comme s'ils avaient ete lances separement
+// depuis l'editeur. Un seul script peut neanmoins contenir une boucle infinie ou un
+// traitement long : il continue de tourner en arriere-plan jusqu'a sa fin ou jusqu'a
+// l'arret du service.
+//
+// exported="true" sur la declaration <service> (AndroidManifest.xml) : n'importe
+// quelle app externe, ou un "adb shell am start-service" / "am start-service" depuis
+// un terminal (Termux y compris), peut envoyer une commande ou arreter le service --
+// meme principe que RUN_COMMAND de Termux. Exemple d'appel externe :
+//   am start-service -n ${appId}/.MonLangageService \\
+//       -a ${appId}.action.RUN --es script "afficher('salut')"
+//   am start-service -n ${appId}/.MonLangageService -a ${appId}.action.STOP
+const monLangageServiceContent = `package ${appId};
+
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.app.Service;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.os.Build;
+import android.os.IBinder;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import org.json.JSONObject;
+
+public class MonLangageService extends Service {
+
+    public static final String ACTION_START = "${appId}.action.START";
+    public static final String ACTION_RUN   = "${appId}.action.RUN";
+    public static final String ACTION_STOP  = "${appId}.action.STOP";
+    public static final String EXTRA_SCRIPT = "script";
+
+    private static final String CHANNEL_ID = "monlangage_service";
+    private static final int NOTIF_ID_SERVICE = 9001;
+    private static final String PREFS_NAME = "monlangage_service_prefs";
+
+    private WebView webView;
+    private boolean webViewPrete = false;
+    private int compteurExecutions = 0;
+    // Scripts recus (via envoyerScriptService() ou depuis l'exterieur) avant que la
+    // WebView headless ait fini de charger index.html : mis en attente, executes des
+    // que webViewPrete passe a vrai.
+    private final Deque<String> enAttente = new ArrayDeque<>();
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        creerCanalNotification();
+        creerWebViewHeadless();
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        startForeground(NOTIF_ID_SERVICE, construireNotification("En veille"));
+
+        String action = intent != null ? intent.getAction() : null;
+        if (ACTION_STOP.equals(action)) {
+            arreter();
+            return START_NOT_STICKY;
+        } else if (ACTION_RUN.equals(action) && intent != null) {
+            String script = intent.getStringExtra(EXTRA_SCRIPT);
+            if (script != null && !script.isEmpty()) {
+                if (webViewPrete) executerScript(script);
+                else enAttente.addLast(script);
+            }
+        }
+        // ACTION_START (ou intent relance par le systeme apres un kill) : la WebView se
+        // charge dans onCreate(), rien d'autre a faire ici.
+        return START_STICKY;
+    }
+
+    private void creerWebViewHeadless() {
+        webView = new WebView(this);
+        webView.getSettings().setJavaScriptEnabled(true);
+        webView.getSettings().setDomStorageEnabled(true);
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                webViewPrete = true;
+                mettreAJourNotification("En veille");
+                while (!enAttente.isEmpty()) executerScript(enAttente.pollFirst());
+            }
+        });
+        // Meme contenu que MainActivity (public/index.html, synchronise par
+        // "npx cap sync android" dans les assets de l'app).
+        webView.loadUrl("file:///android_asset/public/index.html");
+    }
+
+    private void executerScript(String script) {
+        compteurExecutions++;
+        int idExecution = compteurExecutions;
+        mettreAJourNotification("Execution #" + idExecution + " en cours...");
+
+        String scriptEchappe = JSONObject.quote(script);
+        String js = "window.executerScriptExterne && window.executerScriptExterne(" + scriptEchappe + ");";
+
+        webView.evaluateJavascript(js, resultatBrut -> {
+            String resultat = decoderResultatJs(resultatBrut);
+            sauvegarderResultat(idExecution, resultat);
+            afficherNotificationResultat(idExecution, resultat);
+            mettreAJourNotification("En veille");
+        });
+    }
+
+    // evaluateJavascript() renvoie la valeur JS encodee en JSON (donc entre guillemets,
+    // \\n echappes, etc.) -- on la redecode en texte brut lisible.
+    private String decoderResultatJs(String brut) {
+        if (brut == null || "null".equals(brut)) return "";
+        try {
+            return new JSONObject("{\\"r\\":" + brut + "}").getString("r");
+        } catch (Exception e) {
+            return brut;
+        }
+    }
+
+    private void sauvegarderResultat(int idExecution, String resultat) {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        prefs.edit()
+            .putString("resultat_" + idExecution, resultat)
+            .putInt("dernier_id", idExecution)
+            .apply();
+    }
+
+    private void arreter() {
+        if (webView != null) {
+            webView.destroy();
+            webView = null;
+        }
+        stopForeground(true);
+        stopSelf();
+    }
+
+    @Override
+    public void onDestroy() {
+        if (webView != null) { webView.destroy(); webView = null; }
+        super.onDestroy();
+    }
+
+    private void creerCanalNotification() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        NotificationManager gestionnaire = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        NotificationChannel canal = new NotificationChannel(
+            CHANNEL_ID, "MonLangage (arriere-plan)", NotificationManager.IMPORTANCE_LOW);
+        gestionnaire.createNotificationChannel(canal);
+    }
+
+    // Notification premiere-plan permanente, avec bouton "Arreter" -- meme principe que
+    // le bouton "Arreter" de la notification "Applis actives" de Termux.
+    private Notification construireNotification(String texte) {
+        Intent stopIntent = new Intent(this, MonLangageService.class);
+        stopIntent.setAction(ACTION_STOP);
+        PendingIntent stopPending = PendingIntent.getService(
+            this, 0, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        Notification.Builder constructeur = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            ? new Notification.Builder(this, CHANNEL_ID)
+            : new Notification.Builder(this);
+
+        Intent ouvrirApp = getPackageManager().getLaunchIntentForPackage(getPackageName());
+        PendingIntent contenuIntent = ouvrirApp != null
+            ? PendingIntent.getActivity(this, 0, ouvrirApp, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE)
+            : null;
+
+        constructeur.setContentTitle("MonLangage actif")
+                    .setContentText(texte)
+                    .setSmallIcon(android.R.drawable.ic_dialog_info)
+                    .setOngoing(true)
+                    .addAction(0, "Arreter", stopPending);
+        if (contenuIntent != null) constructeur.setContentIntent(contenuIntent);
+        return constructeur.build();
+    }
+
+    private void mettreAJourNotification(String texte) {
+        NotificationManager gestionnaire = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        gestionnaire.notify(NOTIF_ID_SERVICE, construireNotification(texte));
+    }
+
+    // Notification separee (pas la notification permanente) qui affiche le resultat
+    // d'une execution terminee -- l'utilisateur peut la balayer sans arreter le service.
+    private void afficherNotificationResultat(int idExecution, String resultat) {
+        NotificationManager gestionnaire = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        String apercu = resultat == null || resultat.isEmpty() ? "(aucune sortie)" : resultat;
+
+        Notification.Builder constructeur = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            ? new Notification.Builder(this, CHANNEL_ID)
+            : new Notification.Builder(this);
+        constructeur.setContentTitle("MonLangage -- execution #" + idExecution + " terminee")
+                    .setSmallIcon(android.R.drawable.ic_dialog_info)
+                    .setAutoCancel(true)
+                    .setStyle(new Notification.BigTextStyle().bigText(apercu))
+                    .setContentText(apercu);
+        gestionnaire.notify(NOTIF_ID_SERVICE + idExecution, constructeur.build());
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) { return null; }
+}
+`;
+
+fs.writeFileSync(path.join(mainActivityDir, 'MonLangageService.java'), monLangageServiceContent);
+console.log('[patch-android] MonLangageService.java ecrit.');
 
 /* ---------- 4) android/app/build.gradle : versionCode qui change a chaque build ---------- */
 // "cap add android" regenere systematiquement build.gradle avec versionCode 1 fige. Sans
