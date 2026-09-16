@@ -141,7 +141,7 @@ if (!manifest.includes('.AlarmReceiver')) {
 const serviceArrierePlan =
 `        <service
             android:name=".MonLangageService"
-            android:exported="true"
+            android:exported="false"
             android:foregroundServiceType="dataSync" />
     </application>`;
 if (!manifest.includes('.MonLangageService')) {
@@ -228,8 +228,19 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Infrastructure Android : le Foreground Service est demarre automatiquement
+        // a l'ouverture de MonLangage. Aucune commande MLG n'est necessaire.
+        demarrerServiceAutomatiquement();
         getBridge().getWebView().addJavascriptInterface(new MonLangageBridge(), "MonLangage");
         traiterIntentOuverture(getIntent());
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        // Si l'utilisateur revient dans MonLangage apres avoir arrete le service depuis
+        // Android, on le relance automatiquement a la prochaine ouverture de l'activite.
+        demarrerServiceAutomatiquement();
     }
 
     @Override
@@ -237,6 +248,16 @@ public class MainActivity extends BridgeActivity {
         super.onNewIntent(intent);
         setIntent(intent);
         traiterIntentOuverture(intent);
+    }
+
+    private void demarrerServiceAutomatiquement() {
+        try {
+            Intent intent = new Intent(this, MonLangageService.class);
+            intent.setAction(MonLangageService.ACTION_START);
+            androidx.core.content.ContextCompat.startForegroundService(this, intent);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     private class MonLangageBridge {
@@ -776,36 +797,6 @@ public class MainActivity extends BridgeActivity {
             }
         }
 
-        // service.demarrer() cote MonLangage : demarre MonLangageService (notification
-        // persistante "MonLangage actif" + bouton Arreter, comme Termux). Sans effet si
-        // deja demarre.
-        @JavascriptInterface
-        public void demarrerServiceArrierePlan() {
-            Intent intent = new Intent(MainActivity.this, MonLangageService.class);
-            intent.setAction(MonLangageService.ACTION_START);
-            androidx.core.content.ContextCompat.startForegroundService(MainActivity.this, intent);
-        }
-
-        // service.executer(script) cote MonLangage : envoie un script a executer par
-        // MonLangageService. Demarre le service automatiquement s'il n'est pas deja actif.
-        // Chaque appel est une execution independante (pas d'etat partage entre deux
-        // scripts envoyes au service -- voir commentaire dans MonLangageService.java).
-        @JavascriptInterface
-        public void envoyerScriptService(String script) {
-            Intent intent = new Intent(MainActivity.this, MonLangageService.class);
-            intent.setAction(MonLangageService.ACTION_RUN);
-            intent.putExtra(MonLangageService.EXTRA_SCRIPT, script);
-            androidx.core.content.ContextCompat.startForegroundService(MainActivity.this, intent);
-        }
-
-        // service.arreter() cote MonLangage : arrete MonLangageService (equivalent du
-        // bouton "Arreter" de la notification).
-        @JavascriptInterface
-        public void arreterServiceArrierePlan() {
-            Intent intent = new Intent(MainActivity.this, MonLangageService.class);
-            intent.setAction(MonLangageService.ACTION_STOP);
-            startService(intent);
-        }
     }
 
     private void envoyerTexteAuWebView(String texte, String nom) {
@@ -1189,8 +1180,8 @@ public class MonLangageService extends Service {
     private WebView webView;
     private boolean webViewPrete = false;
     private int compteurExecutions = 0;
-    // Scripts recus (via envoyerScriptService() ou depuis l'exterieur) avant que la
-    // WebView headless ait fini de charger index.html : mis en attente, executes des
+    // Scripts internes recus avant que la WebView headless ait fini de charger index.html :
+    // mis en attente, executes des
     // que webViewPrete passe a vrai.
     private final Deque<String> enAttente = new ArrayDeque<>();
 
