@@ -141,9 +141,8 @@ if (!manifest.includes('.AlarmReceiver')) {
 const serviceArrierePlan =
 `        <service
             android:name=".MonLangageService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync"
-            android:stopWithTask="false" />
+            android:exported="true"
+            android:foregroundServiceType="dataSync" />
     </application>`;
 if (!manifest.includes('.MonLangageService')) {
   manifest = manifest.replace('</application>', serviceArrierePlan);
@@ -230,14 +229,11 @@ public class MainActivity extends BridgeActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         getBridge().getWebView().addJavascriptInterface(new MonLangageBridge(), "MonLangage");
-        // Le service est une infrastructure permanente de l'application : il est lance
-        // automatiquement a l'ouverture, sans aucune commande MLG.
+        // Le service est une infrastructure de l'application : il demarre automatiquement
+        // a l'ouverture de MonLangage. Aucune commande MLG n'est necessaire pour l'activer.
         Intent serviceIntent = new Intent(MainActivity.this, MonLangageService.class);
         serviceIntent.setAction(MonLangageService.ACTION_START);
         androidx.core.content.ContextCompat.startForegroundService(MainActivity.this, serviceIntent);
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[] { android.Manifest.permission.POST_NOTIFICATIONS }, 2001);
-        }
         traiterIntentOuverture(getIntent());
     }
 
@@ -785,19 +781,6 @@ public class MainActivity extends BridgeActivity {
             }
         }
 
-        // Etat interne utilise uniquement par l'interface pour savoir si un script est
-        // deja execute par le moteur heberge dans le service. Ce n'est PAS une commande MLG.
-        @JavascriptInterface
-        public boolean scriptEnCoursService() {
-            return MonLangageService.estExecutionEnCours();
-        }
-
-        // Arret d'urgence du SCRIPT uniquement. Le service premier-plan reste actif.
-        @JavascriptInterface
-        public void arreterScriptService() {
-            MonLangageService.arreterScriptEnCours();
-        }
-
         // service.demarrer() cote MonLangage : demarre MonLangageService (notification
         // persistante "MonLangage actif" + bouton Arreter, comme Termux). Sans effet si
         // deja demarre.
@@ -818,6 +801,32 @@ public class MainActivity extends BridgeActivity {
             intent.setAction(MonLangageService.ACTION_RUN);
             intent.putExtra(MonLangageService.EXTRA_SCRIPT, script);
             androidx.core.content.ContextCompat.startForegroundService(MainActivity.this, intent);
+        }
+
+        @JavascriptInterface
+        public boolean serviceScriptEnCours() {
+            return getSharedPreferences("monlangage_service_prefs", MODE_PRIVATE)
+                .getBoolean("script_actif", false);
+        }
+
+        @JavascriptInterface
+        public int dernierResultatServiceId() {
+            return getSharedPreferences("monlangage_service_prefs", MODE_PRIVATE)
+                .getInt("dernier_id", 0);
+        }
+
+        @JavascriptInterface
+        public String dernierResultatService() {
+            return getSharedPreferences("monlangage_service_prefs", MODE_PRIVATE)
+                .getString("dernier_resultat", "");
+        }
+
+        // Arret d'urgence du SCRIPT uniquement. Le service foreground reste actif.
+        @JavascriptInterface
+        public void arreterScriptService() {
+            Intent intent = new Intent(MainActivity.this, MonLangageService.class);
+            intent.setAction(MonLangageService.ACTION_CANCEL_SCRIPT);
+            startService(intent);
         }
 
         // service.arreter() cote MonLangage : arrete MonLangageService (equivalent du
@@ -1193,7 +1202,6 @@ import android.os.Build;
 import android.os.IBinder;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.webkit.JavascriptInterface;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import org.json.JSONObject;
@@ -1202,6 +1210,7 @@ public class MonLangageService extends Service {
 
     public static final String ACTION_START = "${appId}.action.START";
     public static final String ACTION_RUN   = "${appId}.action.RUN";
+    public static final String ACTION_CANCEL_SCRIPT = "${appId}.action.CANCEL_SCRIPT";
     public static final String ACTION_STOP  = "${appId}.action.STOP";
     public static final String EXTRA_SCRIPT = "script";
 
@@ -1211,8 +1220,7 @@ public class MonLangageService extends Service {
 
     private WebView webView;
     private boolean webViewPrete = false;
-    private volatile boolean executionEnCours = false;
-    private static volatile MonLangageService instance;
+    private boolean scriptActif = false;
     private int compteurExecutions = 0;
     // Scripts recus (via envoyerScriptService() ou depuis l'exterieur) avant que la
     // WebView headless ait fini de charger index.html : mis en attente, executes des
@@ -1222,7 +1230,6 @@ public class MonLangageService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        instance = this;
         creerCanalNotification();
         creerWebViewHeadless();
     }
@@ -1235,17 +1242,27 @@ public class MonLangageService extends Service {
         if (ACTION_STOP.equals(action)) {
             arreter();
             return START_NOT_STICKY;
+        } else if (ACTION_CANCEL_SCRIPT.equals(action)) {
+            annulerScript();
         } else if (ACTION_RUN.equals(action) && intent != null) {
             String script = intent.getStringExtra(EXTRA_SCRIPT);
-            if (script != null && !script.isEmpty()) {
-                // Une seule execution a la fois : un second RUN est refuse.
-                if (executionEnCours) {
-                    mettreAJourNotification("Script en cours");
-                } else if (webViewPrete) {
-                    executerScript(script);
-                } else if (enAttente.isEmpty()) {
-                    enAttente.addLast(script);
-                }
+            // Un seul script a la fois. Une deuxieme pression sur RUN ne met pas un second
+            // script en file d'attente et ne cree donc pas une deuxieme execution.
+            if (script != null && !script.isEmpty() && !scriptActif) {
+                // Reserve immediatement l'unique emplacement d'execution, meme si la WebView
+                // est encore en chargement. Cela ferme la fenetre ou deux pressions RUN
+                // successives pourraient sinon mettre deux scripts en file d'attente.
+                compteurExecutions++;
+                int idExecution = compteurExecutions;
+                scriptActif = true;
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .putBoolean("script_actif", true)
+                    .putInt("execution_active_id", idExecution)
+                    .apply();
+                if (webViewPrete) executerScript(script);
+                else enAttente.addLast(script);
+            } else if (scriptActif) {
+                mettreAJourNotification("Script en cours");
             }
         }
         // ACTION_START (ou intent relance par le systeme apres un kill) : la WebView se
@@ -1257,15 +1274,13 @@ public class MonLangageService extends Service {
         webView = new WebView(this);
         webView.getSettings().setJavaScriptEnabled(true);
         webView.getSettings().setDomStorageEnabled(true);
-        webView.addJavascriptInterface(new ServiceBridge(), "MonLangage");
+        webView.addJavascriptInterface(new ServiceJavascriptBridge(), "MonLangageServiceNative");
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
                 webViewPrete = true;
-                webView.evaluateJavascript("window.__MLG_SERVICE_HOST__=true;", value -> {
-                    mettreAJourNotification("En veille");
-                    while (!enAttente.isEmpty()) executerScript(enAttente.pollFirst());
-                });
+                mettreAJourNotification("En veille");
+                while (!enAttente.isEmpty()) executerScript(enAttente.pollFirst());
             }
         });
         // Meme contenu que MainActivity (public/index.html, synchronise par
@@ -1274,22 +1289,59 @@ public class MonLangageService extends Service {
     }
 
     private void executerScript(String script) {
-        if (executionEnCours) return;
-        executionEnCours = true;
-        compteurExecutions++;
-        int idExecution = compteurExecutions;
+        if (!scriptActif) {
+            compteurExecutions++;
+            int idExecution = compteurExecutions;
+            scriptActif = true;
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                .putBoolean("script_actif", true)
+                .putInt("execution_active_id", idExecution)
+                .apply();
+        }
+        int idExecution = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .getInt("execution_active_id", compteurExecutions);
         mettreAJourNotification("Execution #" + idExecution + " en cours...");
 
         String scriptEchappe = JSONObject.quote(script);
         String js = "window.executerScriptExterne && window.executerScriptExterne(" + scriptEchappe + ");";
-
+        // La fonction JS est async : le callback d'evaluateJavascript() ne doit PAS etre
+        // utilise pour declarer la fin de l'execution, car il recoit immediatement le Promise.
+        // La WebView appelle MonLangageServiceNative.executionTerminee(...) uniquement apres
+        // le vrai retour de runScript().
         webView.evaluateJavascript(js, resultatBrut -> {
-            String resultat = decoderResultatJs(resultatBrut);
-            sauvegarderResultat(idExecution, resultat);
-            afficherNotificationResultat(idExecution, resultat);
-            executionEnCours = false;
-            mettreAJourNotification("En veille");
+            // Rien : la fin reelle est signalee par le pont JS ci-dessus.
         });
+    }
+
+    private void terminerScript(String resultat) {
+        if (!scriptActif) return;
+        int idExecution = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .getInt("execution_active_id", compteurExecutions);
+        scriptActif = false;
+        sauvegarderResultat(idExecution, resultat);
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putBoolean("script_actif", false)
+            .remove("execution_active_id")
+            .apply();
+        afficherNotificationResultat(idExecution, resultat);
+        mettreAJourNotification("En veille");
+    }
+
+    private void annulerScript() {
+        if (!scriptActif || webView == null || !webViewPrete) return;
+        webView.evaluateJavascript("window.arreterExecutionExterne && window.arreterExecutionExterne();", null);
+    }
+
+    private class ServiceJavascriptBridge {
+        @android.webkit.JavascriptInterface
+        public void executionTerminee(String resultat) {
+            runOnMainThread(() -> terminerScript(resultat == null ? "" : resultat));
+        }
+    }
+
+    private void runOnMainThread(Runnable action) {
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) action.run();
+        else new android.os.Handler(android.os.Looper.getMainLooper()).post(action);
     }
 
     // evaluateJavascript() renvoie la valeur JS encodee en JSON (donc entre guillemets,
@@ -1307,52 +1359,15 @@ public class MonLangageService extends Service {
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         prefs.edit()
             .putString("resultat_" + idExecution, resultat)
+            .putString("dernier_resultat", resultat == null ? "" : resultat)
             .putInt("dernier_id", idExecution)
             .apply();
     }
 
-    private class ServiceBridge {
-        @JavascriptInterface
-        public boolean permissionNotificationsAccordee() {
-            if (Build.VERSION.SDK_INT >= 33) {
-                return checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED;
-            }
-            return true;
-        }
-
-        @JavascriptInterface
-        public boolean envoyerNotification(String message) {
-            try {
-                NotificationManager gestionnaire = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-                if (gestionnaire == null) return false;
-                final String canalId = "monlangage_notif";
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    gestionnaire.createNotificationChannel(new NotificationChannel(canalId, "Notifications MonLangage", NotificationManager.IMPORTANCE_DEFAULT));
-                }
-                int id = (int)(System.currentTimeMillis() & 0x7fffffff);
-                Intent ouvrirApp = getPackageManager().getLaunchIntentForPackage(getPackageName());
-                PendingIntent contenu = ouvrirApp == null ? null : PendingIntent.getActivity(MonLangageService.this, id, ouvrirApp, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-                Notification.Builder n = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ? new Notification.Builder(MonLangageService.this, canalId) : new Notification.Builder(MonLangageService.this);
-                n.setContentTitle("MonLangage").setContentText(message).setSmallIcon(android.R.drawable.ic_dialog_info).setAutoCancel(true);
-                if (contenu != null) n.setContentIntent(contenu);
-                gestionnaire.notify(id, n.build());
-                return true;
-            } catch (Exception e) { return false; }
-        }
-    }
-
-    public static boolean estExecutionEnCours() {
-        return instance != null && instance.executionEnCours;
-    }
-
-    public static void arreterScriptEnCours() {
-        MonLangageService s = instance;
-        if (s == null || s.webView == null) return;
-        s.webView.post(() -> s.webView.evaluateJavascript("window.demandeArret=true;", null));
-        s.mettreAJourNotification("Arret du script...");
-    }
-
     private void arreter() {
+        scriptActif = false;
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putBoolean("script_actif", false).remove("execution_active_id").apply();
         if (webView != null) {
             webView.destroy();
             webView = null;
@@ -1362,9 +1377,15 @@ public class MonLangageService extends Service {
     }
 
     @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        // Retirer MonLangage des applications recentes ne doit pas detruire le service.
+        // START_STICKY + absence de stopSelf() permet au moteur de continuer.
+        super.onTaskRemoved(rootIntent);
+    }
+
+    @Override
     public void onDestroy() {
         if (webView != null) { webView.destroy(); webView = null; }
-        instance = null;
         super.onDestroy();
     }
 
