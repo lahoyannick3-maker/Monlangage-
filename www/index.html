@@ -8674,6 +8674,28 @@ enregistrerFonctionsBase();
   btnRun.disabled = false;
 }
 
+// Pont pour l'execution en arriere-plan (MonLangageService, WebView headless sans
+// ecran). Injecte "code" dans l'editeur comme si l'utilisateur l'avait ecrit, lance
+// runScript() normalement (donc avec la meme reinitialisation scopes/fonctions/modules
+// qu'un lancement depuis l'interface), puis renvoie la sortie texte produite pendant
+// cette execution (equivalent de ce qui serait apparu dans la console). N'est jamais
+// appelee cote UI normale -- uniquement via webView.evaluateJavascript() depuis le
+// Service Android.
+window.executerScriptExterne = async function(code) {
+  let codeOriginal = codeArea.value;
+  codeArea.value = code;
+  let debutSortie = outputDiv.children.length;
+  try {
+    await runScript();
+    let lignes = Array.from(outputDiv.children).slice(debutSortie);
+    return lignes.map(el => el.innerText).join("\n");
+  } finally {
+    // Ne modifie pas le code affiche dans l'editeur si l'app est ouverte en meme
+    // temps qu'une execution externe est demandee (rare, mais possible).
+    codeArea.value = codeOriginal;
+  }
+};
+
 // Sur mobile, toucher la poignee du curseur ferme le clavier sans declencher
 // de blur() : le champ reste "actif" cote DOM mais visuellement inerte, et un
 // simple focus() ne fait alors plus rien (deja l'element actif). Un tap
