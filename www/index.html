@@ -58,6 +58,19 @@
     #btnConsole:hover { background: #388bfd; }
     #btnRetour { background: #30363d; }
     #btnRetour:hover { background: #484f58; }
+    #btnArretUrgence { margin-left: auto; background: #da3633; min-width: 150px; position: relative; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
+    #btnArretUrgence:hover { background: #f85149; }
+    #btnArretUrgence.appuiLong { background: #8b1e1e; }
+    #btnArretUrgence .progressionArret { position: absolute; inset: 0 auto 0 0; width: 0%; background: rgba(255,255,255,0.22); pointer-events: none; }
+    #btnArretUrgence .texteArret { position: relative; z-index: 1; }
+    #modalArrierePlan { position: fixed; inset: 0; z-index: 3000; display: none; align-items: center; justify-content: center; padding: 20px; background: rgba(0,0,0,0.72); }
+    #modalArrierePlan.actif { display: flex; }
+    #boiteArrierePlan { width: min(92vw, 420px); background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 20px; box-shadow: 0 8px 32px rgba(0,0,0,0.55); font-family: monospace; }
+    #boiteArrierePlan h3 { margin: 0 0 18px; color: #f0f6fc; font-size: 16px; }
+    #actionsArrierePlan { display: flex; justify-content: flex-end; gap: 10px; }
+    #btnArrierePlanNon { background: #30363d; }
+    #btnArrierePlanNon:hover { background: #484f58; }
+    #btnArrierePlanOui { background: #238636; }
     #btnSauver {
       background: #8957e5;
       width: 46px;
@@ -438,8 +451,16 @@ affi(|Bonjour |, nom)</textarea>
     <div id="headerConsole" style="display:flex; align-items:center; gap:10px;">
       <button id="btnRetour">← Retour</button>
       <span>Console MonLangage v4.0</span>
+      <button id="btnArretUrgence" type="button" aria-label="Arrêt d'urgence"><span class="progressionArret"></span><span class="texteArret">🛑 Arrêt d'urgence</span></button>
     </div>
     <div id="output"></div>
+  </div>
+
+  <div id="modalArrierePlan" aria-hidden="true">
+    <div id="boiteArrierePlan" role="dialog" aria-modal="true" aria-labelledby="titreArrierePlan">
+      <h3 id="titreArrierePlan">Voulez-vous mettre ce script en arrière-plan ?</h3>
+      <div id="actionsArrierePlan"><button id="btnArrierePlanNon" type="button">Non</button><button id="btnArrierePlanOui" type="button">Oui</button></div>
+    </div>
   </div>
 
   <div id="indicateurAttente"><div class="spinnerAttente"></div><span id="texteIndicateurAttente">Execution en cours, patientez…</span></div>
@@ -563,6 +584,10 @@ let cadreSpecification = document.getElementById("cadreSpecification");
 let btnFermerSpecification = document.getElementById("btnFermerSpecification");
 let btnConsole = document.getElementById("btnConsole");
 let btnRetour = document.getElementById("btnRetour");
+let btnArretUrgence = document.getElementById("btnArretUrgence");
+let modalArrierePlan = document.getElementById("modalArrierePlan");
+let btnArrierePlanOui = document.getElementById("btnArrierePlanOui");
+let btnArrierePlanNon = document.getElementById("btnArrierePlanNon");
 let btnSauver = document.getElementById("btnSauver");
 let btnOuvrir = document.getElementById("btnOuvrir");
 let inputOuvrir = document.getElementById("inputOuvrir");
@@ -976,19 +1001,43 @@ function fermerSpecification() {
 }
 btnFermerSpecification.addEventListener("click", fermerSpecification);
 btnConsole.addEventListener("click", afficherConsole);
-// Si une execution est en cours, quitter la console l'interrompt en plus de
-// ramener a l'ecran de l'editeur (il faudra rappuyer sur "Executer" pour reprendre).
-// Fonction partagee entre le bouton "Retour" et le bouton retour materiel Android.
-function quitterConsole() {
-  if (executionEnCours) {
+// Quitter la console pendant une execution demande explicitement si le script doit
+// continuer en arriere-plan. Le service Android est deja actif : ce choix concerne
+// uniquement la poursuite du script, pas l'activation du service.
+let resolutionArrierePlanEnCours = null;
+
+function demanderArrierePlan() {
+  if (!executionEnCours) return Promise.resolve(false);
+  if (resolutionArrierePlanEnCours) return resolutionArrierePlanEnCours;
+  modalArrierePlan.classList.add("actif");
+  modalArrierePlan.setAttribute("aria-hidden", "false");
+  resolutionArrierePlanEnCours = new Promise(resolve => {
+    const terminer = continuer => {
+      modalArrierePlan.classList.remove("actif");
+      modalArrierePlan.setAttribute("aria-hidden", "true");
+      resolutionArrierePlanEnCours = null;
+      resolve(continuer);
+    };
+    btnArrierePlanOui.onclick = () => terminer(true);
+    btnArrierePlanNon.onclick = () => terminer(false);
+  });
+  return resolutionArrierePlanEnCours;
+}
+
+async function quitterConsole() {
+  if (!executionEnCours) { afficherEditeur(); return; }
+  const continuerEnArrierePlan = await demanderArrierePlan();
+  if (!continuerEnArrierePlan) {
     demandeArret = true;
-    // Si le script est bloque en attente d'une saisie entr(), personne ne pourra
-    // plus jamais appuyer sur Entree pour la valider (on quitte la console) :
-    // on annule cette attente pour que l'execution s'interrompe reellement et
-    // que le bouton RUN redevienne disponible.
+    scriptEnArrierePlan = false;
     if (annulerSaisieEnCours) annulerSaisieEnCours();
     arreterIndicateurAttente();
+    afficherEditeur();
+    return;
   }
+  // Oui : surtout ne pas toucher a demandeArret. Le moteur continue.
+  scriptEnArrierePlan = true;
+  arreterIndicateurAttente();
   afficherEditeur();
 }
 btnRetour.addEventListener("click", quitterConsole);
@@ -1101,6 +1150,7 @@ const CODES_ERREUR_RECONNUS = new Set([
 /* ===================== EXECUTION "EN DIRECT" (comme R) ===================== */
 // L'executeur est asynchrone mais, sans point de cession explicite, le navigateur
 let executionEnCours = false;
+let scriptEnArrierePlan = false;
 let demandeArret = false;
 let compteurPas = 0;
 // Cede la main au navigateur SANS passer par setTimeout(0) : les navigateurs
@@ -8641,6 +8691,12 @@ btnCollerOutil.addEventListener('click', async () => {
 });
 /* ===================== LANCEMENT DU SCRIPT ===================== */
 async function runScript() {
+  if (executionEnCours) {
+    if (typeof afficherToastEnregistrement === "function") afficherToastEnregistrement(false, "Script en cours");
+    else alert("Script en cours");
+    return;
+  }
+  scriptEnArrierePlan = false;
   scopes = [{}];
 profondeurAppel = 0;
 PROFONDEUR_APPEL_MAX = PROFONDEUR_APPEL_MAX_DEFAUT;
@@ -8650,7 +8706,7 @@ pileImportEnCours = [];
 enregistrerFonctionsBase();
   afficherConsole();
   print("=== EXECUTION ===");
-  btnRun.disabled = true;
+  btnRun.disabled = false;
   demandeArret = false;
   executionEnCours = true;
   demarrerIndicateurAttente();
@@ -8669,6 +8725,7 @@ enregistrerFonctionsBase();
   }
   arreterIndicateurAttente();
   executionEnCours = false;
+  scriptEnArrierePlan = false;
   demandeArret = false;
   printInvite();
   btnRun.disabled = false;
@@ -8806,6 +8863,56 @@ outputDiv.addEventListener("input", function(e) {
   definirDecalageCurseur(target, decalage);
 });
 
+
+// Arrêt d'urgence : appui long d'environ 1 seconde. Un appui court est ignore.
+// Ce bouton arrete uniquement le script et ne touche jamais au Foreground Service Android.
+let minuteurArretUrgence = null;
+let progressionArretUrgence = null;
+let debutArretUrgence = 0;
+const DUREE_ARRET_URGENCE = 1000;
+
+function reinitialiserArretUrgence() {
+  if (minuteurArretUrgence) clearTimeout(minuteurArretUrgence);
+  if (progressionArretUrgence) clearInterval(progressionArretUrgence);
+  minuteurArretUrgence = null; progressionArretUrgence = null;
+  btnArretUrgence.classList.remove("appuiLong");
+  const barre = btnArretUrgence.querySelector(".progressionArret");
+  const texte = btnArretUrgence.querySelector(".texteArret");
+  if (barre) barre.style.width = "0%";
+  if (texte) texte.textContent = "🛑 Arrêt d'urgence";
+}
+function declencherArretUrgence() {
+  if (!executionEnCours) { reinitialiserArretUrgence(); return; }
+  demandeArret = true;
+  scriptEnArrierePlan = false;
+  if (annulerSaisieEnCours) annulerSaisieEnCours();
+  arreterIndicateurAttente();
+  reinitialiserArretUrgence();
+}
+function commencerArretUrgence(e) {
+  if (!executionEnCours || modalArrierePlan.classList.contains("actif")) return;
+  if (e.pointerType === "mouse" && e.button !== 0) return;
+  e.preventDefault();
+  reinitialiserArretUrgence();
+  debutArretUrgence = Date.now();
+  btnArretUrgence.classList.add("appuiLong");
+  const barre = btnArretUrgence.querySelector(".progressionArret");
+  const texte = btnArretUrgence.querySelector(".texteArret");
+  if (texte) texte.textContent = "Maintenir pour arrêter…";
+  progressionArretUrgence = setInterval(() => {
+    const ratio = Math.min(1, (Date.now() - debutArretUrgence) / DUREE_ARRET_URGENCE);
+    if (barre) barre.style.width = (ratio * 100) + "%";
+  }, 40);
+  minuteurArretUrgence = setTimeout(declencherArretUrgence, DUREE_ARRET_URGENCE);
+}
+function annulerArretUrgence(e) {
+  if (e) e.preventDefault();
+  if (minuteurArretUrgence) reinitialiserArretUrgence();
+}
+btnArretUrgence.addEventListener("pointerdown", commencerArretUrgence);
+btnArretUrgence.addEventListener("pointerup", annulerArretUrgence);
+btnArretUrgence.addEventListener("pointercancel", annulerArretUrgence);
+btnArretUrgence.addEventListener("pointerleave", annulerArretUrgence);
 
 btnRun.addEventListener("click", runScript);
 
