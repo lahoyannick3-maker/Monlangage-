@@ -1171,7 +1171,7 @@ console.log('[patch-android] AlarmScheduler.java / AlarmReceiver.java / BootRece
 // le meme www/index.html (donc le meme interpreteur MonLangage complet, avec les
 // memes fonctions globales dont executerScriptExterne(), ajoutee cote index.html).
 // Comme cette WebView n'est liee a aucune Activity, elle survit a la fermeture de
-// l'app : tant que le Service est en vie (notification premiere-plan obligatoire
+// l'interface : tant que le Service est en vie (notification premiere-plan obligatoire
 // depuis Android 8+, comme celle de Termux), un script en cours continue de tourner.
 //
 // Choix retenu (Option "2a") : chaque script envoye via ACTION_RUN est une execution
@@ -1275,6 +1275,11 @@ public class MonLangageService extends Service {
         webView.getSettings().setJavaScriptEnabled(true);
         webView.getSettings().setDomStorageEnabled(true);
         webView.addJavascriptInterface(new ServiceJavascriptBridge(), "MonLangageServiceNative");
+        // Le moteur MLG utilise window.MonLangage pour ses commandes natives.
+        // La WebView du service est independante de MainActivity : elle doit donc
+        // recevoir son propre pont natif. Sans ce pont, notif.envoyer() echoue
+        // avec "disponible uniquement dans l'app installee".
+        webView.addJavascriptInterface(new ServiceMonLangageBridge(), "MonLangage");
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
@@ -1307,7 +1312,9 @@ public class MonLangageService extends Service {
         // La fonction JS est async : le callback d'evaluateJavascript() ne doit PAS etre
         // utilise pour declarer la fin de l'execution, car il recoit immediatement le Promise.
         // La WebView appelle MonLangageServiceNative.executionTerminee(...) uniquement apres
-        // le vrai retour de runScript().
+        // le vrai retour de executerScriptExterne(). Cette fonction execute le meme moteur MLG
+        // mais sans les marqueurs/invite de la console visible : MainActivity les recree a la
+        // fin pour conserver exactement le comportement historique de la console.
         webView.evaluateJavascript(js, resultatBrut -> {
             // Rien : la fin reelle est signalee par le pont JS ci-dessus.
         });
@@ -1330,6 +1337,72 @@ public class MonLangageService extends Service {
     private void annulerScript() {
         if (!scriptActif || webView == null || !webViewPrete) return;
         webView.evaluateJavascript("window.arreterExecutionExterne && window.arreterExecutionExterne();", null);
+    }
+
+    /**
+     * Pont natif minimal necessaire au moteur MLG lorsqu'il tourne dans la WebView
+     * headless du service.
+     *
+     * Il est volontairement nomme "MonLangage" car les fonctions natives MLG
+     * (dont notif.envoyer) consultent window.MonLangage.
+     */
+    private class ServiceMonLangageBridge {
+        @android.webkit.JavascriptInterface
+        public boolean permissionNotificationsAccordee() {
+            if (Build.VERSION.SDK_INT >= 33) {
+                return checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            }
+            return true;
+        }
+
+        @android.webkit.JavascriptInterface
+        public void demanderPermissionNotifications() {
+            // Une WebView headless ne peut pas afficher une demande de permission.
+            // La permission doit etre accordee depuis l'interface principale.
+        }
+
+        @android.webkit.JavascriptInterface
+        public boolean envoyerNotification(String message) {
+            try {
+                NotificationManager gestionnaire =
+                    (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                if (gestionnaire == null) return false;
+
+                final String canalId = "monlangage_notif";
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    NotificationChannel canal = new NotificationChannel(
+                        canalId, "Notifications MonLangage",
+                        NotificationManager.IMPORTANCE_DEFAULT);
+                    gestionnaire.createNotificationChannel(canal);
+                }
+
+                int id = (int) (System.currentTimeMillis() & 0x7fffffff);
+                Intent ouvrirApp = getPackageManager().getLaunchIntentForPackage(getPackageName());
+                PendingIntent contenuIntent = null;
+                if (ouvrirApp != null) {
+                    contenuIntent = PendingIntent.getActivity(
+                        MonLangageService.this, id, ouvrirApp,
+                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                }
+
+                Notification.Builder constructeur =
+                    (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                    ? new Notification.Builder(MonLangageService.this, canalId)
+                    : new Notification.Builder(MonLangageService.this);
+
+                constructeur.setContentTitle("MonLangage")
+                    .setContentText(message)
+                    .setSmallIcon(android.R.drawable.ic_dialog_info)
+                    .setAutoCancel(true);
+
+                if (contenuIntent != null) constructeur.setContentIntent(contenuIntent);
+                gestionnaire.notify(id, constructeur.build());
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
     }
 
     private class ServiceJavascriptBridge {
