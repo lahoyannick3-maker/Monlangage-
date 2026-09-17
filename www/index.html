@@ -1152,6 +1152,16 @@ const CODES_ERREUR_RECONNUS = new Set([
 // L'executeur est asynchrone mais, sans point de cession explicite, le navigateur
 let executionEnCours = false;
 let demandeArret = false;
+// Timer unique utilise par attendre(). Il est global afin que l'arret d'urgence puisse
+// annuler une attente meme lorsque le moteur execute le script dans la WebView du service.
+let attenteEnCoursMLG = null;
+function annulerAttenteEnCoursMLG() {
+  if (attenteEnCoursMLG && typeof attenteEnCoursMLG.reveiller === "function") {
+    const reveiller = attenteEnCoursMLG.reveiller;
+    attenteEnCoursMLG = null;
+    reveiller();
+  }
+}
 let compteurPas = 0;
 // Cede la main au navigateur SANS passer par setTimeout(0) : les navigateurs
 // imposent un delai minimum d'environ 4ms aux setTimeout imbriques (norme
@@ -6051,28 +6061,48 @@ function enregistrerFonctionsBase() {
         return new Date().getSeconds();
     };
 
-    // attendre(secondes) : suspend l'execution du script pendant "secondes" (peut etre
-    // fractionnaire, ex: attendre(0.5)), SANS consommer le CPU en boucle (contrairement a une
-    // boucle d'attente active) et en restant INTERROMPABLE par le bouton Stop -- on verifie
-    // demandeArret toutes les 100ms au lieu de dormir d'un seul bloc, pour que Stop reste
-    // reactif meme pendant une longue attente (ex: attendre(3600)).
+    // attendre(secondes) : vraie attente asynchrone, avec UN SEUL timer JavaScript.
+    // Aucun while, setInterval ou boucle de polling n'est utilise pour mesurer le temps.
+    // Le moteur est suspendu jusqu'a l'echeance du timer, puis reprend exactement ici.
+    // L'attente reste annulable : le bouton d'urgence / arreterExecutionExterne() efface
+    // le timer en cours et reveille la Promise ; le test demandeArret est alors effectue
+    // une seule fois, apres le reveil.
     fonctionsBase["attendre"] = fonctionsExpression["attendre"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("attendre(...) attend exactement 1 argument (nombre de secondes)");
         let secondes = await evalExpr(args[0], ctxExpr);
         if (typeof secondes !== "number" || !isFinite(secondes) || secondes < 0) {
             throw new Error("attendre(...) attend un nombre de secondes positif ou nul");
         }
-        let resteMs = secondes * 1000;
-        const PAS_MS = 100;
-        while (resteMs > 0) {
-            if (demandeArret) throw new ExecutionInterrompue();
-            let pas = Math.min(PAS_MS, resteMs);
-            await new Promise((resolve) => setTimeout(resolve, pas));
-            resteMs -= pas;
-        }
+        if (demandeArret) throw new ExecutionInterrompue();
+        if (attenteEnCoursMLG) throw new Error("attendre(...) : une attente est deja en cours");
+
+        const ms = secondes * 1000;
+        if (ms === 0) return undefined;
+
+        await new Promise((resolve) => {
+            const timerId = setTimeout(() => {
+                if (attenteEnCoursMLG && attenteEnCoursMLG.timerId === timerId) {
+                    attenteEnCoursMLG = null;
+                }
+                resolve();
+            }, ms);
+
+            attenteEnCoursMLG = {
+                timerId,
+                reveiller: () => {
+                    clearTimeout(timerId);
+                    if (attenteEnCoursMLG && attenteEnCoursMLG.timerId === timerId) {
+                        attenteEnCoursMLG = null;
+                    }
+                    resolve();
+                }
+            };
+        });
+
         if (demandeArret) throw new ExecutionInterrompue();
         return undefined;
     };
+
 
     // secondesJusquaProchain(jourSemaine, heure, minute) : nombre de secondes a attendre avant
     // la PROCHAINE occurrence du jour de semaine (1=lundi..7=dimanche) et de l'heure:minute
@@ -8868,6 +8898,8 @@ window.executerScriptExterne = async function(code) {
 window.arreterExecutionExterne = function() {
   demandeArret = true;
   if (annulerSaisieEnCours) annulerSaisieEnCours();
+  // Reveil immediat d'un attendre() en cours : aucun polling, aucun timer decoupe.
+  annulerAttenteEnCoursMLG();
   arreterIndicateurAttente();
 };
 
