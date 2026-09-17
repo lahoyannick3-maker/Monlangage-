@@ -208,7 +208,9 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
+import android.content.BroadcastReceiver;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
@@ -479,7 +481,7 @@ public class MonLangageBridge {
         @JavascriptInterface
         public boolean batterieEnCharge() {
             android.content.IntentFilter filtre = new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED);
-            Intent etatBatterie = registerReceiver(null, filtre);
+            Intent etatBatterie = context.registerReceiver(null, filtre);
             if (etatBatterie == null) return false;
             int statut = etatBatterie.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1);
             return statut == android.os.BatteryManager.BATTERY_STATUS_CHARGING
@@ -620,9 +622,9 @@ public class MonLangageBridge {
                     // par MonLangage lui-meme) : RECEIVER_NOT_EXPORTED le bloquerait (l'appel
                     // repond alors toujours FAUX apres le delai de 15s, meme si le SMS est
                     // reellement parti chez le destinataire). Il faut RECEIVER_EXPORTED ici.
-                    registerReceiver(recepteur, new IntentFilter(action), Context.RECEIVER_EXPORTED);
+                    context.registerReceiver(recepteur, new IntentFilter(action), Context.RECEIVER_EXPORTED);
                 } else {
-                    registerReceiver(recepteur, new IntentFilter(action));
+                    context.registerReceiver(recepteur, new IntentFilter(action));
                 }
 
                 if (parties.size() > 1) {
@@ -644,7 +646,7 @@ public class MonLangageBridge {
                 return false;
             } finally {
                 if (recepteur != null) {
-                    try { unregisterReceiver(recepteur); } catch (Exception ignoree) { }
+                    try { context.unregisterReceiver(recepteur); } catch (Exception ignoree) { }
                 }
             }
         }
@@ -833,8 +835,8 @@ const mainActivityContent = `package ${appId};
 
 import android.app.Activity;
 import android.app.PendingIntent;
-import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.BroadcastReceiver;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.net.Uri;
@@ -1253,6 +1255,7 @@ const bootReceiverContent = `package ${appId};
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 
 // Android efface TOUTES les alarmes AlarmManager a chaque redemarrage du telephone : sans ce
 // receiver, une alarme planifiee avec planifier() disparaitrait silencieusement au premier
