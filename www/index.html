@@ -8777,7 +8777,8 @@ async function runScript() {
       executionEnCours = true;
       demandeArret = false;
       afficherConsole();
-      clearConsole();
+      // Ne pas effacer la console lors d'un nouveau RUN : les sorties des exécutions
+      // précédentes doivent rester visibles. L'effacement est réservé à effa().
       print("=== EXECUTION ===");
       btnRun.disabled = true;
       btnArretUrgence.hidden = false;
