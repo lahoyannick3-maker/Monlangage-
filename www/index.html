@@ -8870,9 +8870,15 @@ window.arreterExecutionExterne = function() {
   arreterIndicateurAttente();
 };
 
+// Arret d'urgence = clic court uniquement. Il arrete le script courant,
+// sans arreter le service Android. Comme dans l'execution locale historique,
+// l'arret rend immediatement la console de nouveau utilisable en recreant l'invite #.
 btnArretUrgence.addEventListener("click", () => {
   arreterScriptEnCours();
-  if (ecranConsole.classList.contains("actif")) print("=== EXECUTION ARRETEE ===", "erreur");
+  if (ecranConsole.classList.contains("actif")) {
+    print("=== EXECUTION ARRETEE ===", "erreur");
+    printInvite();
+  }
 });
 
 document.getElementById("btnDialogueOui").addEventListener("click", confirmerArrierePlanOui);
