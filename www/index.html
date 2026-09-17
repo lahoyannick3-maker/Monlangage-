@@ -1014,6 +1014,14 @@ function fermerDialogueArrierePlan() {
 }
 
 function quitterConsole() {
+  // Un script deja place en arriere-plan n'a plus besoin d'une seconde confirmation.
+  // Le retour concerne alors uniquement l'interface : le service continue le script.
+  if (scriptEnArrierePlan) {
+    fermerDialogueArrierePlan();
+    afficherEditeur();
+    return;
+  }
+
   if (executionEnCours || (window.MonLangage && window.MonLangage.serviceScriptEnCours && window.MonLangage.serviceScriptEnCours())) {
     afficherDialogueArrierePlan();
     return;
@@ -8735,6 +8743,10 @@ function synchroniserEtatService() {
     resultatServiceAffiche.add(dernierId);
     if (resultat) print(resultat);
     print("=== FIN ===");
+    // Le service ne manipule pas la console visible de MainActivity. Une fois le script
+    // termine, on recree donc explicitement l'invite que l'execution locale affichait
+    // auparavant. Le curseur redevient ainsi disponible comme avant l'ajout du service.
+    printInvite();
   }
   executionEnCours = false;
   scriptEnArrierePlan = false;
@@ -8788,7 +8800,11 @@ async function runScript() {
   await executerScriptLocal(codeArea.value);
 }
 
-async function executerScriptLocal(script) {
+async function executerScriptLocal(script, options = {}) {
+  const afficherConsoleExecution = options.afficherConsoleExecution !== false;
+  const afficherMarqueursExecution = options.afficherMarqueursExecution !== false;
+  const afficherInviteExecution = options.afficherInviteExecution !== false;
+
   scopes = [{}];
   profondeurAppel = 0;
   PROFONDEUR_APPEL_MAX = PROFONDEUR_APPEL_MAX_DEFAUT;
@@ -8796,8 +8812,8 @@ async function executerScriptLocal(script) {
   modules = {};
   pileImportEnCours = [];
   enregistrerFonctionsBase();
-  afficherConsole();
-  print("=== EXECUTION ===");
+  if (afficherConsoleExecution) afficherConsole();
+  if (afficherMarqueursExecution) print("=== EXECUTION ===");
   btnRun.disabled = true;
   btnArretUrgence.hidden = true;
   demandeArret = false;
@@ -8809,7 +8825,7 @@ async function executerScriptLocal(script) {
     await preRegistrerClasses(tokens);
     await preRegistrerImports(tokens);
     await executerTokens(tokens);
-    print("=== FIN ===");
+    if (afficherMarqueursExecution) print("=== FIN ===");
   } catch (e) {
     if (e instanceof ExecutionInterrompue) print("=== EXECUTION ARRETEE ===", "erreur");
     else if (e instanceof ErreurLangage) print("Erreur ligne " + e.ligne + ": " + e.message, "erreur");
@@ -8819,7 +8835,7 @@ async function executerScriptLocal(script) {
   executionEnCours = false;
   demandeArret = false;
   btnRun.disabled = false;
-  printInvite();
+  if (afficherInviteExecution && afficherConsoleExecution) printInvite();
 }
 
 window.executerScriptExterne = async function(code) {
@@ -8828,7 +8844,15 @@ window.executerScriptExterne = async function(code) {
   let debutSortie = outputDiv.children.length;
   let resultat = "";
   try {
-    await executerScriptLocal(code);
+    // Le service possede sa propre console interne. Ses marqueurs EXECUTION/FIN et son
+    // invite ne doivent pas etre renvoyes a la console de l'application, sinon on obtient
+    // deux "=== EXECUTION ===" et aucun invite utilisable. Le service ne remonte ici que
+    // la sortie reelle produite par le script.
+    await executerScriptLocal(code, {
+      afficherConsoleExecution: false,
+      afficherMarqueursExecution: false,
+      afficherInviteExecution: false
+    });
     let lignes = Array.from(outputDiv.children).slice(debutSortie);
     resultat = lignes.map(el => el.innerText).join("\n");
     return resultat;
