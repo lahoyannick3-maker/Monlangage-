@@ -231,10 +231,26 @@ import java.util.Arrays;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.lang.ref.WeakReference;
 
 // Implementation native UNIQUE partagee entre MainActivity et MonLangageService.
 // activity peut etre null lorsque le bridge est utilise par la WebView headless du service.
 public class MonLangageBridge {
+    // Activity principale actuellement visible. Le service peut ainsi remettre une
+    // commande UI a l'editeur lorsqu'il est au premier plan, sans tenter de lancer
+    // une Activity depuis un contexte d'arriere-plan. WeakReference evite de retenir
+    // l'Activity apres sa destruction.
+    private static WeakReference<Activity> activitePrincipale = new WeakReference<>(null);
+
+    public static void definirActivitePrincipale(Activity activity) {
+        activitePrincipale = new WeakReference<>(activity);
+    }
+
+    public static void effacerActivitePrincipale(Activity activity) {
+        Activity actuelle = activitePrincipale.get();
+        if (actuelle == activity) activitePrincipale = new WeakReference<>(null);
+    }
+
     protected final Context context;
     protected final Activity activity;
 
@@ -249,18 +265,45 @@ public class MonLangageBridge {
     }
 
     private boolean ouvrirActiviteOuNotification(Intent intent, String titre) {
-        try {
-            if (activity != null) {
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                activity.startActivity(intent);
-                return true;
-            }
-        } catch (Exception ignored) { }
+        // Cas 1 : bridge directement rattache a MainActivity.
+        if (activity != null) {
+            activity.runOnUiThread(() -> {
+                try {
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    activity.startActivity(intent);
+                } catch (Exception ignored) {
+                    publierNotificationAction(intent, titre);
+                }
+            });
+            return true;
+        }
 
+        // Cas 2 : le script tourne dans la WebView headless du service, mais l'editeur
+        // MonLangage est actuellement visible. On utilise l'Activity deja au premier
+        // plan afin que whatsapp.ouvrir() appele par RUN puisse ouvrir WhatsApp.
+        Activity activiteVisible = activitePrincipale.get();
+        if (activiteVisible != null) {
+            activiteVisible.runOnUiThread(() -> {
+                try {
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    activiteVisible.startActivity(intent);
+                } catch (Exception ignored) {
+                    publierNotificationAction(intent, titre);
+                }
+            });
+            return true;
+        }
+
+        // Cas 3 : aucune interface disponible. Repli non bloquant par notification.
+        publierNotificationAction(intent, titre);
+        return true;
+    }
+
+    private void publierNotificationAction(Intent intent, String titre) {
         try {
             int id = (int) (System.currentTimeMillis() & 0x7fffffff);
             NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm == null) return false;
+            if (nm == null) return;
             final String canalId = "monlangage_actions";
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 nm.createNotificationChannel(new NotificationChannel(canalId, "Actions MonLangage", NotificationManager.IMPORTANCE_HIGH));
@@ -276,12 +319,10 @@ public class MonLangageBridge {
              .setContentIntent(pi)
              .setAutoCancel(true);
             nm.notify(id, b.build());
-            return true;
-        } catch (Exception e) {
-            return false;
+        } catch (Exception ignored) {
+            // Une commande UI ne doit jamais bloquer l'execution du script MLG.
         }
     }
-
 
 
         // Chemin du dossier racine a partir duquel commence la navigation
@@ -877,7 +918,20 @@ public class MainActivity extends BridgeActivity {
         Intent serviceIntent = new Intent(MainActivity.this, MonLangageService.class);
         serviceIntent.setAction(MonLangageService.ACTION_START);
         androidx.core.content.ContextCompat.startForegroundService(MainActivity.this, serviceIntent);
+        MonLangageBridge.definirActivitePrincipale(MainActivity.this);
         traiterIntentOuverture(getIntent());
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        MonLangageBridge.definirActivitePrincipale(MainActivity.this);
+    }
+
+    @Override
+    protected void onStop() {
+        MonLangageBridge.effacerActivitePrincipale(MainActivity.this);
+        super.onStop();
     }
 
     @Override
