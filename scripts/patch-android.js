@@ -62,6 +62,19 @@ if (!manifest.includes('FOREGROUND_SERVICE"')) {
   console.log('[patch-android] AndroidManifest.xml : permissions service arriere-plan ajoutees.');
 }
 
+// PARTIAL_WAKE_LOCK : necessaire pendant l'execution d'un script pour que le CPU
+// puisse continuer a executer la WebView meme lorsque l'ecran est eteint ou que
+// Android entre en mode Doze. Le verrou n'est acquis que pendant un script actif
+// et est relache des que le script termine/est arrete : le service reste donc
+// "En veille" sans maintenir inutilement le CPU eveille.
+const permissionWakeLock =
+`    <uses-permission android:name="android.permission.WAKE_LOCK" />
+`;
+if (!manifest.includes('android.permission.WAKE_LOCK')) {
+  manifest = manifest.replace('<application', permissionWakeLock + '\n    <application');
+  console.log('[patch-android] AndroidManifest.xml : permission WAKE_LOCK ajoutee.');
+}
+
 // Permissions necessaires pour connexion.disponible()/connexion.type() (ACCESS_NETWORK_STATE,
 // permission "normale" sans popup), batterie.niveau()/batterie.encharge() (aucune permission
 // requise), et sms.recus()/sms.envoyer() (READ_SMS/SEND_SMS, permissions "dangereuses" :
@@ -184,27 +197,25 @@ const filePathsContent = `<?xml version="1.0" encoding="utf-8"?>
 fs.writeFileSync(filePathsPath, filePathsContent);
 console.log('[patch-android] res/xml/file_paths.xml : ecrit (partager.fichier()).');
 
-/* ---------- 2) MainActivity.java ---------- */
-const mainActivityDir = path.join('android', 'app', 'src', 'main', 'java', ...appId.split('.'));
-const mainActivityPath = path.join(mainActivityDir, 'MainActivity.java');
-
-const mainActivityContent = `package ${appId};
+/* ---------- 2) MonLangageBridge.java : implementation native partagee ---------- */
+const bridgeDir = path.join('android', 'app', 'src', 'main', 'java', ...appId.split('.'));
+fs.mkdirSync(bridgeDir, { recursive: true });
+const monLangageBridgeContent = `package ${appId};
 
 import android.app.Activity;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.app.PendingIntent;
-import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.net.Uri;
 import android.os.Build;
-import android.os.Bundle;
 import android.os.Environment;
 import android.provider.Settings;
 import android.webkit.JavascriptInterface;
 import android.webkit.MimeTypeMap;
 import androidx.core.content.FileProvider;
-import com.getcapacitor.BridgeActivity;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.BufferedReader;
@@ -219,32 +230,57 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-// Activite Android native de MonLangage.
-// Fournit un pont JavaScript (window.MonLangage) qui donne un acces direct au
-// stockage de l'appareil (pas de selecteur systeme Android) : l'editeur affiche
-// son propre navigateur de dossiers, dans le style de l'app.
-public class MainActivity extends BridgeActivity {
+// Implementation native UNIQUE partagee entre MainActivity et MonLangageService.
+// activity peut etre null lorsque le bridge est utilise par la WebView headless du service.
+public class MonLangageBridge {
+    protected final Context context;
+    protected final Activity activity;
 
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        getBridge().getWebView().addJavascriptInterface(new MonLangageBridge(), "MonLangage");
-        // Le service est une infrastructure de l'application : il demarre automatiquement
-        // a l'ouverture de MonLangage. Aucune commande MLG n'est necessaire pour l'activer.
-        Intent serviceIntent = new Intent(MainActivity.this, MonLangageService.class);
-        serviceIntent.setAction(MonLangageService.ACTION_START);
-        androidx.core.content.ContextCompat.startForegroundService(MainActivity.this, serviceIntent);
-        traiterIntentOuverture(getIntent());
+    public MonLangageBridge(Context context, Activity activity) {
+        this.context = context.getApplicationContext();
+        this.activity = activity;
     }
 
-    @Override
-    protected void onNewIntent(Intent intent) {
-        super.onNewIntent(intent);
-        setIntent(intent);
-        traiterIntentOuverture(intent);
+    private void runOnUiThread(Runnable action) {
+        if (activity != null) activity.runOnUiThread(action);
+        else new android.os.Handler(android.os.Looper.getMainLooper()).post(action);
     }
 
-    private class MonLangageBridge {
+    private boolean ouvrirActiviteOuNotification(Intent intent, String titre) {
+        try {
+            if (activity != null) {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                activity.startActivity(intent);
+                return true;
+            }
+        } catch (Exception ignored) { }
+
+        try {
+            int id = (int) (System.currentTimeMillis() & 0x7fffffff);
+            NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return false;
+            final String canalId = "monlangage_actions";
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                nm.createNotificationChannel(new NotificationChannel(canalId, "Actions MonLangage", NotificationManager.IMPORTANCE_HIGH));
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            PendingIntent pi = PendingIntent.getActivity(context, id, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            Notification.Builder b = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? new Notification.Builder(context, canalId) : new Notification.Builder(context);
+            b.setContentTitle("MonLangage")
+             .setContentText(titre + " — appuyez pour continuer")
+             .setSmallIcon(android.R.drawable.ic_dialog_info)
+             .setContentIntent(pi)
+             .setAutoCancel(true);
+            nm.notify(id, b.build());
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+
 
         // Chemin du dossier racine a partir duquel commence la navigation
         // (stockage partage de l'appareil).
@@ -267,14 +303,14 @@ public class MainActivity extends BridgeActivity {
         // navigateur de fichiers elle-meme.
         @JavascriptInterface
         public void demanderPermissionStockage() {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return;
+            if (activity == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return;
             runOnUiThread(() -> {
                 try {
                     Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
-                    intent.setData(Uri.parse("package:" + getPackageName()));
-                    startActivity(intent);
+                    intent.setData(Uri.parse("package:" + context.getPackageName()));
+                    activity.startActivity(intent);
                 } catch (Exception e) {
-                    startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                    activity.startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
                 }
             });
         }
@@ -284,7 +320,7 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public boolean permissionNotificationsAccordee() {
             if (Build.VERSION.SDK_INT >= 33) {
-                return checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                return context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
                     == android.content.pm.PackageManager.PERMISSION_GRANTED;
             }
             return true;
@@ -294,9 +330,9 @@ public class MainActivity extends BridgeActivity {
         // Android 13+ uniquement -- ne fait rien avant).
         @JavascriptInterface
         public void demanderPermissionNotifications() {
-            if (Build.VERSION.SDK_INT < 33) return;
+            if (activity == null || Build.VERSION.SDK_INT < 33) return;
             runOnUiThread(() ->
-                requestPermissions(new String[] { android.Manifest.permission.POST_NOTIFICATIONS }, 2001)
+                activity.requestPermissions(new String[] { android.Manifest.permission.POST_NOTIFICATIONS }, 2001)
             );
         }
 
@@ -307,7 +343,7 @@ public class MainActivity extends BridgeActivity {
         public boolean envoyerNotification(String message) {
             try {
                 android.app.NotificationManager gestionnaire =
-                    (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                    (android.app.NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
                 if (gestionnaire == null) return false;
 
                 final String canalId = "monlangage_notif";
@@ -318,17 +354,17 @@ public class MainActivity extends BridgeActivity {
                 }
 
                 int id = (int) (System.currentTimeMillis() & 0x7fffffff);
-                Intent ouvrirApp = getPackageManager().getLaunchIntentForPackage(getPackageName());
+                Intent ouvrirApp = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
                 android.app.PendingIntent contenuIntent = null;
                 if (ouvrirApp != null) {
                     contenuIntent = android.app.PendingIntent.getActivity(
-                        MainActivity.this, id, ouvrirApp,
+                        context, id, ouvrirApp,
                         android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
                 }
 
                 android.app.Notification.Builder constructeur = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                    ? new android.app.Notification.Builder(MainActivity.this, canalId)
-                    : new android.app.Notification.Builder(MainActivity.this);
+                    ? new android.app.Notification.Builder(context, canalId)
+                    : new android.app.Notification.Builder(context);
                 constructeur.setContentTitle("MonLangage")
                             .setContentText(message)
                             .setSmallIcon(android.R.drawable.ic_dialog_info)
@@ -348,7 +384,7 @@ public class MainActivity extends BridgeActivity {
         public boolean permissionAlarmeExacteAccordee() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 android.app.AlarmManager gestionnaireAlarmes =
-                    (android.app.AlarmManager) getSystemService(ALARM_SERVICE);
+                    (android.app.AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
                 return gestionnaireAlarmes.canScheduleExactAlarms();
             }
             return true;
@@ -358,12 +394,12 @@ public class MainActivity extends BridgeActivity {
         // (Android 12+ uniquement -- ne fait rien avant).
         @JavascriptInterface
         public void demanderPermissionAlarmeExacte() {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return;
+            if (activity == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return;
             runOnUiThread(() -> {
                 try {
                     Intent intent = new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
-                    intent.setData(Uri.parse("package:" + getPackageName()));
-                    startActivity(intent);
+                    intent.setData(Uri.parse("package:" + context.getPackageName()));
+                    activity.startActivity(intent);
                 } catch (Exception ignored) { }
             });
         }
@@ -376,7 +412,7 @@ public class MainActivity extends BridgeActivity {
         // nouveau sur le meme jour/heure/minute remplace le message existant.
         @JavascriptInterface
         public void planifierAlarme(int jourSemaine, int heure, int minute, String message) {
-            AlarmScheduler.programmer(MainActivity.this, jourSemaine, heure, minute, message);
+            AlarmScheduler.programmer(context, jourSemaine, heure, minute, message);
         }
 
         // planifier.annuler(jourSemaine, heure, minute) cote MonLangage : annule une alarme
@@ -384,14 +420,14 @@ public class MainActivity extends BridgeActivity {
         // etait effectivement programme (et a donc ete annule), FAUX sinon.
         @JavascriptInterface
         public boolean annulerAlarme(int jourSemaine, int heure, int minute) {
-            return AlarmScheduler.annuler(MainActivity.this, jourSemaine, heure, minute);
+            return AlarmScheduler.annuler(context, jourSemaine, heure, minute);
         }
 
         // planifier.liste() cote MonLangage : liste toutes les alarmes actuellement
         // programmees, en JSON.
         @JavascriptInterface
         public String listerAlarmes() {
-            return AlarmScheduler.listerJson(MainActivity.this);
+            return AlarmScheduler.listerJson(context);
         }
 
         // connexion.disponible() cote MonLangage : VRAI si une connexion internet (wifi ou
@@ -401,7 +437,7 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public boolean connexionDisponible() {
             android.net.ConnectivityManager gestionnaireReseau =
-                (android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+                (android.net.ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
             if (gestionnaireReseau == null) return false;
             android.net.Network reseauActif = gestionnaireReseau.getActiveNetwork();
             if (reseauActif == null) return false;
@@ -416,7 +452,7 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public String connexionType() {
             android.net.ConnectivityManager gestionnaireReseau =
-                (android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+                (android.net.ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
             if (gestionnaireReseau == null) return "aucune";
             android.net.Network reseauActif = gestionnaireReseau.getActiveNetwork();
             if (reseauActif == null) return "aucune";
@@ -433,7 +469,7 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public int batterieNiveau() {
             android.os.BatteryManager gestionnaireBatterie =
-                (android.os.BatteryManager) getSystemService(BATTERY_SERVICE);
+                (android.os.BatteryManager) context.getSystemService(Context.BATTERY_SERVICE);
             if (gestionnaireBatterie == null) return -1;
             return gestionnaireBatterie.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY);
         }
@@ -454,7 +490,7 @@ public class MainActivity extends BridgeActivity {
         // requis, popup systeme).
         @JavascriptInterface
         public boolean permissionSmsLectureAccordee() {
-            return checkSelfPermission(android.Manifest.permission.READ_SMS)
+            return context.checkSelfPermission(android.Manifest.permission.READ_SMS)
                 == android.content.pm.PackageManager.PERMISSION_GRANTED;
         }
 
@@ -462,8 +498,9 @@ public class MainActivity extends BridgeActivity {
         // systeme).
         @JavascriptInterface
         public void demanderPermissionSmsLecture() {
+            if (activity == null) return;
             runOnUiThread(() ->
-                requestPermissions(new String[] { android.Manifest.permission.READ_SMS }, 2002)
+                activity.requestPermissions(new String[] { android.Manifest.permission.READ_SMS }, 2002)
             );
         }
 
@@ -471,15 +508,16 @@ public class MainActivity extends BridgeActivity {
         // systeme).
         @JavascriptInterface
         public boolean permissionSmsEnvoiAccordee() {
-            return checkSelfPermission(android.Manifest.permission.SEND_SMS)
+            return context.checkSelfPermission(android.Manifest.permission.SEND_SMS)
                 == android.content.pm.PackageManager.PERMISSION_GRANTED;
         }
 
         // Demande la permission d'envoi de SMS a l'utilisateur (boite de dialogue systeme).
         @JavascriptInterface
         public void demanderPermissionSmsEnvoi() {
+            if (activity == null) return;
             runOnUiThread(() ->
-                requestPermissions(new String[] { android.Manifest.permission.SEND_SMS }, 2003)
+                activity.requestPermissions(new String[] { android.Manifest.permission.SEND_SMS }, 2003)
             );
         }
 
@@ -500,7 +538,7 @@ public class MainActivity extends BridgeActivity {
             String selection = android.provider.Telephony.Sms.DATE + " >= ?";
             String[] argsSelection = { String.valueOf(seuil) };
             String tri = android.provider.Telephony.Sms.DATE + " DESC";
-            try (android.database.Cursor curseur = getContentResolver().query(
+            try (android.database.Cursor curseur = context.getContentResolver().query(
                     uriBoite, colonnes, selection, argsSelection, tri)) {
                 if (curseur != null) {
                     int iAdresse = curseur.getColumnIndex(android.provider.Telephony.Sms.ADDRESS);
@@ -526,15 +564,16 @@ public class MainActivity extends BridgeActivity {
         // choisir explicitement une SIM avec sms.envoyer(numero, message, sim)).
         @JavascriptInterface
         public boolean permissionTelephoneAccordee() {
-            return checkSelfPermission(android.Manifest.permission.READ_PHONE_STATE)
+            return context.checkSelfPermission(android.Manifest.permission.READ_PHONE_STATE)
                 == android.content.pm.PackageManager.PERMISSION_GRANTED;
         }
 
         // Demande la permission de lecture d'etat telephone (boite de dialogue systeme).
         @JavascriptInterface
         public void demanderPermissionTelephone() {
+            if (activity == null) return;
             runOnUiThread(() ->
-                requestPermissions(new String[] { android.Manifest.permission.READ_PHONE_STATE }, 2004)
+                activity.requestPermissions(new String[] { android.Manifest.permission.READ_PHONE_STATE }, 2004)
             );
         }
 
@@ -553,7 +592,7 @@ public class MainActivity extends BridgeActivity {
                 if (sim == 1 || sim == 2) {
                     if (!permissionTelephoneAccordee()) return false;
                     android.telephony.SubscriptionManager subscriptions =
-                        (android.telephony.SubscriptionManager) getSystemService(TELEPHONY_SUBSCRIPTION_SERVICE);
+                        (android.telephony.SubscriptionManager) context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE);
                     if (subscriptions == null) return false;
                     android.telephony.SubscriptionInfo info =
                         subscriptions.getActiveSubscriptionInfoForSimSlotIndex(sim - 1);
@@ -589,12 +628,12 @@ public class MainActivity extends BridgeActivity {
                 if (parties.size() > 1) {
                     ArrayList<PendingIntent> intentsEnvoi = new ArrayList<>();
                     for (int i = 0; i < parties.size(); i++) {
-                        intentsEnvoi.add(PendingIntent.getBroadcast(MainActivity.this, i,
+                        intentsEnvoi.add(PendingIntent.getBroadcast(context, i,
                             new Intent(action), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE));
                     }
                     gestionnaireSms.sendMultipartTextMessage(numero, null, parties, intentsEnvoi, null);
                 } else {
-                    PendingIntent intentEnvoi = PendingIntent.getBroadcast(MainActivity.this, 0,
+                    PendingIntent intentEnvoi = PendingIntent.getBroadcast(context, 0,
                         new Intent(action), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
                     gestionnaireSms.sendTextMessage(numero, null, message, intentEnvoi, null);
                 }
@@ -619,12 +658,11 @@ public class MainActivity extends BridgeActivity {
         // l'indicatif pays (ex: 33612345678 pour la France, sans le 0 initial).
         @JavascriptInterface
         public void ouvrirWhatsapp() {
-            Intent intent = getPackageManager().getLaunchIntentForPackage("com.whatsapp");
+            Intent intent = context.getPackageManager().getLaunchIntentForPackage("com.whatsapp");
             if (intent == null) {
                 intent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://www.whatsapp.com/"));
             }
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(intent);
+            ouvrirActiviteOuNotification(intent, "Ouvrir WhatsApp");
         }
 
         @JavascriptInterface
@@ -632,7 +670,7 @@ public class MainActivity extends BridgeActivity {
             String numeroPropre = numero.replaceAll("[^0-9]", "");
             String url = "https://wa.me/" + numeroPropre + "?text=" + Uri.encode(message);
             Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-            startActivity(intent);
+            ouvrirActiviteOuNotification(intent, "Ouvrir WhatsApp");
         }
 
         // messenger.ouvrir(destinataire, message) cote MonLangage : meme principe que
@@ -643,7 +681,7 @@ public class MainActivity extends BridgeActivity {
         public void ouvrirMessenger(String destinataire, String message) {
             String url = "https://m.me/" + Uri.encode(destinataire) + "?text=" + Uri.encode(message);
             Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-            startActivity(intent);
+            ouvrirActiviteOuNotification(intent, "Ouvrir Messenger");
         }
 
         // partager.fichier(chemin) cote MonLangage : ouvre le selecteur de partage standard
@@ -657,8 +695,8 @@ public class MainActivity extends BridgeActivity {
                 File fichier = new File(cheminComplet);
                 if (!fichier.exists() || !fichier.isFile()) return false;
                 android.net.Uri uriFichier = FileProvider.getUriForFile(
-                    MainActivity.this, getPackageName() + ".fileprovider", fichier);
-                String type = getContentResolver().getType(uriFichier);
+                    context, context.getPackageName() + ".fileprovider", fichier);
+                String type = context.getContentResolver().getType(uriFichier);
                 if (type == null) {
                     String extension = MimeTypeMap.getFileExtensionFromUrl(fichier.getAbsolutePath());
                     type = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
@@ -668,7 +706,7 @@ public class MainActivity extends BridgeActivity {
                 intent.setType(type);
                 intent.putExtra(Intent.EXTRA_STREAM, uriFichier);
                 intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                startActivity(Intent.createChooser(intent, null));
+                ouvrirActiviteOuNotification(Intent.createChooser(intent, null), "Partager le fichier");
                 return true;
             } catch (Exception e) {
                 return false;
@@ -781,6 +819,75 @@ public class MainActivity extends BridgeActivity {
             }
         }
 
+
+}
+`;
+fs.writeFileSync(path.join(bridgeDir, 'MonLangageBridge.java'), monLangageBridgeContent);
+console.log('[patch-android] MonLangageBridge.java ecrit (implementation native partagee).');
+
+/* ---------- 2) MainActivity.java ---------- */
+const mainActivityDir = path.join('android', 'app', 'src', 'main', 'java', ...appId.split('.'));
+const mainActivityPath = path.join(mainActivityDir, 'MainActivity.java');
+
+const mainActivityContent = `package ${appId};
+
+import android.app.Activity;
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Environment;
+import android.provider.Settings;
+import android.webkit.JavascriptInterface;
+import android.webkit.MimeTypeMap;
+import androidx.core.content.FileProvider;
+import com.getcapacitor.BridgeActivity;
+import org.json.JSONArray;
+import org.json.JSONObject;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+// Activite Android native de MonLangage.
+// Fournit un pont JavaScript (window.MonLangage) qui donne un acces direct au
+// stockage de l'appareil (pas de selecteur systeme Android) : l'editeur affiche
+// son propre navigateur de dossiers, dans le style de l'app.
+public class MainActivity extends BridgeActivity {
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        getBridge().getWebView().addJavascriptInterface(new MainActivityBridge(), "MonLangage");
+        // Le service est une infrastructure de l'application : il demarre automatiquement
+        // a l'ouverture de MonLangage. Aucune commande MLG n'est necessaire pour l'activer.
+        Intent serviceIntent = new Intent(MainActivity.this, MonLangageService.class);
+        serviceIntent.setAction(MonLangageService.ACTION_START);
+        androidx.core.content.ContextCompat.startForegroundService(MainActivity.this, serviceIntent);
+        traiterIntentOuverture(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        traiterIntentOuverture(intent);
+    }
+
+    private class MainActivityBridge extends MonLangageBridge {
+        MainActivityBridge() { super(MainActivity.this, MainActivity.this); }
+
         // service.demarrer() cote MonLangage : demarre MonLangageService (notification
         // persistante "MonLangage actif" + bouton Arreter, comme Termux). Sans effet si
         // deja demarre.
@@ -837,7 +944,7 @@ public class MainActivity extends BridgeActivity {
             intent.setAction(MonLangageService.ACTION_STOP);
             startService(intent);
         }
-    }
+        }
 
     private void envoyerTexteAuWebView(String texte, String nom) {
         String texteEchappe = JSONObject.quote(texte);
@@ -1180,7 +1287,9 @@ console.log('[patch-android] AlarmScheduler.java / AlarmReceiver.java / BootRece
 // variables/fonctions entre eux, exactement comme s'ils avaient ete lances separement
 // depuis l'editeur. Un seul script peut neanmoins contenir une boucle infinie ou un
 // traitement long : il continue de tourner en arriere-plan jusqu'a sa fin ou jusqu'a
-// l'arret du service.
+// l'arret du service. Pendant cette execution, un PARTIAL_WAKE_LOCK est tenu par le
+// service afin que les timers JavaScript de fonctions comme attendre() continuent a
+// progresser meme ecran eteint / en mode Doze. Le verrou est libere des la fin du script.
 //
 // exported="true" sur la declaration <service> (AndroidManifest.xml) : n'importe
 // quelle app externe, ou un "adb shell am start-service" / "am start-service" depuis
@@ -1200,6 +1309,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import java.util.ArrayDeque;
@@ -1222,6 +1332,30 @@ public class MonLangageService extends Service {
     private boolean webViewPrete = false;
     private boolean scriptActif = false;
     private int compteurExecutions = 0;
+
+    // Garde le CPU eveille pendant un script actif, y compris pendant attendre(...).
+    // Un foreground service seul ne garantit pas que les timers JavaScript continuent
+    // normalement lorsque l'ecran est eteint / que Doze suspend le CPU.
+    private PowerManager.WakeLock wakeLockScript;
+
+    private void acquerirWakeLockScript() {
+        if (wakeLockScript != null && wakeLockScript.isHeld()) return;
+        PowerManager gestionnaire = (PowerManager) getSystemService(POWER_SERVICE);
+        if (gestionnaire == null) return;
+        wakeLockScript = gestionnaire.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            getPackageName() + ":MonLangageScript"
+        );
+        wakeLockScript.setReferenceCounted(false);
+        wakeLockScript.acquire();
+    }
+
+    private void libererWakeLockScript() {
+        if (wakeLockScript != null && wakeLockScript.isHeld()) {
+            try { wakeLockScript.release(); } catch (Exception ignored) {}
+        }
+        wakeLockScript = null;
+    }
     // Scripts recus (via envoyerScriptService() ou depuis l'exterieur) avant que la
     // WebView headless ait fini de charger index.html : mis en attente, executes des
     // que webViewPrete passe a vrai.
@@ -1255,6 +1389,7 @@ public class MonLangageService extends Service {
                 compteurExecutions++;
                 int idExecution = compteurExecutions;
                 scriptActif = true;
+                acquerirWakeLockScript();
                 getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
                     .putBoolean("script_actif", true)
                     .putInt("execution_active_id", idExecution)
@@ -1275,11 +1410,10 @@ public class MonLangageService extends Service {
         webView.getSettings().setJavaScriptEnabled(true);
         webView.getSettings().setDomStorageEnabled(true);
         webView.addJavascriptInterface(new ServiceJavascriptBridge(), "MonLangageServiceNative");
-        // Le moteur MLG utilise window.MonLangage pour ses commandes natives.
-        // La WebView du service est independante de MainActivity : elle doit donc
-        // recevoir son propre pont natif. Sans ce pont, notif.envoyer() echoue
-        // avec "disponible uniquement dans l'app installee".
-        webView.addJavascriptInterface(new ServiceMonLangageBridge(), "MonLangage");
+        // Le moteur MLG utilise exactement la meme implementation native que MainActivity.
+        // activity=null signifie que la WebView est headless : les capacites non-UI restent
+        // disponibles et les actions qui exigent une interface utilisent le repli notification.
+        webView.addJavascriptInterface(new MonLangageBridge(this, null), "MonLangage");
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
@@ -1298,6 +1432,7 @@ public class MonLangageService extends Service {
             compteurExecutions++;
             int idExecution = compteurExecutions;
             scriptActif = true;
+            acquerirWakeLockScript();
             getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
                 .putBoolean("script_actif", true)
                 .putInt("execution_active_id", idExecution)
@@ -1325,6 +1460,7 @@ public class MonLangageService extends Service {
         int idExecution = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             .getInt("execution_active_id", compteurExecutions);
         scriptActif = false;
+        libererWakeLockScript();
         sauvegarderResultat(idExecution, resultat);
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
             .putBoolean("script_actif", false)
@@ -1339,71 +1475,6 @@ public class MonLangageService extends Service {
         webView.evaluateJavascript("window.arreterExecutionExterne && window.arreterExecutionExterne();", null);
     }
 
-    /**
-     * Pont natif minimal necessaire au moteur MLG lorsqu'il tourne dans la WebView
-     * headless du service.
-     *
-     * Il est volontairement nomme "MonLangage" car les fonctions natives MLG
-     * (dont notif.envoyer) consultent window.MonLangage.
-     */
-    private class ServiceMonLangageBridge {
-        @android.webkit.JavascriptInterface
-        public boolean permissionNotificationsAccordee() {
-            if (Build.VERSION.SDK_INT >= 33) {
-                return checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
-                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
-            }
-            return true;
-        }
-
-        @android.webkit.JavascriptInterface
-        public void demanderPermissionNotifications() {
-            // Une WebView headless ne peut pas afficher une demande de permission.
-            // La permission doit etre accordee depuis l'interface principale.
-        }
-
-        @android.webkit.JavascriptInterface
-        public boolean envoyerNotification(String message) {
-            try {
-                NotificationManager gestionnaire =
-                    (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-                if (gestionnaire == null) return false;
-
-                final String canalId = "monlangage_notif";
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    NotificationChannel canal = new NotificationChannel(
-                        canalId, "Notifications MonLangage",
-                        NotificationManager.IMPORTANCE_DEFAULT);
-                    gestionnaire.createNotificationChannel(canal);
-                }
-
-                int id = (int) (System.currentTimeMillis() & 0x7fffffff);
-                Intent ouvrirApp = getPackageManager().getLaunchIntentForPackage(getPackageName());
-                PendingIntent contenuIntent = null;
-                if (ouvrirApp != null) {
-                    contenuIntent = PendingIntent.getActivity(
-                        MonLangageService.this, id, ouvrirApp,
-                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-                }
-
-                Notification.Builder constructeur =
-                    (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                    ? new Notification.Builder(MonLangageService.this, canalId)
-                    : new Notification.Builder(MonLangageService.this);
-
-                constructeur.setContentTitle("MonLangage")
-                    .setContentText(message)
-                    .setSmallIcon(android.R.drawable.ic_dialog_info)
-                    .setAutoCancel(true);
-
-                if (contenuIntent != null) constructeur.setContentIntent(contenuIntent);
-                gestionnaire.notify(id, constructeur.build());
-                return true;
-            } catch (Exception e) {
-                return false;
-            }
-        }
-    }
 
     private class ServiceJavascriptBridge {
         @android.webkit.JavascriptInterface
@@ -1439,6 +1510,7 @@ public class MonLangageService extends Service {
 
     private void arreter() {
         scriptActif = false;
+        libererWakeLockScript();
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
             .putBoolean("script_actif", false).remove("execution_active_id").apply();
         if (webView != null) {
