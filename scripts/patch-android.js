@@ -923,13 +923,13 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
-    protected void onResume() {
+    public void onResume() {
         super.onResume();
         MonLangageBridge.definirActivitePrincipale(MainActivity.this);
     }
 
     @Override
-    protected void onStop() {
+    public void onStop() {
         MonLangageBridge.effacerActivitePrincipale(MainActivity.this);
         super.onStop();
     }
