@@ -1389,6 +1389,11 @@ public class MonLangageService extends Service {
     private boolean webViewPrete = false;
     private boolean scriptActif = false;
     private int compteurExecutions = 0;
+    // Pose par arreter.service.arriere() cote MLG lorsqu'un script demande l'arret du
+    // service. Lu UNE SEULE FOIS, a la toute fin naturelle du script qui l'a demande
+    // (dans terminerScript ci-dessous) : si le script plante avant d'atteindre cette
+    // commande, le drapeau n'est jamais pose et le service reste actif comme avant.
+    private volatile boolean arretApresScriptDemande = false;
 
     // Garde le CPU eveille pendant un script actif, y compris pendant attendre(...).
     // Un foreground service seul ne garantit pas que les timers JavaScript continuent
@@ -1524,6 +1529,14 @@ public class MonLangageService extends Service {
             .remove("execution_active_id")
             .apply();
         afficherNotificationResultat(idExecution, resultat);
+        // arreter.service.arriere() : le script qui vient de finir a demande l'arret --
+        // on le fait maintenant (resultat deja publie/notifie), au lieu de repasser en
+        // veille. Le drapeau est consomme ici, une seule fois.
+        if (arretApresScriptDemande) {
+            arretApresScriptDemande = false;
+            arreter();
+            return;
+        }
         mettreAJourNotification("En veille");
     }
 
@@ -1537,6 +1550,18 @@ public class MonLangageService extends Service {
         @android.webkit.JavascriptInterface
         public void executionTerminee(String resultat) {
             runOnMainThread(() -> terminerScript(resultat == null ? "" : resultat));
+        }
+
+        // Appelee par arreter.service.arriere() cote MLG quand ce code tourne DANS le
+        // service (script lance via RUN, execute dans la webview headless). Ne fait que
+        // poser le drapeau -- ne detruit surtout pas la webview ici : on est en plein
+        // milieu de l'appel JS qui vient de faire ce call, la detruire maintenant
+        // reviendrait a couper la branche sur laquelle ce meme script est assis.
+        // L'arret reel a lieu plus tard, dans terminerScript(), une fois le script
+        // reellement termine.
+        @android.webkit.JavascriptInterface
+        public void demanderArretApresScript() {
+            arretApresScriptDemande = true;
         }
     }
 
