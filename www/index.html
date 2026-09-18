@@ -4082,7 +4082,7 @@ async function chargerModule(chemin, alias, ligneErreur) {
 }
 
 // Enregistre "alias.nom(...)" comme un appel valide, en reutilisant EXACTEMENT le mecanisme
-// deja utilise par les fonctions integrees a prefixe (ecrire.fichier, conver.nombr, entr.secret...) :
+// deja utilise par les fonctions integrees a prefixe (ecrire.fichier, conver.texte.nombr, entr.secret...) :
 // une simple clef avec un point dans fonctionsBase/fonctionsExpression. Rien d'autre a changer
 // dans le moteur -- ni le tokenizer, ni l'evaluateur d'expressions ne voient jamais la difference.
 function enregistrerAppelableModule(alias, nom, type, moduleEnv) {
@@ -4347,13 +4347,15 @@ let aideCommandes = [
       "reel(x) : nombre normal (flottant) ; depuis un grand entier, peut perdre en precision au-dela de 2^53.",
       "Voir aussi est.enti(...)/est.reel(...) pour verifier le type, natu(...) pour l'obtenir en texte."
     ], exemple: "entier(2) ^ entier(100)   ->   1267650600228229401496703205376  (exact)\nreel(entier(5))            ->   5" },
-  { noms: ["conver.nombr", "conver.text", "conver.vecteu", "conver.matric"], categorie: "Base", syntaxe: "conver.nombr(var) / conver.text(var) / conver.vecteu(var) / conver.matric(var)", description: [
-      "Convertit var vers un autre type.",
-      "conver.nombr(var) : convertit en nombre (un texte comme |3.5| devient 3.5 ; VRAI/FAUX deviennent 1/0). Erreur si le texte n'est pas un nombre valide.",
-      "conver.text(var) : convertit en texte (un nombre ou un booleen devient sa version texte, ex: VRAI -> |VRAI|).",
-      "conver.vecteu(var) : convertit en vecteur. Une matrice devient un vecteur de tous ses elements. Un nombre/texte/booleen devient un vecteur a 1 element.",
-      "conver.matric(var) : convertit en matrice. Un vecteur devient une matrice a 1 colonne. Un nombre/texte/booleen devient une matrice 1x1."
-    ], exemple: "conver.nombr(|3.5|)   ->   3.5\nconver.text(42)       ->   |42|\nconver.vecteu(matrice(1:4, nlig~2, ncol~2))   ->   c(1,2,3,4)\nconver.matric(c(1,2,3))   ->   matrice 3x1" },
+  { noms: ["conver.texte.texte", "conver.booleen.booleen", "conver.nombr.nombr", "conver.vecteu.vecteu", "conver.matric.matric", "conver.liste.liste", "conver.texte.nombr", "conver.booleen.nombr", "conver.nombr.texte", "conver.booleen.texte", "conver.nombr.booleen", "conver.texte.booleen", "conver.texte.vecteu", "conver.booleen.vecteu", "conver.nombr.vecteu", "conver.texte.matric", "conver.booleen.matric", "conver.nombr.matric", "conver.texte.liste", "conver.booleen.liste", "conver.nombr.liste", "conver.vecteu.nombr", "conver.matric.nombr", "conver.liste.nombr", "conver.vecteu.matric", "conver.matric.vecteu", "conver.vecteu.liste", "conver.liste.vecteu", "conver.liste.matric", "conver.matric.liste"], categorie: "Base", syntaxe: "conver.source.cible(valeur)", description: [
+      "Convertit valeur d'un type vers un autre, avec la forme generale conver.source.cible(valeur) -- une fonction par couple, verifiant STRICTEMENT que valeur est bien du type source annonce (erreur sinon, jamais de conversion \"multi-source\" implicite).",
+      "Types geres : texte, booleen, nombr, vecteu, matric, liste. entier(...)/reel(...) restent des fonctions a part (voir plus haut), non couvertes par ce principe.",
+      "Identites (conver.texte.texte, conver.nombr.nombr, ...) : renvoient la valeur telle quelle si le type correspond.",
+      "Entre scalaires : conver.texte.nombr / conver.booleen.nombr (texte comme |3.5| -> 3.5 ; VRAI/FAUX -> 1/0) ; conver.nombr.texte / conver.booleen.texte (-> texte, ex: VRAI -> |VRAI|) ; conver.nombr.booleen (0 -> FAUX, tout le reste -> VRAI) ; conver.texte.booleen (uniquement |VRAI| ou |FAUX| exact, erreur sinon).",
+      "Scalaire -> collection (vecteu/matric/liste) : nombre/texte/booleen devient un vecteur ou une liste a 1 element, ou une matrice 1x1.",
+      "Collection -> conver.*.nombr : seulement si la collection contient EXACTEMENT 1 element numerique, erreur sinon.",
+      "Entre collections : conver.vecteu.matric (colonne) / conver.matric.vecteu (aplatit tous les elements) ; conver.vecteu.liste / conver.liste.vecteu (element par element) ; conver.liste.matric (chaque vecteur de la liste devient une ligne -- tous doivent avoir la meme longueur) / conver.matric.liste (l'inverse : chaque ligne devient un vecteur de la liste)."
+    ], exemple: "conver.texte.nombr(|3.5|)   ->   3.5\nconver.nombr.texte(42)       ->   |42|\nconver.nombr.booleen(0)      ->   FAUX\nconver.matric.vecteu(matrice(1:4, nlig~2, ncol~2))   ->   c(1,2,3,4)\nconver.vecteu.matric(c(1,2,3))   ->   matrice 3x1\nconver.liste.matric(liste(c(1,2), c(3,4)))   ->   matrice 2x2" },
   { noms: ["est.nombr", "est.text", "est.vecteu", "est.matric", "est.enti", "est.reel", "est.liste"], categorie: "Base", syntaxe: "est.nombr(var) / est.text(var) / est.vecteu(var) / est.matric(var) / est.enti(var) / est.reel(var) / est.liste(var)", description: [
       "Verifie le type de var, et renvoie VRAI ou FAUX.",
       "est.nombr(var) : VRAI si var est un nombre normal OU un grand entier (large ; voir est.enti/est.reel pour distinguer precisement).",
@@ -4717,17 +4719,17 @@ let aideCommandes = [
       "Pour une ligne vide toute seule dans affi(), on peut aussi ecrire affi(||) ou affi( | |)."
     ], exemple: "affi(|Programme de calcul|, saulig, |----------|)\necrire(|notes|, |Titre|, saulig, |Sous-titre|)   ** liste() : \"Titre\", \"\\n\", \"Sous-titre\" **" },
 
-  { noms: ["conver.ms.ms", "conver.ms.seconde", "conver.ms.minute", "conver.ms.heure", "conver.seconde.ms", "conver.seconde.seconde", "conver.seconde.minute", "conver.seconde.heure", "conver.minute.ms", "conver.minute.seconde", "conver.minute.minute", "conver.minute.heure", "conver.heure.ms", "conver.heure.seconde", "conver.heure.minute", "conver.heure.heure", "conver.octet.octet", "conver.octet.Ko", "conver.octet.Mo", "conver.octet.Go", "conver.octet.Tera", "conver.Ko.octet", "conver.Ko.Ko", "conver.Ko.Mo", "conver.Ko.Go", "conver.Ko.Tera", "conver.Mo.octet", "conver.Mo.Ko", "conver.Mo.Mo", "conver.Mo.Go", "conver.Mo.Tera", "conver.Go.octet", "conver.Go.Ko", "conver.Go.Mo", "conver.Go.Go", "conver.Go.Tera", "conver.Tera.octet", "conver.Tera.Ko", "conver.Tera.Mo", "conver.Tera.Go", "conver.Tera.Tera"], categorie: "Base", syntaxe: "conver.source.cible(valeur)", description: [
+  { noms: ["conver.ms.ms", "conver.ms.seconde", "conver.ms.minute", "conver.ms.heure", "conver.ms.jour", "conver.seconde.ms", "conver.seconde.seconde", "conver.seconde.minute", "conver.seconde.heure", "conver.seconde.jour", "conver.minute.ms", "conver.minute.seconde", "conver.minute.minute", "conver.minute.heure", "conver.minute.jour", "conver.heure.ms", "conver.heure.seconde", "conver.heure.minute", "conver.heure.heure", "conver.heure.jour", "conver.jour.ms", "conver.jour.seconde", "conver.jour.minute", "conver.jour.heure", "conver.jour.jour", "conver.octet.octet", "conver.octet.Ko", "conver.octet.Mo", "conver.octet.Go", "conver.octet.Tera", "conver.Ko.octet", "conver.Ko.Ko", "conver.Ko.Mo", "conver.Ko.Go", "conver.Ko.Tera", "conver.Mo.octet", "conver.Mo.Ko", "conver.Mo.Mo", "conver.Mo.Go", "conver.Mo.Tera", "conver.Go.octet", "conver.Go.Ko", "conver.Go.Mo", "conver.Go.Go", "conver.Go.Tera", "conver.Tera.octet", "conver.Tera.Ko", "conver.Tera.Mo", "conver.Tera.Go", "conver.Tera.Tera"], categorie: "Base", syntaxe: "conver.source.cible(valeur)", description: [
       "Convertit une valeur d'une unite vers une autre avec la forme generale conver.source.cible(valeur).",
-      "Temps : ms, seconde, minute, heure. La seconde est l'unite de reference : conver.minute.seconde(5) -> 300 ; conver.ms.seconde(500) -> 0.5.",
+      "Temps : ms, seconde, minute, heure, jour. La seconde est l'unite de reference : conver.minute.seconde(5) -> 300 ; conver.ms.seconde(500) -> 0.5 ; conver.jour.heure(1) -> 24.",
       "Tailles : octet, Ko, Mo, Go, Tera. Les conversions sont binaires : 1 Ko = 1024 octets, 1 Mo = 1024 Ko, 1 Go = 1024 Mo, 1 Tera = 1024 Go.",
       "Les conversions peuvent aussi etre faites dans l'autre sens : conver.seconde.heure(3600) -> 1 ; conver.seconde.ms(1) -> 1000 ; conver.Mo.Ko(1) -> 1024.",
-      "La valeur doit etre un nombre positif ou nul. Le resultat peut etre fractionnaire."
-    ], exemple: "conver.minute.seconde(5)  ->  300\nconver.heure.seconde(2)    ->  7200\nconver.ms.seconde(500)     ->  0.5\nconver.seconde.heure(3600)  ->  1\nconver.octet.Ko(1024)      ->  1\nconver.Mo.Ko(1)            ->  1024" },
-  { noms: ["conver.ms.date"], categorie: "Base", syntaxe: "conver.ms.date(valeur)", description: [
-      "Convertit un horodatage brut en millisecondes (epoch, ex: celui renvoye par temps()) en date/heure lisible, meme format que date() : \"JJ/MM/AAAA HH:MM:SS\".",
-      "La valeur doit etre un nombre positif ou nul."
-    ], exemple: "conver.ms.date(0)  ->  |01/01/1970 01:00:00|" },
+      "La valeur doit etre un nombre positif ou nul. Le resultat peut etre fractionnaire (pas d'arrondi, meme quand ca ne tombe pas juste, ex: conver.ms.jour(...))."
+    ], exemple: "conver.minute.seconde(5)  ->  300\nconver.heure.seconde(2)    ->  7200\nconver.ms.seconde(500)     ->  0.5\nconver.seconde.heure(3600)  ->  1\nconver.jour.heure(1)       ->  24\nconver.octet.Ko(1024)      ->  1\nconver.Mo.Ko(1)            ->  1024" },
+  { noms: ["conver.ms.date", "conver.date.ms"], categorie: "Base", syntaxe: "conver.ms.date(valeur)  /  conver.date.ms(texte)", description: [
+      "conver.ms.date(valeur) : convertit un horodatage brut en millisecondes (epoch, ex: celui renvoye par temps()) en date/heure lisible, meme format que date() : \"JJ/MM/AAAA HH:MM:SS\". La valeur doit etre un nombre positif ou nul.",
+      "conver.date.ms(texte) : l'inverse -- convertit un texte \"JJ/MM/AAAA HH:MM:SS\" en horodatage brut en millisecondes. Format STRICT : erreur directe si le texte n'est pas exactement dans ce format ou si la date n'existe pas dans le calendrier (ex: 31/02/2026), sans tentative de correction."
+    ], exemple: "conver.ms.date(0)  ->  |01/01/1970 01:00:00|\nconver.date.ms(|01/01/1970 01:00:00|)  ->  0" },
   { noms: ["texte"], categorie: "Texte", syntaxe: "texte(a, b, ...)", description: [
       "Concatene plusieurs parties en UN SEUL texte, exactement comme les arguments de affi()/entr()/~ (avec |texte| et saulig pour un saut de ligne).",
       "Contrairement a affi(), ne s'affiche pas : renvoie le texte concatene comme une valeur, utilisable dans une expression.",
@@ -4794,7 +4796,7 @@ let aideCommandes = [
       "pour un rappel fiable meme app fermee)."
     ], exemple: "tanqer(VRAI){\n    attendre(secondesJusquaProchain(1, 9, 0))\n    affi(|Lundi 9h : debut de semaine|)\n}" },
 
-  { noms: ["planifier", "planifier.annuler", "planifier.liste", "planifier.annuler.parMessage", "planifier.annuler.tout"], categorie: "Controle", syntaxe: "planifier(jourSemaine, heure, minute, message)  /  planifier.annuler(jourSemaine, heure, minute)  /  planifier.liste()  /  planifier.annuler.parMessage(texte)  /  planifier.annuler.tout()", description: [
+  { noms: ["planifier", "annuler.planifier", "planifier.liste", "annuler.planifier.parMessage", "annuler.tout.planifier"], categorie: "Controle", syntaxe: "planifier(jourSemaine, heure, minute, message)  /  annuler.planifier(jourSemaine, heure, minute)  /  planifier.liste()  /  annuler.planifier.parMessage(texte)  /  annuler.tout.planifier()", description: [
       "Programme une VRAIE alarme systeme Android pour la prochaine occurrence du jour de",
       "semaine (1=lundi..7=dimanche) et de l'heure:minute donnes, qui affichera \"message\" en",
       "notification a ce moment-la -- MEME SI L'APP EST FERMEE, et meme apres un redemarrage",
@@ -4803,44 +4805,50 @@ let aideCommandes = [
       "script continue immediatement apres, et peut meme se terminer -- l'alarme vit dans le",
       "systeme, pas dans le script.",
       "Appeler planifier() une 2e fois sur le meme jour/heure/minute remplace le message.",
-      "planifier.annuler(jourSemaine, heure, minute) annule une alarme programmee sur ce",
+      "annuler.planifier(jourSemaine, heure, minute) annule une alarme programmee sur ce",
       "creneau, et renvoie VRAI si elle existait vraiment (FAUX si le creneau donne n'etait",
       "pas programme -- rien n'est alors annule).",
       "planifier.liste() renvoie toutes les alarmes actuellement programmees, sous forme de",
       "liste de liste(jourSemaine, heure, minute, message) -- pratique pour retrouver un",
       "creneau exact avant de l'annuler, sans avoir a le connaitre par coeur.",
-      "planifier.annuler.parMessage(texte) annule directement toutes les alarmes dont le",
+      "annuler.planifier.parMessage(texte) annule directement toutes les alarmes dont le",
       "message est exactement \"texte\" (il peut y en avoir plusieurs, sur des creneaux",
       "differents) -- renvoie le nombre d'alarmes annulees.",
-      "planifier.annuler.tout() annule d'un coup TOUTES les alarmes programmees -- renvoie",
+      "annuler.tout.planifier() annule d'un coup TOUTES les alarmes programmees -- renvoie",
       "le nombre d'alarmes annulees.",
       "Necessite l'app native (indisponible dans l'apercu Chrome) et demande les permissions",
       "notifications + alarme exacte au premier appel si besoin (a accorder puis relancer)."
-    ], exemple: "planifier(1, 9, 0, |Lundi 9h : debut de semaine|)\naffi(|Alarme programmee, je continue mon travail|)\n\npou a dan planifier.liste(){\n    affi(a[0], |/|, a[1], |:|, a[2], | - |, a[3])\n}\n\nn~planifier.annuler.parMessage(|Reunion|)\naffi(n, | alarme(s) annulee(s)|)" },
+    ], exemple: "planifier(1, 9, 0, |Lundi 9h : debut de semaine|)\naffi(|Alarme programmee, je continue mon travail|)\n\npou a dan planifier.liste(){\n    affi(a[0], |/|, a[1], |:|, a[2], | - |, a[3])\n}\n\nn~annuler.planifier.parMessage(|Reunion|)\naffi(n, | alarme(s) annulee(s)|)" },
 
-  { noms: ["notif.envoyer"], categorie: "Controle", syntaxe: "notif.envoyer(message)", description: [
+  { noms: ["arreter.service.arriere"], categorie: "Controle", syntaxe: "arreter.service.arriere()", description: [
+      "Arrete le service qui execute les scripts en arriere-plan (celui lance automatiquement a l'ouverture de l'app, utilise par le bouton RUN).",
+      "Appelee dans un script lance via RUN (donc en train de tourner DANS le service) : ne fait que demander l'arret. Le script continue normalement jusqu'a sa fin naturelle -- le service s'arrete SEULEMENT APRES, une fois le resultat publie. Si le script plante avant cette ligne, le service reste actif.",
+      "Appelee depuis l'editeur (script lance localement, pas via RUN) : arrete le service immediatement.",
+      "Ne prend aucun argument, ne renvoie rien d'utile."
+    ], exemple: "** dans un script envoye au service (bouton RUN) :\naffi(|traitement termine|)\narreter.service.arriere()\n** le service s'arrete juste apres avoir publie ce resultat" },
+  { noms: ["envoyer.notif"], categorie: "Controle", syntaxe: "envoyer.notif(message)", description: [
       "Affiche immediatement une notification systeme Android contenant le message donne.",
       "La notification reste visible meme apres la fin du script et peut etre touchee pour",
       "rouvrir MonLangage.",
       "Renvoie VRAI si Android accepte la notification, FAUX sinon.",
       "Necessite l'application native et, sur Android 13+, l'autorisation d'afficher des",
       "notifications (demandee automatiquement au premier appel si besoin)."
-    ], exemple: "notif.envoyer(|Nouveau message recu|)" },
+    ], exemple: "envoyer.notif(|Nouveau message recu|)" },
 
-  { noms: ["connexion.disponible", "connexion.type"], categorie: "Controle", syntaxe: "connexion.disponible()  /  connexion.type()", description: [
+  { noms: ["connexion.disponible", "type.connexion"], categorie: "Controle", syntaxe: "connexion.disponible()  /  type.connexion()", description: [
       "connexion.disponible() : VRAI si une connexion internet (wifi ou data mobile) est",
       "active MAINTENANT, FAUX sinon. Ne surveille rien en arriere-plan -- a verifier dans",
       "une boucle (tanqer/attendre) si tu veux reagir a un changement de connexion.",
-      "connexion.type() : \"wifi\", \"mobile\", \"ethernet\", \"autre\" ou \"aucune\".",
+      "type.connexion() : \"wifi\", \"mobile\", \"ethernet\", \"autre\" ou \"aucune\".",
       "Necessite l'app native, aucune permission a accorder."
-    ], exemple: "tanqer VRAI{\n    si connexion.disponible(){\n        affi(|Connecte en |, connexion.type())\n        stop\n    }\n    attendre(5)\n}" },
+    ], exemple: "tanqer VRAI{\n    si connexion.disponible(){\n        affi(|Connecte en |, type.connexion())\n        stop\n    }\n    attendre(5)\n}" },
 
-  { noms: ["batterie.niveau", "batterie.encharge"], categorie: "Controle", syntaxe: "batterie.niveau()  /  batterie.encharge()", description: [
-      "batterie.niveau() : pourcentage de batterie restant, de 0 a 100.",
+  { noms: ["niveau.batterie", "batterie.encharge"], categorie: "Controle", syntaxe: "niveau.batterie()  /  batterie.encharge()", description: [
+      "niveau.batterie() : pourcentage de batterie restant, de 0 a 100.",
       "batterie.encharge() : VRAI si le telephone est en train de charger (cable ou sans",
       "fil) ou deja completement charge.",
       "Necessite l'app native, aucune permission a accorder."
-    ], exemple: "si batterie.niveau() < 20 ET non batterie.encharge(){\n    affi(|Pense a charger le telephone|)\n}" },
+    ], exemple: "si niveau.batterie() < 20 ET non batterie.encharge(){\n    affi(|Pense a charger le telephone|)\n}" },
 
   { noms: ["dossier.liste"], categorie: "Sauvegarde", syntaxe: "dossier.liste()  ou  dossier.liste(dossier)", description: [
       "Liste les NOMS de TOUS les fichiers d'un dossier (contrairement a voir.fichier(), pas",
@@ -4850,33 +4858,33 @@ let aideCommandes = [
       "Necessite l'app native et la permission de stockage (comme voir.fichier())."
     ], exemple: "avant ~ dossier.liste(|/sdcard/Download|)\ntanqer VRAI{\n    attendre(10)\n    maintenant ~ dossier.liste(|/sdcard/Download|)\n    pou f dan maintenant{\n        si non (f dan avant){ affi(|Nouveau fichier : |, f) }\n    }\n    avant ~ maintenant\n}" },
 
-  { noms: ["sms.recus", "sms.envoyer"], categorie: "Controle", syntaxe: "sms.recus(depuisSecondes)  /  sms.envoyer(numero, message)", description: [
+  { noms: ["sms.recus", "envoyer.sms"], categorie: "Controle", syntaxe: "sms.recus(depuisSecondes)  /  envoyer.sms(numero, message)", description: [
       "sms.recus(depuisSecondes) : liste des SMS recus au cours des \"depuisSecondes\"",
       "dernieres secondes, chacun en liste(numero, message, dateHeure) -- dateHeure deja",
       "lisible (\"JJ/MM/AAAA HH:MM:SS\", meme format que date()), le plus recent en premier.",
       "liste() vide si aucun. Ne surveille rien en arriere-plan -- a verifier dans une",
       "boucle (tanqer/attendre) si tu veux reagir a un SMS recu.",
-      "sms.envoyer(numero, message[, sim]) : envoie un SMS et attend la confirmation reelle (jusqu'a 15s) que le message est bien parti -- renvoie VRAI seulement si le systeme confirme l'envoi, FAUX sinon (echec ou delai depasse). sim est optionnel : 1 ou 2 pour choisir directement la SIM (demande la permission d'etat telephone au besoin) ; sans sim, utilise la SIM par defaut du telephone. Les messages longs sont automatiquement",
+      "envoyer.sms(numero, message[, sim]) : envoie un SMS et attend la confirmation reelle (jusqu'a 15s) que le message est bien parti -- renvoie VRAI seulement si le systeme confirme l'envoi, FAUX sinon (echec ou delai depasse). sim est optionnel : 1 ou 2 pour choisir directement la SIM (demande la permission d'etat telephone au besoin) ; sans sim, utilise la SIM par defaut du telephone. Les messages longs sont automatiquement",
       "decoupes en plusieurs parties, recus comme un seul message chez le destinataire).",
       "Necessite l'app native et les permissions de lecture/envoi de SMS -- les demande",
       "automatiquement si besoin (a accorder puis relancer le script). Android peut",
       "demander une confirmation supplementaire si trop de SMS partent d'un coup vers trop",
       "de destinataires differents en peu de temps (protection systeme anti-spam)."
-    ], exemple: "pou msg dan sms.recus(60){\n    si msg[1] == |stop|{\n        sms.envoyer(msg[0], |Bien recu, arret confirme.|)\n    }\n}" },
+    ], exemple: "pou msg dan sms.recus(60){\n    si msg[1] == |stop|{\n        envoyer.sms(msg[0], |Bien recu, arret confirme.|)\n    }\n}" },
 
-  { noms: ["whatsapp.ouvrir", "messenger.ouvrir"], categorie: "Controle", syntaxe: "whatsapp.ouvrir()  /  whatsapp.ouvrir(numero, message)  /  messenger.ouvrir(destinataire, message)", description: [
-      "whatsapp.ouvrir() ouvre simplement WhatsApp. whatsapp.ouvrir(numero, message) ouvre la conversation avec le numero et pre-remplit le message. messenger.ouvrir(destinataire, message) ouvre Messenger avec le texte pre-rempli.",
+  { noms: ["ouvrir.whatsapp", "messenger.ouvrir"], categorie: "Controle", syntaxe: "ouvrir.whatsapp()  /  ouvrir.whatsapp(numero, message)  /  messenger.ouvrir(destinataire, message)", description: [
+      "ouvrir.whatsapp() ouvre simplement WhatsApp. ouvrir.whatsapp(numero, message) ouvre la conversation avec le numero et pre-remplit le message. messenger.ouvrir(destinataire, message) ouvre Messenger avec le texte pre-rempli.",
       "rempli dans le champ de saisie. IMPORTANT : Android n'autorise pas une app tierce a",
       "appuyer sur Envoyer a la place de l'utilisateur dans une autre app -- contrairement a",
-      "sms.envoyer(), c'est donc un RACCOURCI (l'app s'ouvre pretes a envoyer), pas un envoi",
+      "envoyer.sms(), c'est donc un RACCOURCI (l'app s'ouvre pretes a envoyer), pas un envoi",
       "automatique complet.",
-      "whatsapp.ouvrir : destinataire = numero de telephone avec indicatif pays (ex:",
+      "ouvrir.whatsapp : destinataire = numero de telephone avec indicatif pays (ex:",
       "33612345678, sans le 0 initial).",
       "messenger.ouvrir : destinataire = NOM D'UTILISATEUR Facebook (pas un numero -- Messenger",
       "n'identifie pas les gens par numero comme WhatsApp).",
       "Necessite l'app native et une connexion internet (verifiable avant avec",
       "connexion.disponible())."
-    ], exemple: "si connexion.disponible(){\n    whatsapp.ouvrir(|33612345678|, |Salut !|)\n} sinon {\n    sms.envoyer(|33612345678|, |Salut !|)\n}" },
+    ], exemple: "si connexion.disponible(){\n    ouvrir.whatsapp(|33612345678|, |Salut !|)\n} sinon {\n    envoyer.sms(|33612345678|, |Salut !|)\n}" },
 
   { noms: ["partager.fichier"], categorie: "Sauvegarde", syntaxe: "partager.fichier(chemin)", description: [
       "Ouvre le selecteur de partage standard Android (Bluetooth, email, Drive, n'importe",
@@ -5988,6 +5996,7 @@ function enregistrerFonctionsBase() {
         seconde: 1,
         minute: 60,
         heure: 3600,
+        jour: 86400,
         octet: 1,
         Ko: 1024,
         Mo: 1024 ** 2,
@@ -5995,7 +6004,7 @@ function enregistrerFonctionsBase() {
         Tera: 1024 ** 4
     };
     const __groupesConver = [
-        ["ms", "seconde", "minute", "heure"],
+        ["ms", "seconde", "minute", "heure", "jour"],
         ["octet", "Ko", "Mo", "Go", "Tera"]
     ];
     for (let groupe of __groupesConver) {
@@ -6024,6 +6033,35 @@ function enregistrerFonctionsBase() {
             throw new ErreurTypeInvalide("conver.ms.date(...) attend un nombre positif ou nul (millisecondes epoch)");
         }
         return formaterDateHeure(new Date(ms));
+    };
+
+    // conver.date.ms(texte) : inverse de conver.ms.date(...) -- convertit un texte de date/heure
+    // "JJ/MM/AAAA HH:MM:SS" en horodatage brut en millisecondes (epoch). Format STRICT : aucune
+    // tolerance sur la forme (pas de date partielle, pas d'autre separateur) ni sur le calendrier
+    // (ex: 31/02/2026 refuse -- fevrier n'a pas 31 jours). Erreur directe si non conforme.
+    fonctionsBase["conver.date.ms"] = fonctionsExpression["conver.date.ms"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("conver.date.ms(...) attend exactement 1 argument");
+        let texte = await evalExpr(args[0], ctxExpr);
+        if (typeof texte !== "string") {
+            throw new ErreurTypeInvalide("conver.date.ms(...) attend un texte au format JJ/MM/AAAA HH:MM:SS (recu : " + nomNature(texte) + ")");
+        }
+        let m = texte.match(/^(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2}):(\d{2})$/);
+        if (!m) {
+            throw new Error("conver.date.ms(...) : |" + texte + "| n'est pas au format JJ/MM/AAAA HH:MM:SS");
+        }
+        let jour = Number(m[1]), mois = Number(m[2]), annee = Number(m[3]);
+        let heure = Number(m[4]), minute = Number(m[5]), seconde = Number(m[6]);
+        if (mois < 1 || mois > 12 || heure > 23 || minute > 59 || seconde > 59) {
+            throw new Error("conver.date.ms(...) : |" + texte + "| n'est pas une date/heure valide");
+        }
+        let d = new Date(annee, mois - 1, jour, heure, minute, seconde);
+        // Round-trip : si JS a "roule" la date (ex: 31/02 -> 3 mars), les composants ne
+        // correspondent plus -- c'est le signe d'une date invalide pour ce calendrier.
+        if (d.getFullYear() !== annee || d.getMonth() !== mois - 1 || d.getDate() !== jour ||
+            d.getHours() !== heure || d.getMinutes() !== minute || d.getSeconds() !== seconde) {
+            throw new Error("conver.date.ms(...) : |" + texte + "| n'est pas une date/heure valide (jour hors limites pour ce mois ?)");
+        }
+        return d.getTime();
     };
 
     // date.annee() / date.mois() / date.jour() / date.jourSemaine() / date.heure() /
@@ -6111,7 +6149,7 @@ function enregistrerFonctionsBase() {
     // attendre() : "tanqer(VRAI){ attendre(secondesJusquaProchain(1,9,0)); ... }" declenche une
     // action exactement une fois par occurrence, sans boucle active ni drapeau de deduplication.
     // Validation partagee du triplet (jourSemaine, heure, minute) : utilisee par
-    // secondesJusquaProchain(), planifier() et planifier.annuler().
+    // secondesJusquaProchain(), planifier() et annuler.planifier().
     function validerCreneauSemaine(jourSemaine, heureCible, minuteCible, nomFonction) {
         if (!Number.isInteger(jourSemaine) || jourSemaine < 1 || jourSemaine > 7) {
             throw new Error(nomFonction + "(...) : jourSemaine doit etre un entier entre 1 (lundi) et 7 (dimanche)");
@@ -6177,17 +6215,17 @@ function enregistrerFonctionsBase() {
         return undefined;
     };
 
-    // planifier.annuler(jourSemaine, heure, minute) : annule une alarme programmee par
+    // annuler.planifier(jourSemaine, heure, minute) : annule une alarme programmee par
     // planifier(...) sur ce meme creneau. Renvoie VRAI si un creneau etait effectivement
     // programme (et a donc ete annule), FAUX si le creneau n'existait pas.
-    fonctionsBase["planifier.annuler"] = fonctionsExpression["planifier.annuler"] = async function(args, ctxExpr) {
-        if (args.length !== 3) throw new Error("planifier.annuler(...) attend exactement 3 arguments (jourSemaine, heure, minute)");
+    fonctionsBase["annuler.planifier"] = fonctionsExpression["annuler.planifier"] = async function(args, ctxExpr) {
+        if (args.length !== 3) throw new Error("annuler.planifier(...) attend exactement 3 arguments (jourSemaine, heure, minute)");
         let jourSemaine = await evalExpr(args[0], ctxExpr);
         let heureCible = await evalExpr(args[1], ctxExpr);
         let minuteCible = await evalExpr(args[2], ctxExpr);
-        validerCreneauSemaine(jourSemaine, heureCible, minuteCible, "planifier.annuler");
+        validerCreneauSemaine(jourSemaine, heureCible, minuteCible, "annuler.planifier");
         if (!(window.MonLangage && typeof window.MonLangage.annulerAlarme === "function")) {
-            throw new Error("planifier.annuler(...) necessite l'app native (rebuild requis) -- indisponible dans l'apercu Chrome.");
+            throw new Error("annuler.planifier(...) necessite l'app native (rebuild requis) -- indisponible dans l'apercu Chrome.");
         }
         return !!window.MonLangage.annulerAlarme(jourSemaine, heureCible, minuteCible);
     };
@@ -6215,21 +6253,21 @@ function enregistrerFonctionsBase() {
         }));
     };
 
-    // planifier.annuler.parMessage(texte) : annule TOUTES les alarmes programmees dont le
+    // annuler.planifier.parMessage(texte) : annule TOUTES les alarmes programmees dont le
     // message est exactement egal a "texte" (il peut y en avoir plusieurs, sur des creneaux
     // differents). Renvoie le nombre d'alarmes annulees (0 si aucune ne correspondait).
-    fonctionsBase["planifier.annuler.parMessage"] = fonctionsExpression["planifier.annuler.parMessage"] = async function(args, ctxExpr) {
-        if (args.length !== 1) throw new Error("planifier.annuler.parMessage(texte) attend exactement 1 argument (message)");
+    fonctionsBase["annuler.planifier.parMessage"] = fonctionsExpression["annuler.planifier.parMessage"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("annuler.planifier.parMessage(texte) attend exactement 1 argument (message)");
         let message = await evalExpr(args[0], ctxExpr);
-        if (typeof message !== "string") throw new Error("planifier.annuler.parMessage(...) : message doit etre du texte");
+        if (typeof message !== "string") throw new Error("annuler.planifier.parMessage(...) : message doit etre du texte");
         if (!(window.MonLangage && typeof window.MonLangage.listerAlarmes === "function" && typeof window.MonLangage.annulerAlarme === "function")) {
-            throw new Error("planifier.annuler.parMessage(...) necessite l'app native (rebuild requis) -- indisponible dans l'apercu Chrome.");
+            throw new Error("annuler.planifier.parMessage(...) necessite l'app native (rebuild requis) -- indisponible dans l'apercu Chrome.");
         }
         let brut;
         try {
             brut = JSON.parse(window.MonLangage.listerAlarmes());
         } catch (e) {
-            throw new Error("planifier.annuler.parMessage(...) : reponse native invalide.");
+            throw new Error("annuler.planifier.parMessage(...) : reponse native invalide.");
         }
         let compteur = 0;
         for (let a of brut) {
@@ -6238,18 +6276,18 @@ function enregistrerFonctionsBase() {
         return compteur;
     };
 
-    // planifier.annuler.tout() : annule TOUTES les alarmes actuellement programmees, sans
+    // annuler.tout.planifier() : annule TOUTES les alarmes actuellement programmees, sans
     // exception. Renvoie le nombre d'alarmes annulees (0 si aucune n'etait programmee).
-    fonctionsBase["planifier.annuler.tout"] = fonctionsExpression["planifier.annuler.tout"] = async function(args, ctxExpr) {
-        if (args.length !== 0) throw new Error("planifier.annuler.tout() ne prend aucun argument");
+    fonctionsBase["annuler.tout.planifier"] = fonctionsExpression["annuler.tout.planifier"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("annuler.tout.planifier() ne prend aucun argument");
         if (!(window.MonLangage && typeof window.MonLangage.listerAlarmes === "function" && typeof window.MonLangage.annulerAlarme === "function")) {
-            throw new Error("planifier.annuler.tout() necessite l'app native (rebuild requis) -- indisponible dans l'apercu Chrome.");
+            throw new Error("annuler.tout.planifier() necessite l'app native (rebuild requis) -- indisponible dans l'apercu Chrome.");
         }
         let brut;
         try {
             brut = JSON.parse(window.MonLangage.listerAlarmes());
         } catch (e) {
-            throw new Error("planifier.annuler.tout() : reponse native invalide.");
+            throw new Error("annuler.tout.planifier() : reponse native invalide.");
         }
         let compteur = 0;
         for (let a of brut) {
@@ -6258,23 +6296,48 @@ function enregistrerFonctionsBase() {
         return compteur;
     };
 
-    // notif.envoyer(message) : affiche IMMEDIATEMENT une notification systeme Android.
+    // arreter.service.arriere() : arrete MonLangageService (le service qui execute les
+    // scripts lances via le bouton RUN, en arriere-plan). Deux contextes possibles :
+    // - Appelee DANS un script en cours d'execution dans le service (via RUN) : ne fait
+    //   que MARQUER une demande d'arret -- le service continue jusqu'a la fin naturelle
+    //   du script, PUIS s'arrete (au lieu de repasser en veille). Si le script plante
+    //   avant d'atteindre cette ligne, le service reste actif comme si de rien n'etait.
+    // - Appelee depuis l'editeur (webview de MainActivity, PAS le service) : arrete le
+    //   service immediatement -- aucun risque de "se couper la branche" puisque c'est une
+    //   webview differente de celle qui execute cette commande.
+    // Necessite l'app native. Ne prend aucun argument, ne renvoie rien d'utile.
+    fonctionsBase["arreter.service.arriere"] = fonctionsExpression["arreter.service.arriere"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("arreter.service.arriere() ne prend aucun argument");
+        if (window.MonLangageServiceNative && typeof window.MonLangageServiceNative.demanderArretApresScript === "function") {
+            // Execute dans le service : arret differe a la fin du script.
+            window.MonLangageServiceNative.demanderArretApresScript();
+            return undefined;
+        }
+        if (window.MonLangage && typeof window.MonLangage.arreterServiceArrierePlan === "function") {
+            // Execute depuis l'editeur : arret immediat, webview differente.
+            window.MonLangage.arreterServiceArrierePlan();
+            return undefined;
+        }
+        throw new ErreurIndisponibleHorsApp("arreter.service.arriere() : disponible uniquement dans l'app installee (rebuild requis)");
+    };
+
+    // envoyer.notif(message) : affiche IMMEDIATEMENT une notification systeme Android.
     // La notification reste independante du script apres son affichage. Renvoie VRAI si
     // Android accepte la notification, FAUX sinon. Necessite l'app native et, sur Android
     // 13+, l'autorisation POST_NOTIFICATIONS.
-    fonctionsBase["notif.envoyer"] = fonctionsExpression["notif.envoyer"] = async function(args, ctxExpr) {
-        if (args.length !== 1) throw new Error("notif.envoyer(message) attend exactement 1 argument");
+    fonctionsBase["envoyer.notif"] = fonctionsExpression["envoyer.notif"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("envoyer.notif(message) attend exactement 1 argument");
         let message = await evalExpr(args[0], ctxExpr);
-        if (typeof message !== "string") throw new ErreurTypeInvalide("notif.envoyer(...) : message doit etre du texte");
+        if (typeof message !== "string") throw new ErreurTypeInvalide("envoyer.notif(...) : message doit etre du texte");
         if (!(window.MonLangage && typeof window.MonLangage.envoyerNotification === "function")) {
-            throw new ErreurIndisponibleHorsApp("notif.envoyer(...) : disponible uniquement dans l'app installee (rebuild requis)");
+            throw new ErreurIndisponibleHorsApp("envoyer.notif(...) : disponible uniquement dans l'app installee (rebuild requis)");
         }
         if (typeof window.MonLangage.permissionNotificationsAccordee === "function" &&
             !window.MonLangage.permissionNotificationsAccordee()) {
             if (typeof window.MonLangage.demanderPermissionNotifications === "function") {
                 window.MonLangage.demanderPermissionNotifications();
             }
-            throw new ErreurPermissionRefusee("MonLangage a besoin de l'autorisation d'afficher des notifications pour notif.envoyer(...). Accorde la permission puis relance le script.");
+            throw new ErreurPermissionRefusee("MonLangage a besoin de l'autorisation d'afficher des notifications pour envoyer.notif(...). Accorde la permission puis relance le script.");
         }
         return !!window.MonLangage.envoyerNotification(message);
     };
@@ -6291,22 +6354,22 @@ function enregistrerFonctionsBase() {
         return !!window.MonLangage.connexionDisponible();
     };
 
-    // connexion.type() : "wifi", "mobile", "ethernet", "autre" ou "aucune".
+    // type.connexion() : "wifi", "mobile", "ethernet", "autre" ou "aucune".
     // Necessite l'app native, aucune permission a accorder.
-    fonctionsBase["connexion.type"] = fonctionsExpression["connexion.type"] = async function(args, ctxExpr) {
-        if (args.length !== 0) throw new Error("connexion.type() ne prend aucun argument");
+    fonctionsBase["type.connexion"] = fonctionsExpression["type.connexion"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("type.connexion() ne prend aucun argument");
         if (!(window.MonLangage && typeof window.MonLangage.connexionType === "function")) {
-            throw new ErreurIndisponibleHorsApp("connexion.type() : disponible uniquement dans l'app installee (rebuild requis)");
+            throw new ErreurIndisponibleHorsApp("type.connexion() : disponible uniquement dans l'app installee (rebuild requis)");
         }
         return window.MonLangage.connexionType();
     };
 
-    // batterie.niveau() : pourcentage de batterie restant, de 0 a 100.
+    // niveau.batterie() : pourcentage de batterie restant, de 0 a 100.
     // Necessite l'app native, aucune permission a accorder.
-    fonctionsBase["batterie.niveau"] = fonctionsExpression["batterie.niveau"] = async function(args, ctxExpr) {
-        if (args.length !== 0) throw new Error("batterie.niveau() ne prend aucun argument");
+    fonctionsBase["niveau.batterie"] = fonctionsExpression["niveau.batterie"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("niveau.batterie() ne prend aucun argument");
         if (!(window.MonLangage && typeof window.MonLangage.batterieNiveau === "function")) {
-            throw new ErreurIndisponibleHorsApp("batterie.niveau() : disponible uniquement dans l'app installee (rebuild requis)");
+            throw new ErreurIndisponibleHorsApp("niveau.batterie() : disponible uniquement dans l'app installee (rebuild requis)");
         }
         return window.MonLangage.batterieNiveau();
     };
@@ -6380,54 +6443,54 @@ function enregistrerFonctionsBase() {
         }));
     };
 
-    // sms.envoyer(numero, message) : envoie un SMS. Les messages longs sont automatiquement
+    // envoyer.sms(numero, message) : envoie un SMS. Les messages longs sont automatiquement
     // decoupes en plusieurs parties par le systeme (recus comme un seul message chez le
     // destinataire). Necessite l'app native et la permission d'envoi de SMS (demandee
     // automatiquement au premier appel si besoin -- accorder puis relancer le script).
     // Android peut demander une confirmation supplementaire si trop de SMS partent d'un coup
     // vers trop de destinataires differents en peu de temps (protection systeme anti-spam).
-    fonctionsBase["sms.envoyer"] = fonctionsExpression["sms.envoyer"] = async function(args, ctxExpr) {
-        if (args.length !== 2 && args.length !== 3) throw new Error("sms.envoyer(numero, message[, sim]) attend 2 ou 3 arguments");
+    fonctionsBase["envoyer.sms"] = fonctionsExpression["envoyer.sms"] = async function(args, ctxExpr) {
+        if (args.length !== 2 && args.length !== 3) throw new Error("envoyer.sms(numero, message[, sim]) attend 2 ou 3 arguments");
         let numero = await evalExpr(args[0], ctxExpr);
         let message = await evalExpr(args[1], ctxExpr);
-        if (typeof numero !== 'string') throw new ErreurTypeInvalide("sms.envoyer(...) : numero doit etre du texte");
-        if (typeof message !== 'string') throw new ErreurTypeInvalide("sms.envoyer(...) : message doit etre du texte");
+        if (typeof numero !== 'string') throw new ErreurTypeInvalide("envoyer.sms(...) : numero doit etre du texte");
+        if (typeof message !== 'string') throw new ErreurTypeInvalide("envoyer.sms(...) : message doit etre du texte");
         let sim = 0;
         if (args.length === 3) {
             sim = await evalExpr(args[2], ctxExpr);
             if (typeof sim !== 'number' || !Number.isInteger(sim) || (sim !== 1 && sim !== 2)) {
-                throw new ErreurTypeInvalide("sms.envoyer(...) : sim doit etre 1 ou 2");
+                throw new ErreurTypeInvalide("envoyer.sms(...) : sim doit etre 1 ou 2");
             }
         }
         if (!(window.MonLangage && typeof window.MonLangage.envoyerSms === "function")) {
-            throw new ErreurIndisponibleHorsApp("sms.envoyer(...) : disponible uniquement dans l'app installee (rebuild requis)");
+            throw new ErreurIndisponibleHorsApp("envoyer.sms(...) : disponible uniquement dans l'app installee (rebuild requis)");
         }
         if (typeof window.MonLangage.permissionSmsEnvoiAccordee === "function" &&
             !window.MonLangage.permissionSmsEnvoiAccordee()) {
             if (typeof window.MonLangage.demanderPermissionSmsEnvoi === "function") {
                 window.MonLangage.demanderPermissionSmsEnvoi();
             }
-            throw new ErreurPermissionRefusee("MonLangage a besoin de l'autorisation d'envoyer des SMS pour sms.envoyer(...). Accorde la permission puis relance le script.");
+            throw new ErreurPermissionRefusee("MonLangage a besoin de l'autorisation d'envoyer des SMS pour envoyer.sms(...). Accorde la permission puis relance le script.");
         }
         if (sim !== 0 && typeof window.MonLangage.permissionTelephoneAccordee === "function" &&
             !window.MonLangage.permissionTelephoneAccordee()) {
             if (typeof window.MonLangage.demanderPermissionTelephone === "function") {
                 window.MonLangage.demanderPermissionTelephone();
             }
-            throw new ErreurPermissionRefusee("MonLangage a besoin de l'autorisation de lire l'etat du telephone pour choisir une SIM avec sms.envoyer(numero, message, sim). Accorde la permission puis relance le script.");
+            throw new ErreurPermissionRefusee("MonLangage a besoin de l'autorisation de lire l'etat du telephone pour choisir une SIM avec envoyer.sms(numero, message, sim). Accorde la permission puis relance le script.");
         }
         return !!window.MonLangage.envoyerSms(numero, message, sim);
     };
 
-    // whatsapp.ouvrir(numero, message) : ouvre WhatsApp sur la conversation avec ce numero,
+    // ouvrir.whatsapp(numero, message) : ouvre WhatsApp sur la conversation avec ce numero,
     // texte deja rempli -- TOI (ou l'utilisateur) dois appuyer sur Envoyer, le script ne peut
     // pas le faire a ta place (Android l'interdit pour une app tierce). numero : garder
     // l'indicatif pays (ex: 33612345678). Necessite l'app native. Necessite une connexion
     // (verifiable avant avec connexion.disponible()).
-    fonctionsBase["whatsapp.ouvrir"] = fonctionsExpression["whatsapp.ouvrir"] = async function(args, ctxExpr) {
-        if (args.length !== 0 && args.length !== 2) throw new Error("whatsapp.ouvrir() ou whatsapp.ouvrir(numero, message)");
+    fonctionsBase["ouvrir.whatsapp"] = fonctionsExpression["ouvrir.whatsapp"] = async function(args, ctxExpr) {
+        if (args.length !== 0 && args.length !== 2) throw new Error("ouvrir.whatsapp() ou ouvrir.whatsapp(numero, message)");
         if (!(window.MonLangage && typeof window.MonLangage.ouvrirWhatsapp === "function")) {
-            throw new ErreurIndisponibleHorsApp("whatsapp.ouvrir(...) : disponible uniquement dans l'app installee (rebuild requis)");
+            throw new ErreurIndisponibleHorsApp("ouvrir.whatsapp(...) : disponible uniquement dans l'app installee (rebuild requis)");
         }
         if (args.length === 0) {
             window.MonLangage.ouvrirWhatsapp();
@@ -6435,13 +6498,13 @@ function enregistrerFonctionsBase() {
         }
         let numero = await evalExpr(args[0], ctxExpr);
         let message = await evalExpr(args[1], ctxExpr);
-        if (typeof numero !== 'string') throw new ErreurTypeInvalide("whatsapp.ouvrir(...) : numero doit etre du texte");
-        if (typeof message !== 'string') throw new ErreurTypeInvalide("whatsapp.ouvrir(...) : message doit etre du texte");
+        if (typeof numero !== 'string') throw new ErreurTypeInvalide("ouvrir.whatsapp(...) : numero doit etre du texte");
+        if (typeof message !== 'string') throw new ErreurTypeInvalide("ouvrir.whatsapp(...) : message doit etre du texte");
         window.MonLangage.ouvrirWhatsapp(numero, message);
         return undefined;
     };
 
-    // messenger.ouvrir(destinataire, message) : meme principe que whatsapp.ouvrir(...), pour
+    // messenger.ouvrir(destinataire, message) : meme principe que ouvrir.whatsapp(...), pour
     // Messenger (Facebook). ATTENTION : destinataire est un NOM D'UTILISATEUR Facebook, pas
     // un numero de telephone -- Messenger n'identifie pas les gens par numero comme
     // WhatsApp. Necessite l'app native. Necessite une connexion.
@@ -6493,45 +6556,163 @@ function enregistrerFonctionsBase() {
         return taille;
     };
 
-    // conver.nombr(var) / conver.text(var) / conver.vecteu(var) / conver.matric(var) : conversions de type.
-    fonctionsBase["conver.nombr"] = fonctionsExpression["conver.nombr"] = async function(args, ctxExpr) {
-        if (args.length !== 1) throw new Error("conver.nombr(...) attend exactement 1 argument");
-        let v = await evalExpr(args[0], ctxExpr);
-        if (typeof v === 'number') return v;
-        if (typeof v === 'boolean') return v ? 1 : 0;
-        if (typeof v === 'string') {
-            let texte = v.trim();
-            let n = Number(texte);
-            if (texte === "" || isNaN(n)) throw new Error("conver.nombr(...) : impossible de convertir |" + v + "| en nombre");
-            return n;
+    // conver.<origine>.<destination>(var) : conversions de type, une fonction par couple
+    // source/destination (pas de conversion "multi-source" ambigue comme avant). Chaque
+    // fonction verifie STRICTEMENT que var est bien du type "origine" annonce par son nom.
+    // enregistrerConverType(source, cible, fn) : fabrique et enregistre conver.source.cible.
+    function enregistrerConverType(source, cible, fn) {
+        let nom = "conver." + source + "." + cible;
+        fonctionsBase[nom] = fonctionsExpression[nom] = async function(args, ctxExpr) {
+            if (args.length !== 1) throw new Error(nom + "(...) attend exactement 1 argument");
+            let v = await evalExpr(args[0], ctxExpr);
+            return fn(v, nom);
+        };
+    }
+
+    // -- Identites (6) : renvoient la valeur telle quelle si le type annonce correspond
+    // vraiment, erreur sinon. Coherent avec conver.ms.ms() etc pour les durees.
+    enregistrerConverType("texte", "texte", (v, n) => {
+        if (typeof v !== 'string') throw new ErreurTypeInvalide(n + "(...) attend un texte (recu : " + nomNature(v) + ")");
+        return v;
+    });
+    enregistrerConverType("booleen", "booleen", (v, n) => {
+        if (typeof v !== 'boolean') throw new ErreurTypeInvalide(n + "(...) attend un booleen (recu : " + nomNature(v) + ")");
+        return v;
+    });
+    enregistrerConverType("nombr", "nombr", (v, n) => {
+        if (typeof v !== 'number') throw new ErreurTypeInvalide(n + "(...) attend un nombre (recu : " + nomNature(v) + ")");
+        return v;
+    });
+    enregistrerConverType("vecteu", "vecteu", (v, n) => {
+        if (!estVecteur(v)) throw new ErreurTypeInvalide(n + "(...) attend un vecteur (recu : " + nomNature(v) + ")");
+        return v.slice();
+    });
+    enregistrerConverType("matric", "matric", (v, n) => {
+        if (!estMatrice(v)) throw new ErreurTypeInvalide(n + "(...) attend une matrice (recu : " + nomNature(v) + ")");
+        return { __type: "matrice", nlig: v.nlig, ncol: v.ncol, donnees: v.donnees.slice() };
+    });
+    enregistrerConverType("liste", "liste", (v, n) => {
+        if (!estListe(v)) throw new ErreurTypeInvalide(n + "(...) attend une liste (recu : " + nomNature(v) + ")");
+        return { __type: "liste", elements: v.elements.slice() };
+    });
+
+    // -- Scalaires entre eux (6) : texte<->nombr, texte<->booleen, nombr<->booleen.
+    enregistrerConverType("texte", "nombr", (v, n) => {
+        if (typeof v !== 'string') throw new ErreurTypeInvalide(n + "(...) attend un texte (recu : " + nomNature(v) + ")");
+        let t = v.trim(); let x = Number(t);
+        if (t === "" || isNaN(x)) throw new Error(n + "(...) : impossible de convertir |" + v + "| en nombre");
+        return x;
+    });
+    enregistrerConverType("booleen", "nombr", (v, n) => {
+        if (typeof v !== 'boolean') throw new ErreurTypeInvalide(n + "(...) attend un booleen (recu : " + nomNature(v) + ")");
+        return v ? 1 : 0;
+    });
+    enregistrerConverType("nombr", "texte", (v, n) => {
+        if (typeof v !== 'number') throw new ErreurTypeInvalide(n + "(...) attend un nombre (recu : " + nomNature(v) + ")");
+        return String(v);
+    });
+    enregistrerConverType("booleen", "texte", (v, n) => {
+        if (typeof v !== 'boolean') throw new ErreurTypeInvalide(n + "(...) attend un booleen (recu : " + nomNature(v) + ")");
+        return v ? "VRAI" : "FAUX";
+    });
+    enregistrerConverType("nombr", "booleen", (v, n) => {
+        if (typeof v !== 'number') throw new ErreurTypeInvalide(n + "(...) attend un nombre (recu : " + nomNature(v) + ")");
+        return v !== 0; // 0 -> FAUX, tout le reste -> VRAI
+    });
+    enregistrerConverType("texte", "booleen", (v, n) => {
+        if (typeof v !== 'string') throw new ErreurTypeInvalide(n + "(...) attend un texte (recu : " + nomNature(v) + ")");
+        if (v === "VRAI") return true;
+        if (v === "FAUX") return false;
+        throw new Error(n + "(...) : |" + v + "| n'est ni |VRAI| ni |FAUX|");
+    });
+
+    // -- Scalaire -> collection (9) : nombre/texte/booleen -> vecteur/matrice/liste a 1 element.
+    for (let [source, testFn, nomAttendu] of [
+        ["texte", v => typeof v === 'string', "un texte"],
+        ["booleen", v => typeof v === 'boolean', "un booleen"],
+        ["nombr", v => typeof v === 'number', "un nombre"]
+    ]) {
+        enregistrerConverType(source, "vecteu", (v, n) => {
+            if (!testFn(v)) throw new ErreurTypeInvalide(n + "(...) attend " + nomAttendu + " (recu : " + nomNature(v) + ")");
+            return [v];
+        });
+        enregistrerConverType(source, "matric", (v, n) => {
+            if (!testFn(v)) throw new ErreurTypeInvalide(n + "(...) attend " + nomAttendu + " (recu : " + nomNature(v) + ")");
+            return { __type: "matrice", nlig: 1, ncol: 1, donnees: [v] };
+        });
+        enregistrerConverType(source, "liste", (v, n) => {
+            if (!testFn(v)) throw new ErreurTypeInvalide(n + "(...) attend " + nomAttendu + " (recu : " + nomNature(v) + ")");
+            return { __type: "liste", elements: [v] };
+        });
+    }
+
+    // -- Collection -> nombr (3) : seulement si la collection contient EXACTEMENT 1 element,
+    // et que cet element est lui-meme un nombre. Erreur directe sinon.
+    enregistrerConverType("vecteu", "nombr", (v, n) => {
+        if (!estVecteur(v)) throw new ErreurTypeInvalide(n + "(...) attend un vecteur (recu : " + nomNature(v) + ")");
+        if (v.length !== 1) throw new Error(n + "(...) : le vecteur doit contenir exactement 1 element (recu : " + v.length + ")");
+        if (typeof v[0] !== 'number') throw new ErreurTypeInvalide(n + "(...) : l'unique element n'est pas un nombre (recu : " + nomNature(v[0]) + ")");
+        return v[0];
+    });
+    enregistrerConverType("matric", "nombr", (v, n) => {
+        if (!estMatrice(v)) throw new ErreurTypeInvalide(n + "(...) attend une matrice (recu : " + nomNature(v) + ")");
+        if (v.donnees.length !== 1) throw new Error(n + "(...) : la matrice doit contenir exactement 1 element (recu : " + v.donnees.length + ")");
+        if (typeof v.donnees[0] !== 'number') throw new ErreurTypeInvalide(n + "(...) : l'unique element n'est pas un nombre (recu : " + nomNature(v.donnees[0]) + ")");
+        return v.donnees[0];
+    });
+    enregistrerConverType("liste", "nombr", (v, n) => {
+        if (!estListe(v)) throw new ErreurTypeInvalide(n + "(...) attend une liste (recu : " + nomNature(v) + ")");
+        if (v.elements.length !== 1) throw new Error(n + "(...) : la liste doit contenir exactement 1 element (recu : " + v.elements.length + ")");
+        if (typeof v.elements[0] !== 'number') throw new ErreurTypeInvalide(n + "(...) : l'unique element n'est pas un nombre (recu : " + nomNature(v.elements[0]) + ")");
+        return v.elements[0];
+    });
+
+    // -- Entre collections (6) : vecteu<->matric (comportement historique), vecteu<->liste,
+    // matric<->liste (chaque ligne de la matrice = un vecteur de la liste, et inversement).
+    enregistrerConverType("vecteu", "matric", (v, n) => {
+        if (!estVecteur(v)) throw new ErreurTypeInvalide(n + "(...) attend un vecteur (recu : " + nomNature(v) + ")");
+        if (v.length === 0) throw new Error(n + "(...) : impossible de convertir un vecteur vide en matrice");
+        return { __type: "matrice", nlig: v.length, ncol: 1, donnees: v.slice() };
+    });
+    enregistrerConverType("matric", "vecteu", (v, n) => {
+        if (!estMatrice(v)) throw new ErreurTypeInvalide(n + "(...) attend une matrice (recu : " + nomNature(v) + ")");
+        return v.donnees.slice();
+    });
+    enregistrerConverType("vecteu", "liste", (v, n) => {
+        if (!estVecteur(v)) throw new ErreurTypeInvalide(n + "(...) attend un vecteur (recu : " + nomNature(v) + ")");
+        return { __type: "liste", elements: v.slice() };
+    });
+    enregistrerConverType("liste", "vecteu", (v, n) => {
+        if (!estListe(v)) throw new ErreurTypeInvalide(n + "(...) attend une liste (recu : " + nomNature(v) + ")");
+        let elements = v.elements;
+        if (elements.length === 0) throw new Error(n + "(...) : impossible de convertir une liste vide en vecteur");
+        for (let e of elements) {
+            if (typeof e !== 'string' && typeof e !== 'number' && typeof e !== 'boolean') {
+                throw new ErreurTypeInvalide(n + "(...) : tous les elements doivent etre un texte, un nombre ou un booleen (element invalide : " + nomNature(e) + ")");
+            }
         }
-        throw new ErreurTypeInvalide("conver.nombr(...) attend un nombre, un texte ou un booleen (recu : " + nomNature(v) + ")");
-    };
-    fonctionsBase["conver.text"] = fonctionsExpression["conver.text"] = async function(args, ctxExpr) {
-        if (args.length !== 1) throw new Error("conver.text(...) attend exactement 1 argument");
-        let v = await evalExpr(args[0], ctxExpr);
-        if (typeof v === 'string') return v;
-        if (typeof v === 'number') return String(v);
-        if (typeof v === 'boolean') return v ? "VRAI" : "FAUX";
-        throw new ErreurTypeInvalide("conver.text(...) attend un nombre, un texte ou un booleen (recu : " + nomNature(v) + ")");
-    };
-    fonctionsBase["conver.vecteu"] = fonctionsExpression["conver.vecteu"] = async function(args, ctxExpr) {
-        if (args.length !== 1) throw new Error("conver.vecteu(...) attend exactement 1 argument");
-        let v = await evalExpr(args[0], ctxExpr);
-        if (estVecteur(v)) return v.slice();
-        if (estMatrice(v)) return v.donnees.slice();
-        return [v]; // nombre, texte ou booleen -> vecteur a 1 element
-    };
-    fonctionsBase["conver.matric"] = fonctionsExpression["conver.matric"] = async function(args, ctxExpr) {
-        if (args.length !== 1) throw new Error("conver.matric(...) attend exactement 1 argument");
-        let v = await evalExpr(args[0], ctxExpr);
-        if (estMatrice(v)) return { __type: "matrice", nlig: v.nlig, ncol: v.ncol, donnees: v.donnees.slice() };
-        if (estVecteur(v)) {
-            if (v.length === 0) throw new Error("conver.matric(...) : impossible de convertir un vecteur vide en matrice");
-            return { __type: "matrice", nlig: v.length, ncol: 1, donnees: v.slice() };
+        return unifierTypeVecteur(elements.slice());
+    });
+    enregistrerConverType("liste", "matric", (v, n) => {
+        if (!estListe(v)) throw new ErreurTypeInvalide(n + "(...) attend une liste (recu : " + nomNature(v) + ")");
+        let elements = v.elements;
+        if (elements.length === 0) throw new Error(n + "(...) : impossible de convertir une liste vide en matrice");
+        if (!elements.every(e => estVecteur(e))) throw new Error(n + "(...) : chaque element de la liste doit etre un vecteur (une ligne)");
+        let ncol = elements[0].length;
+        if (ncol === 0 || !elements.every(e => e.length === ncol)) {
+            throw new Error(n + "(...) : tous les vecteurs de la liste doivent avoir la meme longueur");
         }
-        return { __type: "matrice", nlig: 1, ncol: 1, donnees: [v] };
-    };
+        let nlig = elements.length;
+        let donnees = new Array(nlig * ncol);
+        for (let l = 0; l < nlig; l++) for (let c = 0; c < ncol; c++) donnees[c * nlig + l] = elements[l][c];
+        return { __type: "matrice", nlig: nlig, ncol: ncol, donnees: donnees };
+    });
+    enregistrerConverType("matric", "liste", (v, n) => {
+        if (!estMatrice(v)) throw new ErreurTypeInvalide(n + "(...) attend une matrice (recu : " + nomNature(v) + ")");
+        let lignes = [];
+        for (let l = 1; l <= v.nlig; l++) lignes.push(accederMatrice(v, l, null, n));
+        return { __type: "liste", elements: lignes };
+    });
 
     // est.nombr(var) / est.text(var) / est.vecteu(var) / est.matric(var) : verification de type.
     fonctionsBase["est.nombr"] = fonctionsExpression["est.nombr"] = async function(args, ctxExpr) {
@@ -6838,7 +7019,7 @@ for (let e of aideCommandes) {
 
 // Un seul passage sur les noms reconnus évite qu'une premiere coloration
 // (commande) empiete sur une seconde (fonction). Les noms les plus longs sont
-// places en premier pour que "planifier.annuler" passe avant "planifier" et
+// places en premier pour que "annuler.planifier" passe avant "planifier" et
 // "sinon si" avant "sinon".
 let nomsCouleur = Array.from(new Set([
   ...Object.keys(commandeCouleur),
@@ -6848,8 +7029,8 @@ let nomsCouleur = Array.from(new Set([
 // Les fonctions et les commandes sont reconnues separement.
 // Une fonction est coloree UNIQUEMENT lorsque sa premiere parenthese ouvrante
 // suit son nom (espaces eventuels autorises). Une commande sans parentheses est
-// coloree directement. Ainsi "conver.vecteu" reste un identifiant normal,
-// tandis que "conver.vecteu(...)" est colore comme fonction.
+// coloree directement. Ainsi "conver.vecteu.liste" reste un identifiant normal,
+// tandis que "conver.vecteu.liste(...)" est colore comme fonction.
 let regexCommandeCouleur = Object.keys(commandeCouleur).length
   ? new RegExp('(?<![a-zA-Z0-9_])(' + Object.keys(commandeCouleur)
       .sort((a, b) => b.length - a.length)
