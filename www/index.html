@@ -4826,14 +4826,15 @@ let aideCommandes = [
       "Appelee depuis l'editeur (script lance localement, pas via RUN) : arrete le service immediatement.",
       "Ne prend aucun argument, ne renvoie rien d'utile."
     ], exemple: "** dans un script envoye au service (bouton RUN) :\naffi(|traitement termine|)\narreter.service.arriere()\n** le service s'arrete juste apres avoir publie ce resultat" },
-  { noms: ["envoyer.notif"], categorie: "Controle", syntaxe: "envoyer.notif(message)", description: [
+  { noms: ["envoyer.notif"], categorie: "Controle", syntaxe: "envoyer.notif(...)", description: [
       "Affiche immediatement une notification systeme Android contenant le message donne.",
+      "Comme affi(), plusieurs elements separes par une virgule (,) peuvent etre combines dans le message.",
       "La notification reste visible meme apres la fin du script et peut etre touchee pour",
       "rouvrir MonLangage.",
       "Renvoie VRAI si Android accepte la notification, FAUX sinon.",
       "Necessite l'application native et, sur Android 13+, l'autorisation d'afficher des",
       "notifications (demandee automatiquement au premier appel si besoin)."
-    ], exemple: "envoyer.notif(|Nouveau message recu|)" },
+    ], exemple: "envoyer.notif(|Nouveau message recu|)\nenvoyer.notif(|Score :|, score, |points|)" },
 
   { noms: ["connexion.disponible", "type.connexion"], categorie: "Controle", syntaxe: "connexion.disponible()  /  type.connexion()", description: [
       "connexion.disponible() : VRAI si une connexion internet (wifi ou data mobile) est",
@@ -6321,14 +6322,29 @@ function enregistrerFonctionsBase() {
         throw new ErreurIndisponibleHorsApp("arreter.service.arriere() : disponible uniquement dans l'app installee (rebuild requis)");
     };
 
-    // envoyer.notif(message) : affiche IMMEDIATEMENT une notification systeme Android.
+    // envoyer.notif(...) : affiche IMMEDIATEMENT une notification systeme Android. Comme affi(),
+    // accepte plusieurs elements separes par une virgule (|texte|, variables, calculs, saulig).
     // La notification reste independante du script apres son affichage. Renvoie VRAI si
     // Android accepte la notification, FAUX sinon. Necessite l'app native et, sur Android
     // 13+, l'autorisation POST_NOTIFICATIONS.
     fonctionsBase["envoyer.notif"] = fonctionsExpression["envoyer.notif"] = async function(args, ctxExpr) {
-        if (args.length !== 1) throw new Error("envoyer.notif(message) attend exactement 1 argument");
-        let message = await evalExpr(args[0], ctxExpr);
-        if (typeof message !== "string") throw new ErreurTypeInvalide("envoyer.notif(...) : message doit etre du texte");
+        if (args.length < 1) throw new Error("envoyer.notif(...) attend au moins 1 argument");
+        // Meme logique que affi() : chaque element separe par une virgule est soit un
+        // |texte| litteral, soit saulig (saut de ligne), soit une expression (variable,
+        // calcul...) convertie en texte. Les parties sont jointes par un espace.
+        let parties = [];
+        for (let elem of args) {
+            let elemTrim = (elem || "").trim();
+            if (elemTrim === "saulig") {
+                parties.push("\n");
+            } else if (/^\|[\s\S]*\|$/.test(elemTrim)) {
+                parties.push(elemTrim.slice(1, -1));
+            } else {
+                verifierTexteLitteralFerme(elemTrim);
+                parties.push(await formatPourAffichage(await evalExpr(elemTrim, ctxExpr)));
+            }
+        }
+        let message = parties.join(" ").replace(/ {2,}/g, " ").replace(/ *\n */g, "\n");
         if (!(window.MonLangage && typeof window.MonLangage.envoyerNotification === "function")) {
             throw new ErreurIndisponibleHorsApp("envoyer.notif(...) : disponible uniquement dans l'app installee (rebuild requis)");
         }
