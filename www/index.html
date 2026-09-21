@@ -54,6 +54,9 @@
     button { background: #238636; color: white; border: none; padding: 6px 16px; border-radius: 6px; font-weight: bold; cursor: pointer; font-family: monospace; }
     button:hover { background: #2ea043; }
     button:disabled { background: #444; cursor: not-allowed; }
+    #btnRunFond { background: #6e40c9; }
+    #btnRunFond:hover { background: #8957e5; }
+    #btnRunFond:disabled { background: #444; }
     #btnConsole { background: #1f6feb; }
     #btnConsole:hover { background: #388bfd; }
     #btnRetour { background: #30363d; }
@@ -378,6 +381,7 @@
   <div id="editeur">
     <div id="barre">
       <button id="btnRun">▶ RUN</button>
+      <button id="btnRunFond" type="button" hidden title="Executer en arriere-plan (service Android, sans console : entr() indisponible)">🌙 FOND</button>
       <button id="btnConsole">Console</button>
       <button id="btnSauver" title="Enregistrer" aria-label="Enregistrer">💾</button>
       <div class="menuOuvrir">
@@ -454,10 +458,10 @@ affi(|Bonjour |, nom)</textarea>
 
   <div id="dialogueArrierePlan" class="dialogueOverlay" aria-hidden="true">
     <div class="dialogueBoite" role="dialog" aria-modal="true" aria-labelledby="titreDialogueArrierePlan">
-      <div id="titreDialogueArrierePlan" class="dialogueTitre">Voulez-vous mettre ce script en arrière-plan ?</div>
+      <div id="titreDialogueArrierePlan" class="dialogueTitre">Ce script tourne encore dans la console. Le laisser continuer ? (pour un vrai arrière-plan sans console : bouton FOND)</div>
       <div class="dialogueActions">
-        <button id="btnDialogueNon" type="button">Non</button>
-        <button id="btnDialogueOui" type="button">Oui</button>
+        <button id="btnDialogueNon" type="button">Arrêter</button>
+        <button id="btnDialogueOui" type="button">Laisser</button>
       </div>
     </div>
   </div>
@@ -576,6 +580,7 @@ let codeArea = document.getElementById("code");
 let codeHighlight = document.getElementById("codeHighlight");
 let numeros = document.getElementById("numeros");
 let btnRun = document.getElementById("btnRun");
+let btnRunFond = document.getElementById("btnRunFond");
 let ecranEditeur = document.getElementById("editeur");
 let ecranConsole = document.getElementById("console");
 let ecranSpecification = document.getElementById("ecranSpecification");
@@ -1033,7 +1038,8 @@ btnRetour.addEventListener("click", quitterConsole);
 function confirmerArrierePlanOui() {
   fermerDialogueArrierePlan();
   scriptEnArrierePlan = true;
-  // On quitte uniquement l'interface : le service continue l'execution.
+  // On quitte uniquement l'interface : le script lance avec RUN continue dans la console (masquee,
+  // reaffichable avec le bouton Console). Il n'est PAS confie au service -- c'est le role du bouton FOND.
   afficherEditeur();
 }
 function confirmerArrierePlanNon() {
@@ -1612,7 +1618,16 @@ function construireFonctionAnonyme(tokens, pos) {
 // zone de saisie editable (le curseur). Retourne une Promise qui se resout avec le texte tape
 // quand l'utilisateur valide (Entree).
 // entr() sans argument -> juste le curseur. entr(|message|) -> "message" puis le curseur.
+// Dans le service (WebView sans interface), il n'y a aucune console ou taper : entr() attendrait
+// pour toujours. On leve une erreur claire a la place.
+function verifierSaisiePossible() {
+  if (window.MonLangageServiceNative) {
+    throw new Error("entr() est indisponible en arriere-plan (aucune console pour saisir) : lance ce script avec RUN au lieu de FOND");
+  }
+}
+
 function demanderSaisieConsole(message) {
+  verifierSaisiePossible();
   // On attend une saisie de l'utilisateur, pas un calcul : l'indicateur
   // "execution en cours" n'a pas lieu d'etre ici.
   arreterIndicateurAttente();
@@ -1687,6 +1702,7 @@ function demanderSaisieConsole(message) {
 // Entree physique (deja annulee par beforeinput sur la plupart des navigateurs, mais
 // pas garanti partout).
 function demanderSaisieConsoleSecrete(message, styleChar) {
+  verifierSaisiePossible();
   arreterIndicateurAttente();
   return new Promise((resolve, reject) => {
     let ligne = document.createElement("div");
@@ -3899,7 +3915,7 @@ async function extraireAttributsPartages(tokens, debut, fin, ctxExpr) {
       i = finBlocMethode;
       continue;
     }
-    let mAttr = t.texte.match(/^([a-zA-Z_]\w*)\s*~\s*(.*)$/);
+    let mAttr = t.texte.match(/^([a-zA-Z_]\w*)\s*~\s*(.*)$/s);
     if (mAttr) {
       let nomAttr = mAttr[1], valeurExpr = mAttr[2].trim();
       let valeur;
@@ -4040,6 +4056,8 @@ async function chargerModule(chemin, alias, ligneErreur) {
   let tokensModule;
   try {
     tokensModule = parser(texte);
+    let erreursModule = verifierSyntaxeSansRisque(texte, tokensModule);
+    if (erreursModule.length > 0) throw new Error("erreur de syntaxe ligne " + erreursModule[0].ligne + " : " + erreursModule[0].message);
   } catch (e) {
     throw new ErreurLangage("import(...) : erreur dans le module '" + chemin + "' : " + e.message, ligneErreur);
   }
@@ -4818,14 +4836,14 @@ let aideCommandes = [
       "le nombre d'alarmes annulees.",
       "Necessite l'app native (indisponible dans l'apercu Chrome) et demande les permissions",
       "notifications + alarme exacte au premier appel si besoin (a accorder puis relancer)."
-    ], exemple: "planifier(1, 9, 0, |Lundi 9h : debut de semaine|)\naffi(|Alarme programmee, je continue mon travail|)\n\npou a dan planifier.liste(){\n    affi(a[0], |/|, a[1], |:|, a[2], | - |, a[3])\n}\n\nn~annuler.planifier.parMessage(|Reunion|)\naffi(n, | alarme(s) annulee(s)|)" },
+    ], exemple: "planifier(1, 9, 0, |Lundi 9h : debut de semaine|)\naffi(|Alarme programmee, je continue mon travail|)\n\npou(a dan planifier.liste()){\n    affi(a[0], |/|, a[1], |:|, a[2], | - |, a[3])\n}\n\nn~annuler.planifier.parMessage(|Reunion|)\naffi(n, | alarme(s) annulee(s)|)" },
 
   { noms: ["arreter.service.arriere"], categorie: "Controle", syntaxe: "arreter.service.arriere()", description: [
-      "Arrete le service qui execute les scripts en arriere-plan (celui lance automatiquement a l'ouverture de l'app, utilise par le bouton RUN).",
-      "Appelee dans un script lance via RUN (donc en train de tourner DANS le service) : ne fait que demander l'arret. Le script continue normalement jusqu'a sa fin naturelle -- le service s'arrete SEULEMENT APRES, une fois le resultat publie. Si le script plante avant cette ligne, le service reste actif.",
-      "Appelee depuis l'editeur (script lance localement, pas via RUN) : arrete le service immediatement.",
+      "Arrete le service qui execute les scripts en arriere-plan (celui lance automatiquement a l'ouverture de l'app, utilise par le bouton FOND).",
+      "Appelee dans un script lance via FOND (donc en train de tourner DANS le service) : ne fait que demander l'arret. Le script continue normalement jusqu'a sa fin naturelle -- le service s'arrete SEULEMENT APRES, une fois le resultat publie. Si le script plante avant cette ligne, le service reste actif.",
+      "Appelee depuis l'editeur (script lance localement avec RUN, pas via FOND) : arrete le service immediatement.",
       "Ne prend aucun argument, ne renvoie rien d'utile."
-    ], exemple: "** dans un script envoye au service (bouton RUN) :\naffi(|traitement termine|)\narreter.service.arriere()\n** le service s'arrete juste apres avoir publie ce resultat" },
+    ], exemple: "** dans un script envoye au service (bouton FOND) :\naffi(|traitement termine|)\narreter.service.arriere()\n** le service s'arrete juste apres avoir publie ce resultat" },
   { noms: ["envoyer.notif"], categorie: "Controle", syntaxe: "envoyer.notif(...)", description: [
       "Affiche immediatement une notification systeme Android contenant le message donne.",
       "Comme affi(), plusieurs elements separes par une virgule (,) peuvent etre combines dans le message.",
@@ -4842,14 +4860,14 @@ let aideCommandes = [
       "une boucle (tanqer/attendre) si tu veux reagir a un changement de connexion.",
       "type.connexion() : \"wifi\", \"mobile\", \"ethernet\", \"autre\" ou \"aucune\".",
       "Necessite l'app native, aucune permission a accorder."
-    ], exemple: "tanqer VRAI{\n    si connexion.disponible(){\n        affi(|Connecte en |, type.connexion())\n        stop\n    }\n    attendre(5)\n}" },
+    ], exemple: "tanqer VRAI{\n    si(connexion.disponible()){\n        affi(|Connecte en |, type.connexion())\n        stop\n    }\n    attendre(5)\n}" },
 
   { noms: ["niveau.batterie", "batterie.encharge"], categorie: "Controle", syntaxe: "niveau.batterie()  /  batterie.encharge()", description: [
       "niveau.batterie() : pourcentage de batterie restant, de 0 a 100.",
       "batterie.encharge() : VRAI si le telephone est en train de charger (cable ou sans",
       "fil) ou deja completement charge.",
       "Necessite l'app native, aucune permission a accorder."
-    ], exemple: "si niveau.batterie() < 20 ET non batterie.encharge(){\n    affi(|Pense a charger le telephone|)\n}" },
+    ], exemple: "si(niveau.batterie() < 20 et non batterie.encharge()){\n    affi(|Pense a charger le telephone|)\n}" },
 
   { noms: ["dossier.liste"], categorie: "Sauvegarde", syntaxe: "dossier.liste()  ou  dossier.liste(dossier)", description: [
       "Liste les NOMS de TOUS les fichiers d'un dossier (contrairement a voir.fichier(), pas",
@@ -4857,7 +4875,7 @@ let aideCommandes = [
       "l'appareil. Utile pour detecter l'apparition d'un nouveau fichier, en comparant deux",
       "appels successifs a intervalle regulier (tanqer/attendre).",
       "Necessite l'app native et la permission de stockage (comme voir.fichier())."
-    ], exemple: "avant ~ dossier.liste(|/sdcard/Download|)\ntanqer VRAI{\n    attendre(10)\n    maintenant ~ dossier.liste(|/sdcard/Download|)\n    pou f dan maintenant{\n        si non (f dan avant){ affi(|Nouveau fichier : |, f) }\n    }\n    avant ~ maintenant\n}" },
+    ], exemple: "avant ~ dossier.liste(|/sdcard/Download|)\ntanqer VRAI{\n    attendre(10)\n    maintenant ~ dossier.liste(|/sdcard/Download|)\n    pou(f dan maintenant){\n        si(non (f dan avant)){ affi(|Nouveau fichier : |, f) }\n    }\n    avant ~ maintenant\n}" },
 
   { noms: ["sms.recus", "envoyer.sms"], categorie: "Controle", syntaxe: "sms.recus(depuisSecondes)  /  envoyer.sms(numero, message)", description: [
       "sms.recus(depuisSecondes) : liste des SMS recus au cours des \"depuisSecondes\"",
@@ -4871,7 +4889,7 @@ let aideCommandes = [
       "automatiquement si besoin (a accorder puis relancer le script). Android peut",
       "demander une confirmation supplementaire si trop de SMS partent d'un coup vers trop",
       "de destinataires differents en peu de temps (protection systeme anti-spam)."
-    ], exemple: "pou msg dan sms.recus(60){\n    si msg[1] == |stop|{\n        envoyer.sms(msg[0], |Bien recu, arret confirme.|)\n    }\n}" },
+    ], exemple: "pou(msg dan sms.recus(60)){\n    si(msg[1] == |stop|){\n        envoyer.sms(msg[0], |Bien recu, arret confirme.|)\n    }\n}" },
 
   { noms: ["ouvrir.whatsapp", "messenger.ouvrir"], categorie: "Controle", syntaxe: "ouvrir.whatsapp()  /  ouvrir.whatsapp(numero, message)  /  messenger.ouvrir(destinataire, message)", description: [
       "ouvrir.whatsapp() ouvre simplement WhatsApp. ouvrir.whatsapp(numero, message) ouvre la conversation avec le numero et pre-remplit le message. messenger.ouvrir(destinataire, message) ouvre Messenger avec le texte pre-rempli.",
@@ -4885,7 +4903,7 @@ let aideCommandes = [
       "n'identifie pas les gens par numero comme WhatsApp).",
       "Necessite l'app native et une connexion internet (verifiable avant avec",
       "connexion.disponible())."
-    ], exemple: "si connexion.disponible(){\n    ouvrir.whatsapp(|33612345678|, |Salut !|)\n} sinon {\n    envoyer.sms(|33612345678|, |Salut !|)\n}" },
+    ], exemple: "si(connexion.disponible()){\n    ouvrir.whatsapp(|33612345678|, |Salut !|)\n} sinon {\n    envoyer.sms(|33612345678|, |Salut !|)\n}" },
 
   { noms: ["partager.fichier"], categorie: "Sauvegarde", syntaxe: "partager.fichier(chemin)", description: [
       "Ouvre le selecteur de partage standard Android (Bluetooth, email, Drive, n'importe",
@@ -7594,7 +7612,7 @@ async function executerCommandeSimple(ligne) {
   }
 
   // Methode sur vecteur/matrice : nom.ajout(elements)
-  let mMethode = _regexCache(_entreeLigne, 'methode', ligne, /^([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\.(\w+)\((.*)\)$/);
+  let mMethode = _regexCache(_entreeLigne, 'methode', ligne, /^([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\.(\w+)\((.*)\)$/s);
   if (mMethode && mMethode[1] !== "base" && mMethode[1] !== "conver" && mMethode[1] !== "est"
       && !Object.prototype.hasOwnProperty.call(fonctionsBase, mMethode[1] + "." + mMethode[2])) {
     let nomVar = mMethode[1], methode = mMethode[2], argsStr = mMethode[3].trim();
@@ -7692,7 +7710,7 @@ async function executerCommandeSimple(ligne) {
   // donc distingue de l'appel de methode ci-dessus). Ex: moi.nom ~ nom (dans une classe), ou
   // a.age ~ 10 (depuis l'exterieur). Ou ecriture d'un attribut PARTAGE (statique), avec le nom
   // de la classe elle-meme au lieu d'une instance : NomClasse.attribut ~ valeur.
-  let mAttribut = _regexCache(_entreeLigne, 'attribut', ligne, /^([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\s*~\s*(.*)$/);
+  let mAttribut = _regexCache(_entreeLigne, 'attribut', ligne, /^([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\s*~\s*(.*)$/s);
   if (mAttribut) {
     let nomVar = mAttribut[1], nomAttr = mAttribut[2], valeurExpr = mAttribut[3].trim();
     let valeur;
@@ -7737,7 +7755,7 @@ async function executerCommandeSimple(ligne) {
   }
 
   // Assignation : nom ~ valeur
-  let mAssign = _regexCache(_entreeLigne, 'assign', ligne, /^([a-zA-Z_]\w*)\s*~\s*(.*)$/);
+  let mAssign = _regexCache(_entreeLigne, 'assign', ligne, /^([a-zA-Z_]\w*)\s*~\s*(.*)$/s);
   if (mAssign) {
     let nom = mAssign[1], valeur = mAssign[2].trim();
     let elementsAssign = splitTopLevelComma(valeur);
@@ -7934,21 +7952,53 @@ function parser(code) {
   // dansTexte : un ';' A L'INTERIEUR d'un texte litteral |...| ne separe pas des
   // instructions, il fait partie du texte (ex: affi(|un ; deux|) reste UN seul argument).
   let dansTexte = false;
+  // profondeur : nombre de ( et [ ouverts (hors texte) dans l'instruction en cours. Tant qu'il
+  // en reste un d'ouvert, un saut de ligne ne termine PAS l'instruction : un appel peut donc
+  // s'ecrire sur plusieurs lignes, comme en Python --
+  //   chaines ~ liste(
+  //     liste(|a|, |b|),
+  //     liste(|c|, |d|)
+  //   )
+  // Le saut de ligne (et l'indentation qui le suit) est alors remplace par UN espace : le texte
+  // de l'instruction reste sur une seule ligne, comme si elle avait ete ecrite ainsi. Les sauts
+  // de ligne A L'INTERIEUR d'un texte |...| sont conserves tels quels. Les numeros de ligne
+  // restent exacts (chaque saut de ligne replie compte toujours pour une ligne).
+  let profondeur = 0;
+  let sauterEspaces = false;
+  let ligneFinBuffer = 1;   // ligne du dernier caractere non blanc de l'instruction en cours
   for (let i = 0; i < code.length; i++) {
     let c = code[i];
     if (c === '|') dansTexte = !dansTexte;
+    if (!dansTexte && profondeur > 0) {
+      if (c === '\r') continue;
+      if (c === '\n') {
+        ligne++;
+        if (buffer !== "" && buffer[buffer.length - 1] !== ' ') buffer += " ";
+        sauterEspaces = true;
+        continue;
+      }
+      if (sauterEspaces && (c === ' ' || c === '\t')) continue;
+    }
+    sauterEspaces = false;
     if (!dansTexte && (c === '{' || c === '}' || c === '\n' || c === ';')) {
-      if (buffer.trim() !== "") tokens.push({ texte: buffer.trim(), ligne: ligneDebutBuffer });
+      if (buffer.trim() !== "") tokens.push({ texte: buffer.trim(), ligne: ligneDebutBuffer, ligneFin: ligneFinBuffer });
       if (c === '{' || c === '}') tokens.push({ texte: c, ligne: ligne });
       buffer = "";
+      profondeur = 0;
       if (c === '\n') ligne++;
       ligneDebutBuffer = ligne;
     } else {
       if (buffer === "") ligneDebutBuffer = ligne;
       buffer += c;
+      if (c === '\n') ligne++;   // saut de ligne a l'interieur d'un texte |...| : il compte aussi
+      else if (c !== ' ' && c !== '\t' && c !== '\r') ligneFinBuffer = ligne;
+      if (!dansTexte) {
+        if (c === '(' || c === '[') profondeur++;
+        else if ((c === ')' || c === ']') && profondeur > 0) profondeur--;
+      }
     }
   }
-  if (buffer.trim() !== "") tokens.push({ texte: buffer.trim(), ligne: ligneDebutBuffer });
+  if (buffer.trim() !== "") tokens.push({ texte: buffer.trim(), ligne: ligneDebutBuffer, ligneFin: ligneFinBuffer });
   return tokens;
 }
 
@@ -7961,6 +8011,472 @@ function trouverFinBloc(tokens, debut, ligneErreur) {
   }
   if (niveau !== 0) throw new ErreurLangage("Accolade fermante manquante", ligneErreur);
   return i;
+}
+
+/* ===================== VERIFICATION DE SYNTAXE AVANT EXECUTION ===================== */
+// Comme Python, qui compile tout le fichier AVANT d'executer la moindre ligne : cette etape relit
+// TOUT le script (structure des blocs, forme de chaque en-tete, syntaxe de chaque expression) avant
+// que la premiere instruction ne s'execute -- et meme avant le pre-enregistrement des fonctions,
+// classes et imports (qui charge et execute des modules). Sans elle, une faute de syntaxe a la
+// ligne 50 n'etait decouverte qu'apres avoir deja execute les lignes 1 a 49 (envoi de SMS,
+// ecriture ou suppression de fichier, notification...), avec des effets deja irreversibles.
+// Regle d'or : ne JAMAIS rejeter un programme valide. Chaque controle ci-dessous reprend donc
+// exactement les formes que l'execution reconnait deja (memes regex d'en-tete, meme grammaire
+// d'expression que l'evaluateur) ; ce qui est verifie ici ne sert qu'a detecter ce qui ferait
+// de toute facon echouer le script, mais AVANT qu'il ait pu faire quoi que ce soit.
+// Ce qui n'est PAS verifie ici (donc toujours detecte a l'execution, comme en Python) : les noms
+// (variable/fonction inconnue), les types, le nombre d'arguments, les fichiers, etc.
+
+// Regroupe toutes les erreurs de syntaxe trouvees (chacune avec son numero de ligne).
+class ErreurSyntaxeProgramme extends ErreurLangage {
+  constructor(erreurs) {
+    super(erreurs[0].message, erreurs[0].ligne);
+    this.erreurs = erreurs;   // [{ ligne, message }, ...]
+  }
+}
+
+// Raccourcit un morceau de code affiche dans un message d'erreur (une parenthese oubliee fait
+// avaler tout le reste du fichier dans une seule instruction : inutile de tout recopier).
+function _court(t, max) {
+  max = max || 70;
+  t = String(t);
+  return t.length > max ? t.slice(0, max - 3) + "..." : t;
+}
+
+function _decrireJetonExpr(t) {
+  if (!t) return "fin de l'expression";
+  switch (t.type) {
+    case 'num': return String(t.v);
+    case 'str': return "|" + t.v + "|";
+    case 'ident': return t.v;
+    case 'op': case 'cmp': return t.v;
+    case 'and': return "et";
+    case 'or': return "ou";
+    case 'not': return "non";
+    case 'dan': return "dan";
+    case 'tilde': return "~";
+    case 'deuxpoints': return ":";
+    default: return t.type;   // ( ) , [ ]
+  }
+}
+
+// Verifie la syntaxe d'UNE expression (sans rien evaluer) : leve une Error decrivant le probleme,
+// ne renvoie rien si elle est bien formee. Meme grammaire (memes niveaux de precedence, memes
+// suffixes .attr / .methode(...) / [indice], meme fonction anonyme fonc(params) corps, memes
+// arguments nommes nom~valeur) que l'evaluateur d'expressions -- voir evalExprSansEntreeAsync.
+function verifierSyntaxeExpression(str) {
+  const s = (str === undefined || str === null) ? "" : String(str).trim();
+  if (s === "") throw new Error("expression vide");
+  const sa = _court(s);
+  let tokens;
+  try {
+    tokens = tokenizerExpr(s);
+  } catch (e) {
+    let msg = _court(e.message, 220);
+    if (msg.indexOf("Caractere inattendu '='") === 0) msg += " -- pour comparer utilise ==, pour affecter utilise ~";
+    throw new Error(msg);
+  }
+  let pos = 0;
+  const peek = () => tokens[pos];
+  const est = (type, v) => { const t = tokens[pos]; return !!t && t.type === type && (v === undefined || t.v === v); };
+  const inattendu = () => {
+    const t = tokens[pos];
+    if (!t) return new Error("expression incomplete (il manque quelque chose a la fin de \"" + sa + "\")");
+    if (t.type === ')') return new Error("parenthese fermante ) en trop ou mal placee dans \"" + sa + "\"");
+    if (t.type === ']') return new Error("crochet fermant ] en trop ou mal place dans \"" + sa + "\"");
+    return new Error("\"" + _decrireJetonExpr(t) + "\" inattendu dans \"" + sa + "\"");
+  };
+  const attendre = (type, msgFin) => {
+    if (est(type)) { pos++; return; }
+    if (!peek()) throw new Error(msgFin + " dans \"" + sa + "\"");
+    throw inattendu();
+  };
+  const OPS_MUL = ['*', '/', '%', 'enti', '.', '..', '×'];
+  function or_() { and_(); while (est('or')) { pos++; and_(); } }
+  function and_() { not_(); while (est('and')) { pos++; not_(); } }
+  function not_() { if (est('not')) { pos++; not_(); return; } dan_(); }
+  function dan_() { cmp_(); while (est('dan')) { pos++; cmp_(); } }
+  function cmp_() { add_(); if (est('cmp')) { pos++; add_(); } }
+  function add_() { mul_(); while (est('op', '+') || est('op', '-')) { pos++; mul_(); } }
+  function mul_() { colon_(); while (peek() && peek().type === 'op' && OPS_MUL.indexOf(peek().v) !== -1) { pos++; colon_(); } }
+  function colon_() { unary_(); if (est('deuxpoints')) { pos++; unary_(); } }
+  function unary_() { if (est('op', '-')) { pos++; unary_(); return; } pow_(); }
+  function pow_() { primaire_(); if (est('op', '^')) { pos++; unary_(); } }
+  function indice_() {   // '[' deja reconnu, non consomme
+    pos++;
+    if (!(est(',') || est(']'))) or_();
+    if (est(',')) { pos++; if (!est(']')) or_(); }
+    attendre(']', "crochet fermant ] manquant");
+  }
+  function arg_() {      // un argument d'appel : nom~valeur (argument nomme) ou expression
+    if (est(')') || est(',')) throw new Error("argument vide (virgule en trop ?) dans \"" + sa + "\"");
+    if (est('ident') && tokens[pos + 1] && tokens[pos + 1].type === 'tilde') { pos += 2; }
+    or_();
+  }
+  function args_() {     // '(' deja consomme
+    if (!est(')')) { arg_(); while (est(',')) { pos++; arg_(); } }
+    attendre(')', "parenthese fermante ) manquante");
+  }
+  // Apres un ".", un mot reserve (et, ou, non, dan, mod, enti) est un simple nom : le tokeniseur
+  // le decoupe en operateur, mais a l'execution un appel comme est.enti(...) est reconnu comme
+  // nom de fonction native AVANT toute tokenisation (voir _analyserSegmentsExpression).
+  const nomApresPoint = (t) => !!t && (t.type === 'ident' || t.type === 'and' || t.type === 'or' || t.type === 'not' || t.type === 'dan' || (t.type === 'op' && (t.v === 'enti' || t.v === '%')));
+  function suffixes_() {
+    while (true) {
+      if (est('op', '.') && nomApresPoint(tokens[pos + 1])) {
+        pos += 2;
+        if (est('(')) { pos++; args_(); }
+        continue;
+      }
+      if (est('[')) { indice_(); continue; }
+      break;
+    }
+  }
+  function primaire_() {
+    const t = peek();
+    if (!t) throw inattendu();
+    if (t.type === 'num' || t.type === 'str') { pos++; suffixes_(); return; }
+    if (t.type === '(') { pos++; or_(); attendre(')', "parenthese fermante ) manquante"); suffixes_(); return; }
+    if (t.type === 'ident') {
+      pos++;
+      if (t.v === 'fonc' && est('(')) {
+        // fonction anonyme : fonc(param, param2~defaut...) corps
+        pos++;
+        if (!est(')')) {
+          while (true) {
+            if (!est('ident')) throw new Error("parametre invalide dans fonc(...) : un nom de parametre est attendu (dans \"" + sa + "\")");
+            pos++;
+            if (est('tilde')) { pos++; or_(); }
+            if (est(',')) { pos++; continue; }
+            break;
+          }
+        }
+        attendre(')', "parenthese fermante ) manquante pour les parametres de fonc(...)");
+        if (!peek() || est(')') || est(',') || est(']')) throw new Error("fonc(...) attend une expression apres les parametres, ecris par exemple fonc(x) x*2 (dans \"" + sa + "\")");
+        or_();
+        return;
+      }
+      if (est('(')) { pos++; args_(); }
+      suffixes_();
+      return;
+    }
+    throw inattendu();
+  }
+  or_();
+  if (pos < tokens.length) throw inattendu();
+}
+
+// Renvoie le numero de ligne (dans le source) du | qui ouvre un texte litteral jamais ferme, ou 0
+// si tous les textes sont fermes. Un seul | oublie avale sinon tout le reste du fichier dans un
+// unique "texte" : accolades, lignes et instructions comprises.
+function _trouverTexteNonFerme(code) {
+  const c = retirerCommentaires(code);
+  let dansTexte = false, ligne = 1, ligneOuverture = 0;
+  for (let k = 0; k < c.length; k++) {
+    const ch = c[k];
+    if (ch === '\n') { ligne++; continue; }
+    if (ch === '|') { dansTexte = !dansTexte; if (dansTexte) ligneOuverture = ligne; }
+  }
+  return dansTexte ? ligneOuverture : 0;
+}
+
+// Coupe sur les virgules de haut niveau (hors texte |...|, hors (...) et hors [...]).
+function _splitVirgulesHautNiveau(str) {
+  const parts = [];
+  let buf = "", prof = 0, dansTexte = false;
+  for (let k = 0; k < str.length; k++) {
+    const c = str[k];
+    if (c === '|') { dansTexte = !dansTexte; buf += c; continue; }
+    if (!dansTexte) {
+      if (c === '(' || c === '[') prof++;
+      else if (c === ')' || c === ']') prof--;
+      else if (c === ',' && prof === 0) { parts.push(buf); buf = ""; continue; }
+    }
+    buf += c;
+  }
+  parts.push(buf);
+  return parts.map(p => p.trim());
+}
+
+// Position du premier ~ de haut niveau (hors texte, hors parentheses/crochets), ou -1.
+function _indexTildeHautNiveau(t) {
+  let dansTexte = false, prof = 0;
+  for (let k = 0; k < t.length; k++) {
+    const c = t[k];
+    if (c === '|') { dansTexte = !dansTexte; continue; }
+    if (dansTexte) continue;
+    if (c === '(' || c === '[') prof++;
+    else if (c === ')' || c === ']') prof--;
+    else if (c === '~' && prof === 0) return k;
+  }
+  return -1;
+}
+
+// Verifie une suite de valeurs separees par des virgules (droite d'un ~, retour a, b...) comme
+// le fait l'execution : chaque element est soit saulig, soit un texte |...|, soit une expression.
+// Renvoie le message d'erreur, ou null si tout est bien forme.
+function _verifierListeValeurs(str) {
+  for (const p of _splitVirgulesHautNiveau(str)) {
+    const s = p.trim();
+    if (s === "saulig") continue;
+    if (/^\|[\s\S]*\|$/.test(s)) continue;
+    try { verifierSyntaxeExpression(s); } catch (e) { return e.message; }
+  }
+  return null;
+}
+
+const _RE_ATTRAPE = /^attrape(?:\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:,\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*)?\))?$/;
+
+// Verifie tout le programme sans rien executer. "code" est le source brut, "tokens" le resultat
+// de parser(code). Renvoie la liste des erreurs [{ ligne, message }] (vide si la syntaxe est bonne).
+function verifierSyntaxeProgramme(code, tokens) {
+  const erreurs = [];
+  let tokCourant = null;   // instruction en cours d'analyse (pour l'indice "parenthese restee ouverte")
+  const err = (ligne, message) => { erreurs.push({ ligne: ligne, message: message, tok: tokCourant }); };
+
+  // 1) Texte litteral |...| non ferme : tout ce qui suit serait avale, inutile d'aller plus loin.
+  const ligneTexteOuvert = _trouverTexteNonFerme(code);
+  if (ligneTexteOuvert) {
+    err(ligneTexteOuvert, "Texte litteral non ferme : il manque le | de fermeture");
+    delete erreurs[0].tok;
+    return erreurs;
+  }
+
+  const pile = [{ kind: 'racine', nom: 'programme', ligne: 0 }];
+  const fermes = [];      // fermes[i] = genre du bloc que le '}' d'index i vient de fermer
+  let arret = false;      // erreur de structure (accolades) : la suite n'est plus fiable
+  const fatal = (ligne, message) => { err(ligne, message); arret = true; };
+  const testExpr = (str, ligne, contexte) => {
+    try { verifierSyntaxeExpression(str); }
+    catch (e) { err(ligne, (contexte ? contexte + " : " : "") + e.message); }
+  };
+  const dansFonction = () => pile.some(b => b.kind === 'fonc');
+  const dansBoucle = () => {
+    for (let k = pile.length - 1; k >= 0; k--) {
+      const kd = pile[k].kind;
+      if (kd === 'pou' || kd === 'tanqer') return true;
+      if (kd === 'fonc' || kd === 'classe' || kd === 'racine') return false;
+    }
+    return false;
+  };
+  // Le jeton suivant un en-tete doit etre "{". dejaErreur : une erreur a deja ete signalee sur
+  // cet en-tete (inutile d'en ajouter une seconde pour la meme ligne).
+  const ouvrirBloc = (kind, nom, i, ligne, dejaErreur) => {
+    if (!tokens[i + 1] || tokens[i + 1].texte !== '{') {
+      if (!dejaErreur) fatal(ligne, "Manque { apres " + nom);
+      return i + 1;
+    }
+    pile.push({ kind: kind, nom: nom, ligne: ligne });
+    return i + 2;
+  };
+  const apresSiOuSinonSi = (i) => { const p = i > 0 ? fermes[i - 1] : undefined; return p === 'si' || p === 'sinonsi'; };
+
+  let i = 0;
+  while (i < tokens.length && !arret) {
+    const tok = tokens[i], t = tok.texte, l = tok.ligne;
+    tokCourant = tok;
+    const parent = pile[pile.length - 1];
+    const nbAvant = erreurs.length;
+    let m;
+
+    if (t === '{') {
+      fatal(l, "Accolade { inattendue : elle doit suivre une instruction de bloc (si, sinon, pou, tanqer, fonc, classe, essai, attrape)");
+      break;
+    }
+    if (t === '}') {
+      if (pile.length === 1) { fatal(l, "Accolade } en trop : aucun bloc n'est ouvert a cet endroit"); break; }
+      const bloc = pile.pop();
+      fermes[i] = bloc.kind;
+      if (bloc.kind === 'essai') {
+        const suivant = tokens[i + 1];
+        if (!suivant || !_RE_ATTRAPE.test(suivant.texte)) {
+          err(bloc.ligne, "essai{...} doit etre suivi directement de attrape{...}, attrape(msg){...} ou attrape(msg, code){...}, sans instruction entre les deux");
+        }
+      }
+      i++;
+      continue;
+    }
+
+    // ---- en-tetes de bloc (memes formes que executerTokens) ----
+    if (t.startsWith('fonc ')) {
+      m = t.match(/^fonc\s+(\w+)\((.*)\)$/);
+      if (!m) {
+        err(l, "Declaration de fonction mal formee : " + _court(t) + " (forme attendue : fonc nom(parametres){ ... })");
+        i = (tokens[i + 1] && tokens[i + 1].texte === '{') ? ouvrirBloc('fonc', t, i, l, true) : i + 1;
+        continue;
+      }
+      try {
+        const params = analyserListeParametres(m[2], "fonc " + m[1] + "(...)", l);
+        for (const p of params) if (p.defautExpr !== null) testExpr(p.defautExpr, l, "valeur par defaut du parametre " + p.nom);
+      } catch (e) { err(l, e.message); }
+      i = ouvrirBloc('fonc', "fonc " + m[1] + "(...)", i, l, erreurs.length > nbAvant);
+      continue;
+    }
+    if (t.startsWith('classe ')) {
+      m = t.match(/^classe\s+(\w+)(?:\s+herite\s+(\w+))?$/);
+      if (!m) {
+        err(l, "Declaration de classe mal formee : " + _court(t) + " (forme attendue : classe Nom { ... } ou classe Nom herite Parent { ... })");
+        i = (tokens[i + 1] && tokens[i + 1].texte === '{') ? ouvrirBloc('classe', t, i, l, true) : i + 1;
+        continue;
+      }
+      i = ouvrirBloc('classe', "classe " + m[1], i, l, false);
+      continue;
+    }
+    if (t.startsWith('si(') && t.endsWith(')')) {
+      testExpr(t.slice(3, -1), l, "condition de si(...)");
+      i = ouvrirBloc('si', "si(...)", i, l, erreurs.length > nbAvant);
+      continue;
+    }
+    m = t.match(/^sinon\s+si\((.*)\)$/);
+    if (m) {
+      if (!apresSiOuSinonSi(i)) err(l, "sinon si doit suivre directement un bloc si(...){...} ou sinon si(...){...}, sans instruction entre les deux");
+      testExpr(m[1], l, "condition de sinon si(...)");
+      i = ouvrirBloc('sinonsi', "sinon si(...)", i, l, erreurs.length > nbAvant);
+      continue;
+    }
+    if (t === 'sinon') {
+      if (!apresSiOuSinonSi(i)) err(l, "sinon doit suivre directement un bloc si(...){...} ou sinon si(...){...}, sans instruction entre les deux");
+      i = ouvrirBloc('sinon', "sinon", i, l, erreurs.length > nbAvant);
+      continue;
+    }
+    if (t === 'essai') {
+      i = ouvrirBloc('essai', "essai", i, l, false);
+      continue;
+    }
+    if (_RE_ATTRAPE.test(t)) {
+      if (!(i > 0 && fermes[i - 1] === 'essai')) err(l, "attrape doit suivre directement un bloc essai{...}, sans instruction entre les deux");
+      i = ouvrirBloc('attrape', "attrape", i, l, erreurs.length > nbAvant);
+      continue;
+    }
+    if (t.startsWith('pou(') && t.endsWith(')')) {
+      try {
+        const e = analyserEnTetePou(t);
+        if (e.type === 'dan') {
+          testExpr(e.objetExpr, l, "objet de pou(... dan ...)");
+        } else {
+          testExpr(e.debutExpr, l, "debut de pou(...)");
+          testExpr(e.finExpr, l, "fin de pou(...)");
+          if (e.parExpr !== null) testExpr(e.parExpr, l, "pas de pou(...)");
+        }
+      } catch (e) { err(l, e.message); }
+      i = ouvrirBloc('pou', "pou(...)", i, l, erreurs.length > nbAvant);
+      continue;
+    }
+    const tanqerInfini = /^tanqer\s+(VRAI|V)$/.test(t);
+    if (tanqerInfini || (t.startsWith('tanqer(') && t.endsWith(')'))) {
+      if (!tanqerInfini) testExpr(t.slice(7, -1), l, "condition de tanqer(...)");
+      i = ouvrirBloc('tanqer', "tanqer", i, l, erreurs.length > nbAvant);
+      continue;
+    }
+
+    // ---- instructions de controle ----
+    if (t === 'stop' || t === 'continu') {
+      if (!dansBoucle()) err(l, t + " n'est utilisable qu'a l'interieur d'une boucle (pou ou tanqer)");
+      i++;
+      continue;
+    }
+    if (t === 'retour' || /^retour[\s(]/.test(t)) {
+      if (!dansFonction()) err(l, "retour n'est utilisable qu'a l'interieur d'une fonction (fonc)");
+      const reste = t.slice(6).trim();
+      if (reste !== "") {
+        let msg = _verifierListeValeurs(reste);
+        // retour(x*x) : l'execution retire les parentheses englobantes avant d'evaluer
+        if (msg !== null && /^\(.*\)$/.test(reste) && _verifierListeValeurs(reste.slice(1, -1).trim()) === null) msg = null;
+        if (msg !== null) err(l, "valeur de retour : " + msg);
+      }
+      i++;
+      continue;
+    }
+
+    // ---- une ligne suivie de { qui n'est aucun des en-tetes ci-dessus : en-tete mal forme ----
+    if (tokens[i + 1] && tokens[i + 1].texte === '{') {
+      err(l, "Instruction de bloc inconnue ou mal formee avant { : \"" + _court(t) + "\" (attendu : si(condition), sinon si(condition), sinon, pou(...), tanqer(condition), tanqer VRAI, fonc nom(...), classe Nom, essai ou attrape)");
+      pile.push({ kind: 'inconnu', nom: t, ligne: l });
+      i += 2;
+      continue;
+    }
+
+    // ---- instruction simple ----
+    verifierInstructionSimple(t, l, err, testExpr, parent.kind === 'classe');
+    i++;
+  }
+
+  tokCourant = null;
+  if (!arret) {
+    for (let k = pile.length - 1; k >= 1; k--) {
+      err(pile[k].ligne, "Accolade fermante } manquante : le bloc " + pile[k].nom + " ouvert ici n'est jamais ferme");
+    }
+  }
+  // Une instruction qui s'etend sur plusieurs lignes (appel ouvert avec "(" ou "[" et pas encore
+  // refermé) : si elle est en erreur, la cause la plus probable est une parenthese oubliee.
+  for (const e of erreurs) {
+    if (e.tok && e.tok.ligneFin > e.tok.ligne) {
+      e.message += " -- cette instruction s'etend de la ligne " + e.tok.ligne + " a la ligne " + e.tok.ligneFin + " : verifie qu'une parenthese ( ou un crochet [ n'est pas reste ouvert";
+    }
+    delete e.tok;
+  }
+  return erreurs;
+}
+
+// Enveloppe de securite utilisee aux points d'appel : si le verificateur lui-meme plantait (bug
+// interne, cas imprevu), on laisse le script s'executer normalement plutot que de le bloquer.
+function verifierSyntaxeSansRisque(code, tokens) {
+  try { return verifierSyntaxeProgramme(code, tokens); }
+  catch (e) { return []; }
+}
+
+// Verifie une instruction simple (une ligne qui n'est ni un en-tete ni stop/continu/retour).
+// Reconnait, comme executerCommandeSimple, les seules formes qui peuvent s'executer :
+// import, affectation (nom ~ ..., a.b ~ ..., v[i] ~ ...), appel de fonction/methode.
+// Toute autre ligne ferait echouer l'execution avec "Commande inconnue".
+function verifierInstructionSimple(t, l, err, testExpr, dansClasse) {
+  if (t === "") return;
+
+  // aide(...) lit ses arguments TELS QUELS (aide(+), aide(dan), aide(..), aide(spec)...) sans les
+  // evaluer comme une expression : ils ne suivent donc pas la grammaire des expressions.
+  if (/^aide\(.*\)$/.test(t)) return;
+
+  // import(...) / de X import(...) : verifies ici par le meme analyseur que le pre-enregistrement
+  if (/^import\(/.test(t) || /^de\s+\S/.test(t)) {
+    let desc = null;
+    try { desc = analyserLigneImport(t); }
+    catch (e) { err(l, e.message); return; }
+    if (desc) return;
+    if (/^import\(/.test(t)) { err(l, "import(...) mal forme : " + _court(t)); return; }
+    // sinon : "de" est ici un simple nom de variable (ex: de ~ 5), on continue normalement
+  }
+
+  const idx = _indexTildeHautNiveau(t);
+  if (idx !== -1) {
+    const gauche = t.slice(0, idx).trim();
+    const droite = t.slice(idx + 1).trim();
+    if (!/^[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\s*\[.*\])?$/.test(gauche)) {
+      err(l, "A gauche de ~ il faut un nom de variable (x ~ 5), un attribut (a.nom ~ 5) ou un indice (v[1] ~ 5) : \"" + gauche + "\"");
+    } else if (gauche.indexOf('[') !== -1) {
+      testExpr(gauche, l, "partie gauche de ~");
+    }
+    if (droite === "") err(l, "Valeur manquante apres ~ : " + _court(t));
+    else {
+      const msg = _verifierListeValeurs(droite);
+      if (msg !== null) err(l, "valeur affectee : " + msg);
+    }
+    return;
+  }
+
+  // Dans le corps d'une classe, seuls les attributs (nom ~ valeur, ci-dessus) et les methodes
+  // sont lus : toute autre ligne y est ignoree par l'execution, on n'a donc rien a en dire.
+  if (dansClasse) return;
+
+  // Appel de fonction ou de methode : nom(...), a.methode(...), base.nom(...) ...
+  if (/^[a-zA-Z_][a-zA-Z0-9_.]*\(/.test(t)) {
+    testExpr(t, l, null);
+    return;
+  }
+
+  let hint = "";
+  const sansTextes = t.replace(/\|[^|]*\|/g, "||");
+  if (/(^|[^=!<>])=([^=]|$)/.test(sansTextes)) hint = " -- pour affecter une valeur utilise ~ (ex: x ~ 5), pas =";
+  err(l, "Commande inconnue : " + _court(t) + hint);
 }
 
 /* ===================== EXECUTION ===================== */
@@ -8918,6 +9434,10 @@ btnCollerOutil.addEventListener('click', async () => {
 });
 /* ===================== LANCEMENT DU SCRIPT ===================== */
 let scriptEnArrierePlan = false;
+// VRAI seulement quand le script courant a ete envoye AU SERVICE (bouton FOND). Un script lance
+// avec RUN tourne dans la console visible : la synchronisation avec le service (resultat publie,
+// arret) ne doit alors JAMAIS le toucher.
+let executionViaService = false;
 let dernierIdServiceVu = 0;
 let resultatServiceAffiche = new Set();
 
@@ -8935,9 +9455,10 @@ function arreterScriptEnCours() {
   demandeArret = true;
   if (annulerSaisieEnCours) annulerSaisieEnCours();
   arreterIndicateurAttente();
-  if (serviceDisponible() && typeof window.MonLangage.arreterScriptService === "function") {
+  if (executionViaService && serviceDisponible() && typeof window.MonLangage.arreterScriptService === "function") {
     try { window.MonLangage.arreterScriptService(); } catch (_) {}
   }
+  executionViaService = false;
   executionEnCours = false;
   scriptEnArrierePlan = false;
   btnArretUrgence.hidden = true;
@@ -8945,15 +9466,20 @@ function arreterScriptEnCours() {
 }
 
 function synchroniserEtatService() {
+  // Le bouton FOND n'existe que dans l'application Android (le pont natif peut apparaitre un
+  // peu apres le chargement de la page : on le re-teste ici, toutes les 500 ms).
+  btnRunFond.hidden = !serviceDisponible();
   if (!serviceDisponible() || typeof window.MonLangage.serviceScriptEnCours !== "function") return;
   let actif = serviceScriptActif();
   if (actif) {
+    executionViaService = true;
     executionEnCours = true;
     btnRun.disabled = true;
     if (ecranConsole.classList.contains("actif")) btnArretUrgence.hidden = false;
     return;
   }
-  if (!executionEnCours) return;
+  // Script lance avec RUN (console visible) : rien a synchroniser avec le service.
+  if (!executionEnCours || !executionViaService) return;
 
   let dernierId = 0;
   let resultat = "";
@@ -8975,6 +9501,7 @@ function synchroniserEtatService() {
     // auparavant. Le curseur redevient ainsi disponible comme avant l'ajout du service.
     printInvite();
   }
+  executionViaService = false;
   executionEnCours = false;
   scriptEnArrierePlan = false;
   demandeArret = false;
@@ -8983,49 +9510,73 @@ function synchroniserEtatService() {
   arreterIndicateurAttente();
 }
 
+// RUN : execute le script dans la console VISIBLE de l'application -- interactive (entr(),
+// entr.secret()..., trac()), sortie affichee en direct, arret d'urgence. Ne passe JAMAIS par le
+// service : l'utilisateur n'a rien autorise. Pour mettre ensuite un script en arriere-plan :
+// "Retour" pendant l'execution ouvre le dialogue de confirmation (oui / non), ou bouton FOND.
 async function runScript() {
-  // Le bouton RUN de l'application ne lance plus l'interpréteur dans la WebView de
-  // l'éditeur. Il remet le script au service Android, qui possède sa propre WebView et
-  // reste vivant même quand l'interface est fermée.
-  if (serviceDisponible()) {
-    if (serviceScriptActif() || executionEnCours) {
-      print("Script en cours", "erreur");
-      return;
-    }
-    let script = codeArea.value;
-    if (!script.trim()) {
-      afficherConsole();
-      print("Aucun script à exécuter.", "erreur");
-      return;
-    }
-    try {
-      dernierIdServiceVu = Number(window.MonLangage.dernierResultatServiceId()) || 0;
-      scriptEnArrierePlan = false;
-      executionEnCours = true;
-      demandeArret = false;
-      afficherConsole();
-      // Ne pas effacer la console lors d'un nouveau RUN : les sorties des exécutions
-      // précédentes doivent rester visibles. L'effacement est réservé à effa().
-      print("=== EXECUTION ===");
-      btnRun.disabled = true;
-      btnArretUrgence.hidden = false;
-      demarrerIndicateurAttente();
-      window.MonLangage.envoyerScriptService(script);
-      // Le service fait lui-même le contrôle anti-double-lancement. On resynchronise
-      // rapidement l'état pour couvrir la petite fenêtre entre l'envoi et sa réception.
-      setTimeout(synchroniserEtatService, 100);
-      return;
-    } catch (e) {
-      executionEnCours = false;
-      btnRun.disabled = false;
-      btnArretUrgence.hidden = true;
-      print("Erreur: impossible de démarrer le service: " + e.message, "erreur");
-      return;
-    }
+  if (serviceScriptActif()) {
+    afficherConsole();
+    print("Un script tourne deja en arriere-plan (service Android) : arrete-le avec le bouton d'arret d'urgence, ou avec « Arreter » dans la notification « MonLangage actif », avant de lancer RUN.", "erreur");
+    return;
   }
-
-  // Repli navigateur uniquement hors application native.
+  if (executionEnCours) {
+    afficherConsole();
+    print("Script en cours", "erreur");
+    return;
+  }
+  scriptEnArrierePlan = false;
+  executionViaService = false;
   await executerScriptLocal(codeArea.value);
+}
+
+// FOND : choix EXPLICITE de l'utilisateur. Le script est remis au service Android, qui possede sa
+// propre WebView sans interface et reste vivant meme quand l'application est fermee. Pas de
+// console : entr() est donc indisponible (erreur claire), la sortie s'affiche a la fin.
+async function runScriptArrierePlan() {
+  if (!serviceDisponible()) {
+    afficherConsole();
+    print("Execution en arriere-plan indisponible ici (application Android requise).", "erreur");
+    return;
+  }
+  if (serviceScriptActif() || executionEnCours) {
+    afficherConsole();
+    print("Script en cours", "erreur");
+    return;
+  }
+  let script = codeArea.value;
+  if (!script.trim()) {
+    afficherConsole();
+    print("Aucun script à exécuter.", "erreur");
+    return;
+  }
+  try {
+    dernierIdServiceVu = Number(window.MonLangage.dernierResultatServiceId()) || 0;
+    // L'utilisateur vient de choisir l'arriere-plan : pas de seconde confirmation au "Retour".
+    scriptEnArrierePlan = true;
+    executionViaService = true;
+    executionEnCours = true;
+    demandeArret = false;
+    afficherConsole();
+    // Ne pas effacer la console lors d'un nouveau lancement : les sorties des executions
+    // precedentes doivent rester visibles. L'effacement est reserve a effa().
+    print("=== EXECUTION EN ARRIERE-PLAN ===");
+    print("(sortie affichee a la fin du script ; entr() indisponible)");
+    btnRun.disabled = true;
+    btnArretUrgence.hidden = false;
+    demarrerIndicateurAttente();
+    window.MonLangage.envoyerScriptService(script);
+    // Le service fait lui-meme le controle anti-double-lancement. On resynchronise
+    // rapidement l'etat pour couvrir la petite fenetre entre l'envoi et sa reception.
+    setTimeout(synchroniserEtatService, 100);
+  } catch (e) {
+    executionViaService = false;
+    scriptEnArrierePlan = false;
+    executionEnCours = false;
+    btnRun.disabled = false;
+    btnArretUrgence.hidden = true;
+    print("Erreur: impossible de démarrer le service: " + e.message, "erreur");
+  }
 }
 
 async function executerScriptLocal(script, options = {}) {
@@ -9043,12 +9594,18 @@ async function executerScriptLocal(script, options = {}) {
   if (afficherConsoleExecution) afficherConsole();
   if (afficherMarqueursExecution) print("=== EXECUTION ===");
   btnRun.disabled = true;
-  btnArretUrgence.hidden = true;
+  // Execution dans la console visible (RUN) : le bouton d'arret d'urgence doit etre disponible
+  // (boucles infinies...). Dans le service (aucune interface), il reste masque.
+  btnArretUrgence.hidden = !afficherConsoleExecution;
   demandeArret = false;
   executionEnCours = true;
   demarrerIndicateurAttente();
   try {
     let tokens = parser(script);
+    // Verification de syntaxe de TOUT le script avant d'executer quoi que ce soit (y compris
+    // avant le pre-enregistrement des imports, qui charge et execute des modules).
+    let erreursSyntaxe = verifierSyntaxeSansRisque(script, tokens);
+    if (erreursSyntaxe.length > 0) throw new ErreurSyntaxeProgramme(erreursSyntaxe);
     preRegistrerFonctions(tokens);
     await preRegistrerClasses(tokens);
     await preRegistrerImports(tokens);
@@ -9056,13 +9613,21 @@ async function executerScriptLocal(script, options = {}) {
     if (afficherMarqueursExecution) print("=== FIN ===");
   } catch (e) {
     if (e instanceof ExecutionInterrompue) print("=== EXECUTION ARRETEE ===", "erreur");
+    else if (e instanceof ErreurSyntaxeProgramme) {
+      const MAX_ERREURS_AFFICHEES = 10;
+      for (const er of e.erreurs.slice(0, MAX_ERREURS_AFFICHEES)) print("Erreur de syntaxe ligne " + er.ligne + ": " + er.message, "erreur");
+      if (e.erreurs.length > MAX_ERREURS_AFFICHEES) print("... et " + (e.erreurs.length - MAX_ERREURS_AFFICHEES) + " autre(s) erreur(s) de syntaxe", "erreur");
+      print("Le script n'a pas ete execute : aucune instruction n'a ete lancee.", "erreur");
+    }
     else if (e instanceof ErreurLangage) print("Erreur ligne " + e.ligne + ": " + e.message, "erreur");
     else print("Erreur: " + e.message, "erreur");
   }
   arreterIndicateurAttente();
   executionEnCours = false;
   demandeArret = false;
+  scriptEnArrierePlan = false;
   btnRun.disabled = false;
+  btnArretUrgence.hidden = true;
   if (afficherInviteExecution && afficherConsoleExecution) printInvite();
 }
 
@@ -9227,6 +9792,7 @@ outputDiv.addEventListener("input", function(e) {
 
 
 btnRun.addEventListener("click", runScript);
+btnRunFond.addEventListener("click", runScriptArrierePlan);
 
 /* ===================== INITIALISATION ===================== */
 initialiserOnglets();
