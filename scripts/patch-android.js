@@ -1339,7 +1339,7 @@ console.log('[patch-android] AlarmScheduler.java / AlarmReceiver.java / BootRece
 // depuis Android 8+, comme celle de Termux), un script en cours continue de tourner.
 //
 // Choix retenu (Option "2a") : chaque script envoye via ACTION_RUN est une execution
-// INDEPENDANTE. runScript() (dans index.html) reinitialise scopes/fonctions/modules a
+// INDEPENDANTE. executerScriptLocal() (dans index.html) reinitialise scopes/fonctions/modules a
 // chaque appel -- donc deux scripts envoyes au service ne partagent PAS leurs
 // variables/fonctions entre eux, exactement comme s'ils avaient ete lances separement
 // depuis l'editeur. Un seul script peut neanmoins contenir une boucle infinie ou un
@@ -1426,6 +1426,13 @@ public class MonLangageService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        // Une NOUVELLE instance du service n'execute aucun script. Si le service a ete tue par
+        // Android en plein script (memoire faible, application arretee de force...), le drapeau
+        // "script_actif" est reste a vrai dans les preferences : l'interface croirait alors
+        // qu'un script tourne encore en arriere-plan (bouton RUN grise, message "Script en
+        // cours") alors que l'utilisateur n'a rien lance. On le remet donc a zero ici.
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putBoolean("script_actif", false).remove("execution_active_id").apply();
         creerCanalNotification();
         creerWebViewHeadless();
     }
@@ -1442,11 +1449,11 @@ public class MonLangageService extends Service {
             annulerScript();
         } else if (ACTION_RUN.equals(action) && intent != null) {
             String script = intent.getStringExtra(EXTRA_SCRIPT);
-            // Un seul script a la fois. Une deuxieme pression sur RUN ne met pas un second
+            // Un seul script a la fois. Une deuxieme pression sur FOND ne met pas un second
             // script en file d'attente et ne cree donc pas une deuxieme execution.
             if (script != null && !script.isEmpty() && !scriptActif) {
                 // Reserve immediatement l'unique emplacement d'execution, meme si la WebView
-                // est encore en chargement. Cela ferme la fenetre ou deux pressions RUN
+                // est encore en chargement. Cela ferme la fenetre ou deux pressions FOND
                 // successives pourraient sinon mettre deux scripts en file d'attente.
                 compteurExecutions++;
                 int idExecution = compteurExecutions;
@@ -1553,7 +1560,7 @@ public class MonLangageService extends Service {
         }
 
         // Appelee par arreter.service.arriere() cote MLG quand ce code tourne DANS le
-        // service (script lance via RUN, execute dans la webview headless). Ne fait que
+        // service (script lance via le bouton FOND, execute dans la webview headless). Ne fait que
         // poser le drapeau -- ne detruit surtout pas la webview ici : on est en plein
         // milieu de l'appel JS qui vient de faire ce call, la detruire maintenant
         // reviendrait a couper la branche sur laquelle ce meme script est assis.
@@ -1612,6 +1619,11 @@ public class MonLangageService extends Service {
 
     @Override
     public void onDestroy() {
+        // Le service disparait : plus aucun script ne peut tourner. On ne laisse jamais un
+        // drapeau "script_actif" perime derriere nous (voir onCreate ci-dessus).
+        libererWakeLockScript();
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putBoolean("script_actif", false).remove("execution_active_id").apply();
         if (webView != null) { webView.destroy(); webView = null; }
         super.onDestroy();
     }
