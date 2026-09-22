@@ -588,7 +588,7 @@ let _cacheSegmentsExpression = new Map(); // str -> { version, segments }
 // numero de ligne propre (il est fabrique a partir de tokens d'expression, qui n'en portent
 // pas), donc on reutilise la derniere ligne source reellement executee.
 let ligneExpressionCourante = 0;
-let commandes = ["affi", "pou", "tanqer", "stop", "continu", "si", "sinon", "sision", "essai", "attrape", "fonc", "retour", "entr", "c", "liste", "texte", "seq", "rep", "alea", "ralea", "matrice", "lon", "dim", "limiteRecursion", "entier", "reel", "som", "moy", "var", "sd", "max", "min", "suchaq", "det", "trace", "trans", "aide", "base", "effa", "voi", "lettr", "Lettr", "VRAI", "FAUX", "pasdefini", "ecrire", "lire", "ajout"];
+let commandes = ["affi", "pou", "tanqer", "stop", "continu", "si", "sinon", "sision", "essai", "attrape", "fonc", "retour", "entr", "c", "liste", "texte", "seq", "rep", "alea", "ralea", "matrice", "lon", "dim", "limiteRecursion", "entier", "reel", "som", "moy", "var", "sd", "max", "min", "suchaq", "det", "trace", "trans", "aide", "base", "effa", "voi", "lettr", "Lettr", "VRAI", "FAUX", "pasdefini", "ecrire.cle", "lire.cle", "ajout.cle"];
 
 let outputDiv = document.getElementById("output");
 let codeArea = document.getElementById("code");
@@ -1270,6 +1270,18 @@ function getVar(nom) {
   // Pas une variable/fonction, mais un module importe (import(outils)) : renvoie un objet
   // "sentinelle" que parsePrimary reconnait pour resoudre outils.PI, outils.double(...), etc.
   if (Object.prototype.hasOwnProperty.call(modules, nom)) return { __module: nom };
+  // "nom" ne correspond a rien -- mais s'il correspond au PREFIXE d'une famille de fonctions
+  // integrees a points (conver.source.cible(...), ajout.fichier(...), ...), l'erreur vient
+  // presque surement d'un nom de fonction integree mal ecrit (mauvais nombre de segments,
+  // faute de frappe : conver.nombr(...) au lieu de conver.texte.nombr(...)) plutot que d'une
+  // variable reellement oubliee. Le verificateur de syntaxe (verifierSyntaxeSansRisque) ne peut
+  // PAS distinguer ce cas d'un vrai appel de methode sur instance (a.methode(...)) sans risquer
+  // de faux positifs -- l'indice arrive donc ici, au moment ou l'erreur runtime la rend certaine.
+  let prefixe = nom + ".";
+  let entreeAide = aideCommandes.find(e => e.noms.some(n => n.startsWith(prefixe)));
+  if (entreeAide) {
+    throw new ErreurVariableInconnue("Variable non definie: " + nom + " -- mais des fonctions integrees commencent par « " + prefixe + " », syntaxe : " + entreeAide.syntaxe);
+  }
   throw new ErreurVariableInconnue("Variable non definie: " + nom);
 }
 // Comme getVar, mais ne cherche QUE parmi les variables (jamais dans fonctions{}) et ne leve
@@ -2711,8 +2723,8 @@ function verifierTexteLitteralFerme(s) {
 }
 
 // Evalue un argument brut en une valeur (utilise partout ou une liste d'arguments peut
-// contenir n'importe quel type : c(...), liste(...), matrice(...), ecrire(...),
-// ecrire.fichier(...), ajout(...), ajout.fichier(...), etc.).
+// contenir n'importe quel type : c(...), liste(...), matrice(...), ecrire.cle(...),
+// ecrire.fichier(...), ajout.cle(...), ajout.fichier(...), etc.).
 // "saulig" (l'argument tel quel, sans rien autour) est reconnu ICI comme valeur generale
 // -- un simple texte contenant un retour a la ligne -- et pas seulement dans affi()/entr()
 // comme avant : utilisable partout ou une valeur brute est attendue.
@@ -4316,23 +4328,23 @@ let aideCommandes = [
       "entr.secret(), mais renvoie TOUJOURS du texte, jamais converti en nombre.",
       "Utile pour un code avec des zeros en tete (ex: |0123|), qui deviendrait sinon le nombre 123."
     ], exemple: "code ~ entr.Tsecret(|Code:|, sty~|*|)" },
-  { noms: ["ecrire"], categorie: "Sauvegarde", syntaxe: "ecrire(cle, valeur)  ou  ecrire(cle, val1, val2, ...)", description: [
+  { noms: ["ecrire.cle"], categorie: "Sauvegarde", syntaxe: "ecrire.cle(cle, valeur)  ou  ecrire.cle(cle, val1, val2, ...)", description: [
       "Sauvegarde silencieuse et immediate : reste dans l'app, aucune interaction utilisateur.",
       "N'importe quelle valeur peut etre sauvegardee : nombre, texte, booleen, vecteur, matrice, liste, instance de classe.",
       "Avec plusieurs valeurs, elles sont regroupees et sauvegardees comme une liste() (types conserves, pas de fusion).",
       "cle doit etre du texte. Ecraser une cle deja utilisee remplace l'ancienne sauvegarde."
-    ], exemple: "ecrire(|mon_compte|, moi)\necrire(|scores|, 12, |bravo|, VRAI)   ** sauvegarde une liste() **" },
-  { noms: ["lire"], categorie: "Sauvegarde", syntaxe: "lire(cle)", description: [
-      "Recupere une valeur sauvegardee avec ecrire(...).",
+    ], exemple: "ecrire.cle(|mon_compte|, moi)\necrire.cle(|scores|, 12, |bravo|, VRAI)   ** sauvegarde une liste() **" },
+  { noms: ["lire.cle"], categorie: "Sauvegarde", syntaxe: "lire.cle(cle)", description: [
+      "Recupere une valeur sauvegardee avec ecrire.cle(...).",
       "Renvoie pasdefini si la cle n'existe pas."
-    ], exemple: "c ~ lire(|mon_compte|)" },
+    ], exemple: "c ~ lire.cle(|mon_compte|)" },
   { noms: ["ecrire.fichier"], categorie: "Sauvegarde", syntaxe: "ecrire.fichier(nom, valeur, ecra~FAUX)  ou  ecrire.fichier(chemin, val1, val2, ..., ecra~FAUX)", description: [
       "ecrire.fichier(nom, valeur) : ouvre le navigateur de fichiers integre pour choisir ou enregistrer un vrai fichier .mld.",
       "ecrire.fichier(chemin, valeur) : si nom contient un '/', ecriture DIRECTE a cet emplacement, sans rien afficher a l'ecran.",
-      "Avec plusieurs valeurs, elles sont regroupees comme une liste() (meme regle que ecrire()).",
+      "Avec plusieurs valeurs, elles sont regroupees comme une liste() (meme regle que ecrire.cle()).",
       "ecra~FAUX par defaut : si le fichier existe deja, l'ecriture est REFUSEE (erreur, a intercepter avec essai/attrape). ecra~VRAI ecrase sans verifier.",
       "Le chemin direct et la verification ecra ne fonctionnent que dans l'app installee (pas en previsualisation navigateur).",
-      "Contrairement a ecrire(), le fichier peut ensuite etre partage, copie, deplace hors de l'app."
+      "Contrairement a ecrire.cle(), le fichier peut ensuite etre partage, copie, deplace hors de l'app."
     ], exemple: "ecrire.fichier(|sauvegarde_banque|, moi, ecra~VRAI)\nsi(existe.fichier(|/storage/emulated/0/Download/banque.mld|)) { affi(|deja present|) }\nsinon { ecrire.fichier(|/storage/emulated/0/Download/banque.mld|, moi) }" },
   { noms: ["existe.fichier"], categorie: "Sauvegarde", syntaxe: "existe.fichier(chemin)", description: [
       "Renvoie VRAI si un fichier existe deja a ce CHEMIN COMPLET (avec '/'), FAUX sinon.",
@@ -4345,18 +4357,18 @@ let aideCommandes = [
       "Le chemin direct ne fonctionne que dans l'app installee (pas en previsualisation navigateur).",
       "Renvoie la valeur sauvegardee dans ce fichier."
     ], exemple: "c ~ lire.fichier()\nc ~ lire.fichier(|/storage/emulated/0/Download/banque.mld|)" },
-  { noms: ["ajout"], categorie: "Sauvegarde", syntaxe: "ajout(cle, valeur, ...)", description: [
-      "Ajoute une ou plusieurs valeurs a une cle DEJA SAUVEGARDEE avec ecrire(...), sans rien ecraser.",
-      "Erreur si la cle n'existe pas encore : utiliser ecrire(...) pour la creer d'abord.",
+  { noms: ["ajout.cle"], categorie: "Sauvegarde", syntaxe: "ajout.cle(cle, valeur, ...)", description: [
+      "Ajoute une ou plusieurs valeurs a une cle DEJA SAUVEGARDEE avec ecrire.cle(...), sans rien ecraser.",
+      "Erreur si la cle n'existe pas encore : utiliser ecrire.cle(...) pour la creer d'abord.",
       "Si la cle contient un vecteur, il est etendu directement (comme .ajout() dessus), sans devenir une liste().",
       "Si la cle contient deja une liste(), les nouvelles valeurs s'y ajoutent simplement.",
       "Sinon (nombre, texte, booleen, matrice, instance), l'ancienne valeur devient le premier element d'une nouvelle liste()."
-    ], exemple: "ecrire(|notes|, c(12,15))\najout(|notes|, 9, 18)   ** notes reste un vecteur : 12 15 9 18 **\necrire(|score|, 12)\najout(|score|, 15, 9)   ** score devient une liste() : 12, 15, 9 **" },
+    ], exemple: "ecrire.cle(|notes|, c(12,15))\najout.cle(|notes|, 9, 18)   ** notes reste un vecteur : 12 15 9 18 **\necrire.cle(|score|, 12)\najout.cle(|score|, 15, 9)   ** score devient une liste() : 12, 15, 9 **" },
   { noms: ["ajout.fichier"], categorie: "Sauvegarde", syntaxe: "ajout.fichier(nom, valeur, ...)  ou  ajout.fichier(chemin, valeur, ...)", description: [
       "Ajoute une ou plusieurs valeurs a un fichier DEJA SAUVEGARDE avec ecrire.fichier(...), sans l'ecraser.",
       "ajout.fichier(nom, ...) : ouvre le navigateur de fichiers integre pour choisir le fichier existant a completer.",
       "ajout.fichier(chemin, ...) : si nom contient un '/', le fichier doit deja exister exactement a cet emplacement.",
-      "Meme logique de fusion que ajout(cle, ...) ci-dessus.",
+      "Meme logique de fusion que ajout.cle(cle, ...) ci-dessus.",
       "Disponible uniquement dans l'app installee (pas de repli en previsualisation navigateur, contrairement a ecrire.fichier())."
     ], exemple: "ajout.fichier(|/storage/emulated/0/Download/scores.mld|, 15, 9)" },
   { noms: ["ajout.Tfichier"], categorie: "Sauvegarde", syntaxe: "ajout.Tfichier(nom, valeur, ...)  ou  ajout.Tfichier(chemin, valeur, ...)", description: [
@@ -4367,12 +4379,12 @@ let aideCommandes = [
       "Meme regle nom/chemin que ajout.fichier(...) : sans '/' ouvre le navigateur integre, avec '/' chemin direct."
     ], exemple: "ecrire.fichier(|/sdcard/historique.mld|, ||)\najout.Tfichier(|/sdcard/historique.mld|, texte(|# Depot: |, 500, saulig))" },
   { noms: ["voir.cle"], categorie: "Sauvegarde", syntaxe: "voir.cle()", description: [
-      "Renvoie un vecteur avec les NOMS de toutes les cles actuellement sauvegardees avec ecrire(...) (pas leur contenu).",
+      "Renvoie un vecteur avec les NOMS de toutes les cles actuellement sauvegardees avec ecrire.cle(...) (pas leur contenu).",
       "Permet de savoir ce qui existe sans devoir tout effacer via 'Effacer donnees utilisateur' de l'app (qui vide TOUTES les cles a la fois).",
       "Vecteur vide si aucune cle n'est sauvegardee."
     ], exemple: "affi(voir.cle())" },
   { noms: ["supri.cle"], categorie: "Sauvegarde", syntaxe: "supri.cle(cle)", description: [
-      "Supprime UNE cle precise sauvegardee avec ecrire(...), sans toucher aux autres.",
+      "Supprime UNE cle precise sauvegardee avec ecrire.cle(...), sans toucher aux autres.",
       "Erreur si la cle n'existe pas -- verifiable avant avec voir.cle()."
     ], exemple: "supri.cle(|scores|)" },
   { noms: ["voir.fichier"], categorie: "Sauvegarde", syntaxe: "voir.fichier()  ou  voir.fichier(dossier)", description: [
@@ -4778,13 +4790,13 @@ let aideCommandes = [
       "SYNTAXE est le code generique recu pour toute erreur non couverte par les 13 autres (syntaxe, mauvais nombre/type d'argument...)."
     ], exemple: "essai { x ~ 10 / 0 }\nattrape(msg, code) {\n    si(code == DIVISION_ZERO){ affi(|Division par zero evitee|) }\n}" },
 
-  { noms: ["saulig"], categorie: "Constantes", syntaxe: "affi(..., saulig, ...)  /  ecrire(cle, ..., saulig, ...)  /  c(..., saulig, ...)", description: [
+  { noms: ["saulig"], categorie: "Constantes", syntaxe: "affi(..., saulig, ...)  /  ecrire.cle(cle, ..., saulig, ...)  /  c(..., saulig, ...)", description: [
       "Saut de ligne : un texte contenant un seul caractere retour a la ligne.",
       "Dans affi()/entr(), insere un retour a la ligne a cet endroit dans le message affiche/demande.",
-      "Utilisable aussi comme valeur ordinaire partout ou une valeur brute est attendue : ecrire(...), ecrire.fichier(...), ajout(...), ajout.fichier(...), c(...), liste(...), matrice(...).",
+      "Utilisable aussi comme valeur ordinaire partout ou une valeur brute est attendue : ecrire.cle(...), ecrire.fichier(...), ajout.cle(...), ajout.fichier(...), c(...), liste(...), matrice(...).",
       "Doit toujours apparaitre SEUL comme argument (jamais colle a l'interieur d'un |texte|, sinon ce n'est plus reconnu -- ce serait alors juste le mot 'saulig' litteral).",
       "Pour une ligne vide toute seule dans affi(), on peut aussi ecrire affi(||) ou affi( | |)."
-    ], exemple: "affi(|Programme de calcul|, saulig, |----------|)\necrire(|notes|, |Titre|, saulig, |Sous-titre|)   ** liste() : \"Titre\", \"\\n\", \"Sous-titre\" **" },
+    ], exemple: "affi(|Programme de calcul|, saulig, |----------|)\necrire.cle(|notes|, |Titre|, saulig, |Sous-titre|)   ** liste() : \"Titre\", \"\\n\", \"Sous-titre\" **" },
 
   { noms: ["conver.ms.ms", "conver.ms.seconde", "conver.ms.minute", "conver.ms.heure", "conver.ms.jour", "conver.seconde.ms", "conver.seconde.seconde", "conver.seconde.minute", "conver.seconde.heure", "conver.seconde.jour", "conver.minute.ms", "conver.minute.seconde", "conver.minute.minute", "conver.minute.heure", "conver.minute.jour", "conver.heure.ms", "conver.heure.seconde", "conver.heure.minute", "conver.heure.heure", "conver.heure.jour", "conver.jour.ms", "conver.jour.seconde", "conver.jour.minute", "conver.jour.heure", "conver.jour.jour", "conver.octet.octet", "conver.octet.Ko", "conver.octet.Mo", "conver.octet.Go", "conver.octet.Tera", "conver.Ko.octet", "conver.Ko.Ko", "conver.Ko.Mo", "conver.Ko.Go", "conver.Ko.Tera", "conver.Mo.octet", "conver.Mo.Ko", "conver.Mo.Mo", "conver.Mo.Go", "conver.Mo.Tera", "conver.Go.octet", "conver.Go.Ko", "conver.Go.Mo", "conver.Go.Go", "conver.Go.Tera", "conver.Tera.octet", "conver.Tera.Ko", "conver.Tera.Mo", "conver.Tera.Go", "conver.Tera.Tera"], categorie: "Base", syntaxe: "conver.source.cible(valeur)", description: [
       "Convertit une valeur d'une unite vers une autre avec la forme generale conver.source.cible(valeur).",
@@ -4800,7 +4812,7 @@ let aideCommandes = [
   { noms: ["texte"], categorie: "Texte", syntaxe: "texte(a, b, ...)", description: [
       "Concatene plusieurs parties en UN SEUL texte, exactement comme les arguments de affi()/entr()/~ (avec |texte| et saulig pour un saut de ligne).",
       "Contrairement a affi(), ne s'affiche pas : renvoie le texte concatene comme une valeur, utilisable dans une expression.",
-      "Utile pour construire un texte a passer en UN SEUL argument a ecrire(...), ecrire.fichier(...) ou ajout(...) -- qui, eux, rangent chaque argument separe par une virgule comme un element distinct d'une liste() plutot que de les coller ensemble."
+      "Utile pour construire un texte a passer en UN SEUL argument a ecrire.cle(...), ecrire.fichier(...) ou ajout.cle(...) -- qui, eux, rangent chaque argument separe par une virgule comme un element distinct d'une liste() plutot que de les coller ensemble."
     ], exemple: "ligne ~ texte(|+ Depot: |, montant, | F|, saulig)\necrire.fichier(|/sdcard/historique.mld|, h + ligne)" },
 
   { noms: ["miniscul", "majuscul", "suprespac"], categorie: "Texte", syntaxe: "var.miniscul()  /  var.majuscul()  /  var.suprespac()", description: [
@@ -5045,7 +5057,7 @@ function enregistrerFonctionsBase() {
     // texte(a, b, ...) : concatene plusieurs parties (comme les arguments de affi()/entr()/~)
     // en UN SEUL texte, saulig compris pour un saut de ligne -- mais renvoie ce texte comme
     // une VALEUR au lieu de l'afficher. Utile pour obtenir un texte concatene a passer
-    // directement en un seul argument a ecrire(...)/ecrire.fichier(...)/ajout(...), qui sinon
+    // directement en un seul argument a ecrire.cle(...)/ecrire.fichier(...)/ajout.cle(...), qui sinon
     // rangeraient chaque partie separee par une virgule comme un element distinct d'une
     // liste() plutot que de les coller ensemble.
     fonctionsBase["texte"] = fonctionsExpression["texte"] = async function(args, ctxExpr) {
@@ -5360,42 +5372,42 @@ function enregistrerFonctionsBase() {
         return saisie;
     };
 
-    // ecrire(cle, valeur) ou ecrire(cle, val1, val2, ...) : sauvegarde silencieuse et
+    // ecrire.cle(cle, valeur) ou ecrire.cle(cle, val1, val2, ...) : sauvegarde silencieuse et
     // immediate dans localStorage (reste dans l'app, aucune interaction utilisateur).
     // N'importe quelle valeur de monlangage peut etre sauvegardee (nombre, texte, booleen,
     // vecteur, matrice, liste, instance de classe) car toutes se representent en JS comme
     // des donnees simples (les instances sont de simples {__classe:..., attributs...}, sans
     // methodes attachees).
-    // Avec UNE seule valeur : comportement inchange, lire(cle) renvoie cette valeur telle
+    // Avec UNE seule valeur : comportement inchange, lire.cle(cle) renvoie cette valeur telle
     // quelle (type conserve).
     // Avec PLUSIEURS valeurs : stockees ensemble comme une liste() (pas un vecteur), pour
-    // ne pas forcer un type unique sur des valeurs de natures differentes -- lire(cle)
+    // ne pas forcer un type unique sur des valeurs de natures differentes -- lire.cle(cle)
     // renvoie alors une liste(), accessible par indice (l[1], l[2]...).
-    fonctionsBase["ecrire"] = fonctionsExpression["ecrire"] = async function(args, ctxExpr) {
-        if (args.length < 2) throw new Error("ecrire(cle, valeur, ...) attend au moins 2 arguments");
+    fonctionsBase["ecrire.cle"] = fonctionsExpression["ecrire.cle"] = async function(args, ctxExpr) {
+        if (args.length < 2) throw new Error("ecrire.cle(cle, valeur, ...) attend au moins 2 arguments");
         let cle = await evalExpr(args[0], ctxExpr);
-        if (typeof cle !== 'string') throw new ErreurTypeInvalide("ecrire(cle, valeur, ...) : cle doit etre du texte");
+        if (typeof cle !== 'string') throw new ErreurTypeInvalide("ecrire.cle(cle, valeur, ...) : cle doit etre du texte");
         let valeurs = [];
         for (let i = 1; i < args.length; i++) valeurs.push(await evaluerElementBrut(args[i], ctxExpr));
         let valeur = valeurs.length === 1 ? valeurs[0] : { __type: "liste", elements: valeurs };
         let texte;
         try { texte = JSON.stringify(valeur); }
-        catch (e) { throw new Error("ecrire(...) : cette valeur ne peut pas etre sauvegardee"); }
+        catch (e) { throw new Error("ecrire.cle(...) : cette valeur ne peut pas etre sauvegardee"); }
         try { localStorage.setItem("monlangage:" + cle, texte); }
-        catch (e) { throw new Error("ecrire(...) : sauvegarde impossible (" + e.message + ")"); }
+        catch (e) { throw new Error("ecrire.cle(...) : sauvegarde impossible (" + e.message + ")"); }
         return true;
     };
 
-    // lire(cle) : recupere une valeur sauvegardee avec ecrire(...). Renvoie pasdefini si
+    // lire.cle(cle) : recupere une valeur sauvegardee avec ecrire.cle(...). Renvoie pasdefini si
     // la cle n'existe pas.
-    fonctionsBase["lire"] = fonctionsExpression["lire"] = async function(args, ctxExpr) {
-        if (args.length !== 1) throw new Error("lire(cle) attend 1 argument");
+    fonctionsBase["lire.cle"] = fonctionsExpression["lire.cle"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("lire.cle(cle) attend 1 argument");
         let cle = await evalExpr(args[0], ctxExpr);
-        if (typeof cle !== 'string') throw new ErreurTypeInvalide("lire(cle) : cle doit etre du texte");
+        if (typeof cle !== 'string') throw new ErreurTypeInvalide("lire.cle(cle) : cle doit etre du texte");
         let brut = localStorage.getItem("monlangage:" + cle);
         if (brut === null) return undefined;
         try { return JSON.parse(brut); }
-        catch (e) { throw new Error("lire(...) : la sauvegarde pour '" + cle + "' est corrompue"); }
+        catch (e) { throw new Error("lire.cle(...) : la sauvegarde pour '" + cle + "' est corrompue"); }
     };
 
     // existe.fichier(chemin) : VRAI/FAUX selon qu'un fichier existe deja a cet emplacement.
@@ -5438,7 +5450,7 @@ function enregistrerFonctionsBase() {
     // CHEMIN COMPLET -- ecriture DIRECTE a cet emplacement, sans rien afficher a l'ecran
     // (symetrique de lire.fichier(chemin)). Necessite l'app native.
     // PLUSIEURS valeurs (val1, val2, ...) : stockees ensemble comme une liste(), meme
-    // logique que pour ecrire(cle, val1, val2, ...) -- voir plus haut.
+    // logique que pour ecrire.cle(cle, val1, val2, ...) -- voir plus haut.
     // ecra~FAUX (par defaut) : si le fichier cible existe deja, l'ecriture est REFUSEE et
     // une erreur est levee (a intercepter avec essai/attrape, ou a eviter en verifiant
     // d'abord avec existe.fichier(...)). ecra~VRAI ecrase sans verifier, comme avant.
@@ -5515,7 +5527,7 @@ function enregistrerFonctionsBase() {
     };
 
     // Fusionne une nouvelle serie de valeurs avec ce qui est deja stocke sous une cle/un
-    // fichier (ecrire()/ecrire.fichier()), sans jamais rien ecraser -- utilise par ajout()
+    // fichier (ecrire.cle()/ecrire.fichier()), sans jamais rien ecraser -- utilise par ajout.cle()
     // et ajout.fichier(). Trois cas, du plus specifique au plus general :
     // - L'existant est un VECTEUR : etendu directement, exactement comme .ajout() sur ce
     //   vecteur (unification de type incluse) -- reste un vecteur, pas transforme en liste().
@@ -5538,20 +5550,20 @@ function enregistrerFonctionsBase() {
         return { __type: "liste", elements: [existant].concat(nouvelles) };
     }
 
-    // ajout(cle, valeur, ...) : ajoute une ou plusieurs valeurs a une cle DEJA EXISTANTE
-    // (sauvegardee avec ecrire(...)), sans rien ecraser -- contrairement a ecrire(cle, ...)
+    // ajout.cle(cle, valeur, ...) : ajoute une ou plusieurs valeurs a une cle DEJA EXISTANTE
+    // (sauvegardee avec ecrire.cle(...)), sans rien ecraser -- contrairement a ecrire.cle(cle, ...)
     // qui remplace toujours le contenu. Erreur si la cle n'existe pas encore : utiliser
-    // ecrire(...) pour la creer d'abord. Voir fusionnerPourAjout(...) ci-dessus pour la
+    // ecrire.cle(...) pour la creer d'abord. Voir fusionnerPourAjout(...) ci-dessus pour la
     // logique de fusion exacte.
-    fonctionsBase["ajout"] = fonctionsExpression["ajout"] = async function(args, ctxExpr) {
-        if (args.length < 2) throw new Error("ajout(cle, valeur, ...) attend au moins 2 arguments");
+    fonctionsBase["ajout.cle"] = fonctionsExpression["ajout.cle"] = async function(args, ctxExpr) {
+        if (args.length < 2) throw new Error("ajout.cle(cle, valeur, ...) attend au moins 2 arguments");
         let cle = await evalExpr(args[0], ctxExpr);
-        if (typeof cle !== 'string') throw new ErreurTypeInvalide("ajout(cle, valeur, ...) : cle doit etre du texte");
+        if (typeof cle !== 'string') throw new ErreurTypeInvalide("ajout.cle(cle, valeur, ...) : cle doit etre du texte");
         let brut = localStorage.getItem("monlangage:" + cle);
-        if (brut === null) throw new ErreurCleIntrouvable("ajout(...) : la cle '" + cle + "' n'existe pas encore (utilise ecrire(...) pour la creer)");
+        if (brut === null) throw new ErreurCleIntrouvable("ajout.cle(...) : la cle '" + cle + "' n'existe pas encore (utilise ecrire.cle(...) pour la creer)");
         let existant;
         try { existant = JSON.parse(brut); }
-        catch (e) { throw new Error("ajout(...) : la sauvegarde pour '" + cle + "' est corrompue"); }
+        catch (e) { throw new Error("ajout.cle(...) : la sauvegarde pour '" + cle + "' est corrompue"); }
 
         let nouvelles = [];
         for (let i = 1; i < args.length; i++) nouvelles.push(await evaluerElementBrut(args[i], ctxExpr));
@@ -5559,15 +5571,15 @@ function enregistrerFonctionsBase() {
 
         let texte;
         try { texte = JSON.stringify(fusion); }
-        catch (e) { throw new Error("ajout(...) : cette valeur ne peut pas etre sauvegardee"); }
+        catch (e) { throw new Error("ajout.cle(...) : cette valeur ne peut pas etre sauvegardee"); }
         try { localStorage.setItem("monlangage:" + cle, texte); }
-        catch (e) { throw new Error("ajout(...) : sauvegarde impossible (" + e.message + ")"); }
+        catch (e) { throw new Error("ajout.cle(...) : sauvegarde impossible (" + e.message + ")"); }
         return true;
     };
 
     // ajout.fichier(nom, valeur, ...) ou ajout.fichier(chemin, valeur, ...) : ajoute une ou
     // plusieurs valeurs a un fichier DEJA EXISTANT (sauvegarde avec ecrire.fichier(...)),
-    // sans l'ecraser -- meme logique de fusion que ajout() (voir fusionnerPourAjout(...)).
+    // sans l'ecraser -- meme logique de fusion que ajout.cle() (voir fusionnerPourAjout(...)).
     // nom sans '/' : ouvre le navigateur de fichiers integre en mode "ouvrir" pour choisir le
     // fichier existant a completer (comme lire.fichier()). nom avec '/' : chemin complet,
     // le fichier doit deja exister a cet emplacement exact (verifie avec existe.fichier()).
@@ -5667,7 +5679,7 @@ function enregistrerFonctionsBase() {
     };
 
     // voir.cle() : liste les NOMS de toutes les cles actuellement sauvegardees avec
-    // ecrire(...) (pas leur contenu). Permet de savoir ce qui existe sans devoir tout
+    // ecrire.cle(...) (pas leur contenu). Permet de savoir ce qui existe sans devoir tout
     // effacer via "Effacer donnees utilisateur" de l'app (qui viderait TOUTES les cles
     // d'un coup). Renvoie un vecteur de texte, vide si aucune cle n'est sauvegardee.
     fonctionsBase["voir.cle"] = fonctionsExpression["voir.cle"] = async function(args, ctxExpr) {
@@ -5682,7 +5694,7 @@ function enregistrerFonctionsBase() {
         return noms;
     };
 
-    // supri.cle(cle) : supprime UNE cle precise sauvegardee avec ecrire(...), sans toucher
+    // supri.cle(cle) : supprime UNE cle precise sauvegardee avec ecrire.cle(...), sans toucher
     // aux autres (contrairement a "Effacer donnees utilisateur" de l'app). Erreur si la cle
     // n'existe pas.
     fonctionsBase["supri.cle"] = fonctionsExpression["supri.cle"] = async function(args, ctxExpr) {
@@ -5698,7 +5710,7 @@ function enregistrerFonctionsBase() {
 
     // voir.fichier() ou voir.fichier(dossier) : liste les NOMS des fichiers .mld presents
     // dans un dossier (pas leur contenu). Sans argument, utilise le dossier racine du
-    // stockage de l'appareil. Contrairement aux cles ecrire()/lire(), l'app ne tient pas de
+    // stockage de l'appareil. Contrairement aux cles ecrire.cle()/lire.cle(), l'app ne tient pas de
     // registre central des fichiers crees avec ecrire.fichier() (ils peuvent etre ecrits a
     // n'importe quel chemin) : voir.fichier() liste donc le CONTENU D'UN DOSSIER donne,
     // comme le navigateur de fichiers integre, plutot que "tous les fichiers jamais crees".
@@ -7070,6 +7082,9 @@ let categorieCouleurs = {
 //   de module import(...) -> "de" reste colore comme commande
 //   si(condition){...}, pou(...), tanqer(...) -> commandes de controle reconnues
 //   stop, continu, retour valeur, classe Nom... -> commandes sans parentheses
+//   nom.ajout(elements), var.majuscul() -> fonctions colorees (le "." dans leur syntaxe
+//     documentee ne les exempte plus de l'exigence de parenthese, sinon "ajout" se
+//     recolorait par-dessus lui-meme en 2 couleurs a l'interieur de ajout.fichier(...))
 let commandeCouleur = {};
 let fonctionsCouleur = {};
 for (let e of aideCommandes) {
@@ -7078,12 +7093,21 @@ for (let e of aideCommandes) {
     if (!/^[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\s+[a-zA-Z_]\w*)*$/.test(nom)) continue;
 
     // Une commande est une fonction lorsqu'elle est suivie de la premiere
-    // parenthese ouvrante : nom(...). On ne depend donc plus de la position
-    // du nom dans la chaine "syntaxe" de l'aide. Cela corrige notamment les
-    // entrees regroupant plusieurs fonctions (planifier.*, date.*, sms.*, ...).
+    // parenthese ouvrante : nom(...) -- y compris quand ce nom est lui-meme
+    // precede d'un '.' dans sa syntaxe documentee (ex: "nom.ajout(elements)",
+    // "var.majuscul()") : ce sont des methodes qui exigent TOUJOURS la
+    // parenthese pour etre appelees, donc des fonctions comme les autres.
+    // Principe : la coloration d'une commande a parenthese ne doit jamais
+    // s'appliquer avant que sa premiere parenthese ouvrante soit ecrite.
+    // On ne depend donc plus de la position du nom dans la chaine "syntaxe"
+    // de l'aide. Cela corrige notamment les entrees regroupant plusieurs
+    // fonctions (planifier.*, date.*, sms.*, ...) et evite qu'un nom comme
+    // "ajout" (methode vecteur/matrice/liste) se retrouve colore deux fois
+    // avec deux couleurs differentes a l'interieur d'un appel distinct comme
+    // "ajout.fichier(...)" ou "ajout.cle(...)".
     let nomEchappe = nom.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     let syntaxe = String(e.syntaxe || '');
-    let estFonction = new RegExp('(?:^|[^a-zA-Z0-9_.])' + nomEchappe + '\\s*\\(').test(syntaxe);
+    let estFonction = new RegExp('(?:^|[^a-zA-Z0-9_])' + nomEchappe + '\\s*\\(').test(syntaxe);
 
     // Certaines familles sont documentees avec une syntaxe generique
     // (ex. conver.source.cible(valeur)). Tous les noms de cette entree sont
@@ -7212,12 +7236,12 @@ function colorerMessageErreur(texte) {
   // par erreur du texte normal contenu dans d'autres messages d'erreur.
   const prefixAppelMalForme = "Appel de fonction mal forme (parenthese fermante manquante ou en trop) : ";
 
-  // Affichage des erreurs avec numero de ligne :
-  // "Erreur ligne 1: ... : temps("
+  // Affichage des erreurs avec numero de ligne : "Erreur ligne 1: ..." aussi bien que
+  // "Erreur de syntaxe ligne 1: ..." (verifierSyntaxeSansRisque) :
   // - le numero de ligne est colore comme un nombre MLG ;
   // - le texte explicatif reste entierement rouge ;
   // - le morceau de code fautif apres ": " est recolore comme du code MLG.
-  const matchErreurLigne = texte.match(/^(Erreur ligne )(\d+)(: )(.*)$/);
+  const matchErreurLigne = texte.match(/^(Erreur (?:de syntaxe )?ligne )(\d+)(: )(.*)$/);
   if (matchErreurLigne) {
     const prefix = echapperHTML(matchErreurLigne[1]);
     const numeroLigne = '<span class="nombre">' + matchErreurLigne[2] + '</span>';
