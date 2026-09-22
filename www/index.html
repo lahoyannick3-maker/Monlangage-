@@ -372,9 +372,13 @@
     .dialogueOverlay.ouvert { display: flex; }
     .dialogueBoite { width: min(92vw, 420px); background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 22px; box-shadow: 0 12px 40px rgba(0,0,0,.55); }
     .dialogueTitre { font-size: 17px; line-height: 1.45; color: #f0f6fc; margin-bottom: 22px; }
-    .dialogueActions { display: flex; justify-content: flex-end; gap: 10px; }
+    .dialogueActions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
     #btnDialogueNon { background: #30363d; }
     #btnDialogueOui { background: #238636; }
+    #btnFermetureOngletAnnuler { background: #21262d; }
+    #btnFermetureOngletSansEnregistrer { background: #da3633; }
+    #btnFermetureOngletSansEnregistrer:hover { background: #f85149; }
+    #btnFermetureOngletEnregistrer { background: #238636; }
   </style>
 </head>
 <body>
@@ -462,6 +466,17 @@ affi(|Bonjour |, nom)</textarea>
       <div class="dialogueActions">
         <button id="btnDialogueNon" type="button">Arrêter</button>
         <button id="btnDialogueOui" type="button">Laisser</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="dialogueFermetureOnglet" class="dialogueOverlay" aria-hidden="true">
+    <div class="dialogueBoite" role="dialog" aria-modal="true" aria-labelledby="titreDialogueFermetureOnglet">
+      <div id="titreDialogueFermetureOnglet" class="dialogueTitre"></div>
+      <div class="dialogueActions">
+        <button id="btnFermetureOngletAnnuler" type="button">Annuler</button>
+        <button id="btnFermetureOngletSansEnregistrer" type="button">Fermer sans enregistrer</button>
+        <button id="btnFermetureOngletEnregistrer" type="button">Enregistrer</button>
       </div>
     </div>
   </div>
@@ -875,14 +890,48 @@ function enregistrerFichierMlg() {
   enregistrerOnglet(onglet);
 }
 
-function fermerOnglet(id) {
+// Dialogue "modifications non enregistrees" avant fermeture d'un onglet -- remplace l'ancien
+// confirm() natif du navigateur (popup blanche hors-charte) par une boite stylee identique aux
+// autres dialogues de l'app (voir dialogueArrierePlan). Trois issues possibles, resolues sous
+// forme de texte : "enregistrer" (enregistrer puis fermer), "fermer" (fermer sans enregistrer),
+// "annuler" (ne pas fermer l'onglet du tout).
+function demanderConfirmationFermeture(nomFichier) {
+  return new Promise((resolve) => {
+    const overlay = document.getElementById("dialogueFermetureOnglet");
+    const titre = document.getElementById("titreDialogueFermetureOnglet");
+    const btnEnregistrer = document.getElementById("btnFermetureOngletEnregistrer");
+    const btnSansEnregistrer = document.getElementById("btnFermetureOngletSansEnregistrer");
+    const btnAnnuler = document.getElementById("btnFermetureOngletAnnuler");
+    titre.textContent = "Le fichier « " + (nomFichier || "sans titre") + " » contient des modifications non enregistrées.";
+    overlay.classList.add("ouvert");
+    overlay.setAttribute("aria-hidden", "false");
+    function terminer(reponse) {
+      overlay.classList.remove("ouvert");
+      overlay.setAttribute("aria-hidden", "true");
+      btnEnregistrer.removeEventListener("click", surEnregistrer);
+      btnSansEnregistrer.removeEventListener("click", surSansEnregistrer);
+      btnAnnuler.removeEventListener("click", surAnnuler);
+      resolve(reponse);
+    }
+    function surEnregistrer() { terminer("enregistrer"); }
+    function surSansEnregistrer() { terminer("fermer"); }
+    function surAnnuler() { terminer("annuler"); }
+    btnEnregistrer.addEventListener("click", surEnregistrer);
+    btnSansEnregistrer.addEventListener("click", surSansEnregistrer);
+    btnAnnuler.addEventListener("click", surAnnuler);
+  });
+}
+
+async function fermerOnglet(id) {
   let onglet = trouverOnglet(id);
   if (!onglet) return;
 
   if (onglet.dirty) {
-    let enregistrer = confirm("Le fichier « " + (onglet.nom || "sans titre") + " » contient des modifications non enregistrées.\n\nOK = enregistrer avant de fermer\nAnnuler = fermer sans enregistrer");
+    let reponse = await demanderConfirmationFermeture(onglet.nom);
 
-    if (enregistrer) {
+    if (reponse === "annuler") return;
+
+    if (reponse === "enregistrer") {
       enregistrerOnglet(onglet, function(succes) {
         if (succes) fermerOnglet(id);
       });
@@ -5534,6 +5583,7 @@ function enregistrerFonctionsBase() {
         if (!verifierPermissionStockage()) {
             throw new ErreurPermissionRefusee("ajout.fichier(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
         }
+        let nouvelles = [];
         for (let i = 1; i < args.length; i++) nouvelles.push(await evaluerElementBrut(args[i], ctxExpr));
 
         let cheminComplet;
@@ -9454,6 +9504,10 @@ function serviceScriptActif() {
 function arreterScriptEnCours() {
   demandeArret = true;
   if (annulerSaisieEnCours) annulerSaisieEnCours();
+  // Reveil immediat d'un attendre() en cours : sans ca, l'arret n'est constate qu'au
+  // declenchement naturel du timer (jusqu'a plusieurs secondes de retard). Meme reveil
+  // que celui utilise par arreterExecutionExterne(...).
+  annulerAttenteEnCoursMLG();
   arreterIndicateurAttente();
   if (executionViaService && serviceDisponible() && typeof window.MonLangage.arreterScriptService === "function") {
     try { window.MonLangage.arreterScriptService(); } catch (_) {}
@@ -9463,6 +9517,19 @@ function arreterScriptEnCours() {
   scriptEnArrierePlan = false;
   btnArretUrgence.hidden = true;
   btnRun.disabled = false;
+}
+
+// Le resultat publie par le service est une simple chaine de texte : les classes CSS
+// ("erreur" en rouge) appliquees par print() pendant l'execution locale ne survivent pas
+// a la traversee du pont natif. On les retrouve donc ligne par ligne, en reconnaissant les
+// memes formats de message que ceux produits par executerScriptLocal(...) ci-dessous
+// ("Erreur ligne X: ...", "Erreur: ...", "Erreur de syntaxe ligne X: ...", "=== EXECUTION
+// ARRETEE ===", etc.), pour que ces lignes ressortent en rouge comme le reste de la console.
+const REGEX_LIGNE_ERREUR_SERVICE = /^(Erreur(:| ligne \d+:| de syntaxe ligne \d+:)|=== EXECUTION ARRETEE ===|\.\.\. et \d+ autre\(s\) erreur\(s\) de syntaxe|Le script n'a pas ete execute : aucune instruction n'a ete lancee\.)/;
+function imprimerResultatService(resultat) {
+  for (const ligne of String(resultat).split("\n")) {
+    print(ligne, REGEX_LIGNE_ERREUR_SERVICE.test(ligne) ? "erreur" : "");
+  }
 }
 
 function synchroniserEtatService() {
@@ -9494,7 +9561,7 @@ function synchroniserEtatService() {
   dernierIdServiceVu = dernierId;
   if (!resultatServiceAffiche.has(dernierId) && ecranConsole.classList.contains("actif")) {
     resultatServiceAffiche.add(dernierId);
-    if (resultat) print(resultat);
+    if (resultat) imprimerResultatService(resultat);
     print("=== FIN ===");
     // Le service ne manipule pas la console visible de MainActivity. Une fois le script
     // termine, on recree donc explicitement l'invite que l'execution locale affichait
@@ -9669,8 +9736,14 @@ window.arreterExecutionExterne = function() {
 // sans arreter le service Android. Comme dans l'execution locale historique,
 // l'arret rend immediatement la console de nouveau utilisable en recreant l'invite #.
 btnArretUrgence.addEventListener("click", () => {
+  // Script lance avec RUN (execution locale en JS, pas via le service) : l'arret est
+  // asynchrone -- demandeArret n'est constate qu'au prochain point de controle
+  // (respirer()). C'est alors executerScriptLocal(...) lui-meme qui affichera
+  // "=== EXECUTION ARRETEE ===" et recreera l'invite une fois l'interruption
+  // effectivement traitee. L'afficher aussi ici produirait deux invites a la suite.
+  const executionLocaleEnCours = executionEnCours && !executionViaService;
   arreterScriptEnCours();
-  if (ecranConsole.classList.contains("actif")) {
+  if (!executionLocaleEnCours && ecranConsole.classList.contains("actif")) {
     print("=== EXECUTION ARRETEE ===", "erreur");
     printInvite();
   }
