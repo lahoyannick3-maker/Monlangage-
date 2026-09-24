@@ -10160,13 +10160,50 @@ printInvite();
 // WebView headless du service. Les executions suivantes, dans la MEME webview,
 // sont plus rapides sans que rien n'ait change dans le code lui-meme.
 // On paie donc ce cout une fois, silencieusement, sur du code JETABLE (jamais
-// affiche, jamais melange a l'etat de l'utilisateur -- contexte separe, aucune
-// variable globale touchee), juste apres le chargement de la page plutot que sur
-// le premier vrai script. Cible evalExprSansEntreeSync (chemin AST + repli), le
-// poste le plus couteux mesure par benchmark_cascade.mlg -- pas executerCommandeSimple
-// ni la mecanique de boucle, qui s'appuient sur l'etat global (scopes) et seraient
-// plus risques a prechauffer sans y toucher. setTimeout(...,0) : ne retarde pas
-// l'affichage de la console, s'execute juste apres.
+// affiche, jamais melange a l'etat de l'utilisateur), juste apres le chargement
+// de la page plutot que sur le premier vrai script.
+//
+// Deux volets :
+// 1) evalExprSansEntreeSync isole (contexte jetable local, aucune variable globale
+//    touchee) -- le poste le plus couteux mesure par benchmark_cascade.mlg.
+// 2) executerCommandeSimple + mecanique de boucle + parsing complet, via un vrai
+//    script jetable execute a travers TOUT le pipeline (tokeniser/parser/
+//    verifierSyntaxeSansRisque/executerTokens) -- comme executerScriptLocal, mais
+//    sans aucune interaction UI (pas de print/afficherConsole/btnRun/indicateur
+//    d'attente). Ce volet TOUCHE l'etat global (scopes/fonctions/modules), mais
+//    executerScriptLocal les reinitialise de toute facon inconditionnellement au
+//    debut de CHAQUE execution reelle -- rien ne peut donc "fuiter" vers le
+//    premier vrai script de l'utilisateur. Seul risque reel : une collision si un
+//    vrai script demarre PENDANT que ce volet tourne encore (fenetre minuscule,
+//    juste apres le chargement de page) -- gardee par la verification de
+//    executionEnCours avant de toucher quoi que ce soit.
+async function _executerScriptSilencieux(script) {
+  if (executionEnCours) return; // un vrai script a deja demarre : on n'y touche pas.
+  scopes = [{}];
+  profondeurAppel = 0;
+  PROFONDEUR_APPEL_MAX = PROFONDEUR_APPEL_MAX_DEFAUT;
+  fonctions = {};
+  modules = {};
+  pileImportEnCours = [];
+  enregistrerFonctionsBase();
+  demandeArret = false;
+  executionEnCours = true;
+  try {
+    let tokens = parser(script);
+    let erreursSyntaxe = verifierSyntaxeSansRisque(script, tokens);
+    if (erreursSyntaxe.length === 0) {
+      preRegistrerFonctions(tokens);
+      await preRegistrerClasses(tokens);
+      await preRegistrerImports(tokens);
+      await executerTokens(tokens);
+    }
+  } catch (e) {
+    // Prechauffage : seul le passage du code compte, le resultat n'a aucune importance.
+  }
+  executionEnCours = false;
+  demandeArret = false;
+}
+
 setTimeout(function () {
   try {
     let scopeJetable = { i: 0, x: 0, v: [1, 2, 3, 4, 5] };
@@ -10181,6 +10218,17 @@ setTimeout(function () {
   } catch (e) {
     // Le prechauffage ne doit jamais faire echouer le chargement de la page.
   }
+  _executerScriptSilencieux(
+    "pou(i,1,2000){\n" +
+    "  x~i*2\n" +
+    "  si(x>1000) { y~x-1 }\n" +
+    "  sinon { y~x+1 }\n" +
+    "}\n" +
+    "v~c(1,2,3)\n" +
+    "z~v[1]+v[2]\n" +
+    "fonc double(n){ retour n*2 }\n" +
+    "w~double(5)\n"
+  );
 }, 0);
 // Désactive les actions natives Copier/Couper/Coller sur les éléments d'interface
 // (barres d'outils, en-têtes, onglets et barres de navigation), sans toucher aux
