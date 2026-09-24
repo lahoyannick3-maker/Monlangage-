@@ -2122,11 +2122,267 @@ async function evalExpr(str, ctx) {
 // l'ancien parseur async complet, qui sait le gerer.
 class __BesoinAsync extends Error {}
 
+// ===================== AST — cache d'arbre pour le sous-ensemble "pur" des expressions ====================
+// Constat du benchmark_cascade.mlg : "i+i" dans une boucle de 50000 tours est aujourd'hui
+// re-tokenise ET re-parse depuis la chaine brute a CHAQUE tour, alors que sa STRUCTURE ne
+// change jamais -- seules les valeurs des variables qu'elle lit changent d'un tour a l'autre.
+// On construit donc un arbre une seule fois par expression SOURCE (mis en cache par chaine),
+// puis on se contente de le PARCOURIR a chaque evaluation suivante. Les memes fonctions
+// combinerAddition/combinerComparaison/accederUnique/etc. sont reutilisees telles quelles :
+// seul le CHEMIN pour y arriver change, pas leur logique.
+//
+// Porte volontairement REDUITE a un sous-ensemble "pur" : arithmetique, comparaisons,
+// et/ou/non, dan, sequence ':', indexation v[i]/m[i,j], nombres/textes/VRAI/FAUX/pasdefini/
+// codes d'erreur/variables/parentheses. Des qu'on rencontre autre chose (appel de fonction,
+// '.' quel qu'il soit -- attribut de classe, variable de module, methode de texte, PRODUIT
+// SCALAIRE inclus, fonc(...) anonyme, lettr/Lettr, parent) la construction DECLINE (renvoie
+// null) : l'appelant retombe alors sur l'ancien parseur rapide (evalExprSansEntreeSync ci-
+// dessous, inchange) exactement comme avant. Le "." est traite en bloc plutot que de tenter
+// de distinguer produit scalaire vs attribut ici : c'est strictement plus prudent (le produit
+// scalaire perd juste le benefice du cache) et ca evite de dupliquer la logique de
+// disambiguation deja presente dans evalExprSansEntreeSync. Zero risque de regression sur ce
+// qui n'est pas couvert : c'est litteralement le meme code qu'avant pour ces cas-la.
+let _cacheArbreRapide = new Map(); // str -> noeud | null (null = "grammaire non couverte, ne pas reessayer")
+
+function _obtenirArbreRapide(str) {
+  if (_cacheArbreRapide.has(str)) return _cacheArbreRapide.get(str);
+  let noeud;
+  try {
+    noeud = _construireArbreRapide(tokenizerExpr(str));
+  } catch (e) {
+    // Erreur de syntaxe (parenthese manquante, etc.) : pas notre travail de la diagnostiquer
+    // ici -- on decline, l'ancien parseur la retrouvera et la rapportera avec son message habituel.
+    noeud = null;
+  }
+  _cacheArbreRapide.set(str, noeud);
+  if (_cacheArbreRapide.size > _CACHE_EXPR_TAILLE_MAX) {
+    _cacheArbreRapide.delete(_cacheArbreRapide.keys().next().value);
+  }
+  return noeud;
+}
+
+function _construireArbreRapide(tokens) {
+  let pos = 0;
+  const peek = () => tokens[pos];
+  const next = () => tokens[pos++];
+  const DECLINE = null;
+
+  function or_() {
+    let g = and_();
+    if (g === DECLINE) return DECLINE;
+    while (peek() && peek().type === 'or') {
+      next();
+      let d = and_();
+      if (d === DECLINE) return DECLINE;
+      g = { t: 'or', g, d };
+    }
+    return g;
+  }
+  function and_() {
+    let g = not_();
+    if (g === DECLINE) return DECLINE;
+    while (peek() && peek().type === 'and') {
+      next();
+      let d = not_();
+      if (d === DECLINE) return DECLINE;
+      g = { t: 'and', g, d };
+    }
+    return g;
+  }
+  function not_() {
+    if (peek() && peek().type === 'not') {
+      next();
+      let v = not_();
+      if (v === DECLINE) return DECLINE;
+      return { t: 'not', v };
+    }
+    return dan_();
+  }
+  function dan_() {
+    let g = cmp_();
+    if (g === DECLINE) return DECLINE;
+    while (peek() && peek().type === 'dan') {
+      next();
+      let d = cmp_();
+      if (d === DECLINE) return DECLINE;
+      g = { t: 'dan', g, d };
+    }
+    return g;
+  }
+  function cmp_() {
+    let g = add_();
+    if (g === DECLINE) return DECLINE;
+    if (peek() && peek().type === 'cmp') {
+      let op = next().v;
+      let d = add_();
+      if (d === DECLINE) return DECLINE;
+      return { t: 'cmp', g, d, op };
+    }
+    return g;
+  }
+  function add_() {
+    let g = mul_();
+    if (g === DECLINE) return DECLINE;
+    while (peek() && peek().type === 'op' && (peek().v === '+' || peek().v === '-')) {
+      let op = next().v;
+      let d = mul_();
+      if (d === DECLINE) return DECLINE;
+      g = { t: 'add', g, d, op };
+    }
+    return g;
+  }
+  function mul_() {
+    let g = colon_();
+    if (g === DECLINE) return DECLINE;
+    // NB : '.' (produit scalaire) ne peut jamais arriver ici -- primary_() decline des qu'il
+    // voit un '.' de suite, avant meme de remonter jusqu'ici (voir commentaire plus haut).
+    while (peek() && peek().type === 'op' && (peek().v === '*' || peek().v === '/' || peek().v === '%' || peek().v === 'enti' || peek().v === '..' || peek().v === '×')) {
+      let op = next().v;
+      let d = colon_();
+      if (d === DECLINE) return DECLINE;
+      g = { t: 'mul', g, d, op };
+    }
+    return g;
+  }
+  function colon_() {
+    let g = unary_();
+    if (g === DECLINE) return DECLINE;
+    if (peek() && peek().type === 'deuxpoints') {
+      next();
+      let d = unary_();
+      if (d === DECLINE) return DECLINE;
+      return { t: 'seq', g, d };
+    }
+    return g;
+  }
+  function unary_() {
+    if (peek() && peek().type === 'op' && peek().v === '-') {
+      next();
+      let v = unary_();
+      if (v === DECLINE) return DECLINE;
+      return { t: 'neg', v };
+    }
+    return pow_();
+  }
+  function pow_() {
+    let g = primary_();
+    if (g === DECLINE) return DECLINE;
+    if (peek() && peek().type === 'op' && peek().v === '^') {
+      next();
+      let d = unary_(); // recursif (associatif a droite) : autorise 2^3^2 et 2^-1
+      if (d === DECLINE) return DECLINE;
+      return { t: 'pow', g, d };
+    }
+    return g;
+  }
+  function primary_() {
+    let valeur = primaryBrute_();
+    if (valeur === DECLINE) return DECLINE;
+    while (true) {
+      if (peek() && peek().type === '[') {
+        next();
+        let idx1 = null;
+        if (peek() && peek().type !== ',' && peek().type !== ']') {
+          idx1 = or_();
+          if (idx1 === DECLINE) return DECLINE;
+        }
+        if (peek() && peek().type === ',') {
+          next();
+          let idx2 = null;
+          if (peek() && peek().type !== ']') {
+            idx2 = or_();
+            if (idx2 === DECLINE) return DECLINE;
+          }
+          if (!peek() || peek().type !== ']') return DECLINE;
+          next();
+          valeur = { t: 'idx2', base: valeur, i1: idx1, i2: idx2 };
+          continue;
+        }
+        if (!peek() || peek().type !== ']') return DECLINE;
+        next();
+        valeur = { t: 'idx1', base: valeur, i: idx1 };
+        continue;
+      }
+      // Tout '.' ici (attribut de classe, variable de module, methode de texte, produit
+      // scalaire...) sort de ce sous-ensemble reduit -- on decline plutot que de deviner
+      // sans le contexte runtime dont dispose l'ancien parseur.
+      if (peek() && peek().type === 'op' && peek().v === '.') return DECLINE;
+      break;
+    }
+    return valeur;
+  }
+  function primaryBrute_() {
+    let t = peek();
+    if (!t) return DECLINE;
+    if (t.type === 'num') { next(); return { t: 'num', v: t.v }; }
+    if (t.type === 'str') { next(); return { t: 'str', v: t.v }; }
+    if (t.type === '(') {
+      next();
+      let v = or_();
+      if (v === DECLINE) return DECLINE;
+      if (!peek() || peek().type !== ')') return DECLINE;
+      next();
+      return v;
+    }
+    if (t.type === 'ident') {
+      if (t.v === 'VRAI') { next(); return { t: 'lit', v: true }; }
+      if (t.v === 'FAUX') { next(); return { t: 'lit', v: false }; }
+      // lettr/Lettr (alphabetMinuscule()/alphabetMajuscule()) et parent (acces a l'instance
+      // englobante) : constructions particulieres, laissees a l'ancien parseur.
+      if (t.v === 'lettr' || t.v === 'Lettr' || t.v === 'parent') return DECLINE;
+      // Suivi de '(' : appel de fonction utilisateur, ou pasdefini(...)/lettr(...)/fonc(...)
+      // mal ecrits -- dans tous les cas, decline pour laisser l'ancien parseur produire le
+      // bon comportement (ou le bon message d'erreur).
+      if (tokens[pos + 1] && tokens[pos + 1].type === '(') return DECLINE;
+      if (t.v === 'pasdefini') { next(); return { t: 'lit', v: undefined }; }
+      if (CODES_ERREUR_RECONNUS.has(t.v)) { next(); return { t: 'lit', v: t.v }; }
+      // Suivi de '.' : attribut de classe, variable de module, methode de texte -- decline
+      // (voir commentaire dans primary_()).
+      if (tokens[pos + 1] && tokens[pos + 1].type === 'op' && tokens[pos + 1].v === '.') return DECLINE;
+      next();
+      return { t: 'var', nom: t.v };
+    }
+    return DECLINE;
+  }
+
+  let resultat = or_();
+  if (resultat === DECLINE) return null;
+  if (pos < tokens.length) return null; // tokens non consommes : hors de ce sous-ensemble (ou erreur ; laisse l'ancien parseur trancher)
+  return resultat;
+}
+
+function evaluerArbreRapide(noeud, ctx) {
+  switch (noeud.t) {
+    case 'num': case 'str': case 'lit': return noeud.v;
+    case 'var': return ctx.getVar(noeud.nom);
+    case 'neg': { let v = evaluerArbreRapide(noeud.v, ctx); verifierNombre(v, '-'); return -v; }
+    case 'not': return !estVrai(evaluerArbreRapide(noeud.v, ctx));
+    case 'or': { let g = evaluerArbreRapide(noeud.g, ctx); if (estVrai(g)) return true; return estVrai(evaluerArbreRapide(noeud.d, ctx)); }
+    case 'and': { let g = evaluerArbreRapide(noeud.g, ctx); if (!estVrai(g)) return false; return estVrai(evaluerArbreRapide(noeud.d, ctx)); }
+    case 'dan': return testerAppartenance(evaluerArbreRapide(noeud.g, ctx), evaluerArbreRapide(noeud.d, ctx));
+    case 'cmp': return combinerComparaison(evaluerArbreRapide(noeud.g, ctx), evaluerArbreRapide(noeud.d, ctx), noeud.op);
+    case 'add': return combinerAddition(evaluerArbreRapide(noeud.g, ctx), evaluerArbreRapide(noeud.d, ctx), noeud.op);
+    case 'mul': return combinerMultiplication(evaluerArbreRapide(noeud.g, ctx), evaluerArbreRapide(noeud.d, ctx), noeud.op);
+    case 'seq': {
+      let g = evaluerArbreRapide(noeud.g, ctx), d = evaluerArbreRapide(noeud.d, ctx);
+      verifierNombre(g, ':'); verifierNombre(d, ':');
+      return construireSequence(g, d);
+    }
+    case 'pow': return combinerPuissance(evaluerArbreRapide(noeud.g, ctx), evaluerArbreRapide(noeud.d, ctx));
+    case 'idx1': return accederUnique(evaluerArbreRapide(noeud.base, ctx), noeud.i === null ? null : evaluerArbreRapide(noeud.i, ctx), "resultat");
+    case 'idx2': return accederMatrice(evaluerArbreRapide(noeud.base, ctx), noeud.i1 === null ? null : evaluerArbreRapide(noeud.i1, ctx), noeud.i2 === null ? null : evaluerArbreRapide(noeud.i2, ctx), "resultat");
+  }
+  throw new Error("Noeud d'arbre rapide inconnu: " + noeud.t);
+}
+
 // ---- Parseur RAPIDE (synchrone). Utilise pour l'ecrasante majorite des
 // expressions (conditions de boucles, calculs, indexation...) qui ne contiennent
 // aucun appel a une fonction definie par l'utilisateur. Pas de Promise creee a
 // chaque niveau de descente recursive -> beaucoup plus rapide dans les boucles.
 function evalExprSansEntreeSync(str, ctx) {
+  let arbre = _obtenirArbreRapide(str);
+  if (arbre !== null) return evaluerArbreRapide(arbre, ctx);
+
   let tokens = tokenizerExpr(str);
   let pos = 0;
   const peek = () => tokens[pos];
@@ -9895,6 +10151,37 @@ btnRunFond.addEventListener("click", runScriptArrierePlan);
 initialiserOnglets();
 clearConsole();
 printInvite();
+
+// ===================== Prechauffage du moteur JS =====================
+// Le moteur JS de la WebView (console ET service, meme index.html charge des deux
+// cotes) est nettement plus lent tant qu'il n'a pas vu un morceau de code tourner
+// plusieurs fois (compilation/optimisation progressive) -- constate sur le tout
+// PREMIER script execute apres l'ouverture de l'app ou apres la creation de la
+// WebView headless du service. Les executions suivantes, dans la MEME webview,
+// sont plus rapides sans que rien n'ait change dans le code lui-meme.
+// On paie donc ce cout une fois, silencieusement, sur du code JETABLE (jamais
+// affiche, jamais melange a l'etat de l'utilisateur -- contexte separe, aucune
+// variable globale touchee), juste apres le chargement de la page plutot que sur
+// le premier vrai script. Cible evalExprSansEntreeSync (chemin AST + repli), le
+// poste le plus couteux mesure par benchmark_cascade.mlg -- pas executerCommandeSimple
+// ni la mecanique de boucle, qui s'appuient sur l'etat global (scopes) et seraient
+// plus risques a prechauffer sans y toucher. setTimeout(...,0) : ne retarde pas
+// l'affichage de la console, s'execute juste apres.
+setTimeout(function () {
+  try {
+    let scopeJetable = { i: 0, x: 0, v: [1, 2, 3, 4, 5] };
+    let ctxJetable = { getVar: (nom) => scopeJetable[nom] };
+    for (let n = 0; n < 3000; n++) {
+      scopeJetable.i = n % 100;
+      scopeJetable.x = evalExprSansEntreeSync("i*2+1", ctxJetable);
+      evalExprSansEntreeSync("i<50 et x>0", ctxJetable);
+      evalExprSansEntreeSync("v[1]+v[2]-i", ctxJetable);
+      evalExprSansEntreeSync("(i+1)^2", ctxJetable);
+    }
+  } catch (e) {
+    // Le prechauffage ne doit jamais faire echouer le chargement de la page.
+  }
+}, 0);
 // Désactive les actions natives Copier/Couper/Coller sur les éléments d'interface
 // (barres d'outils, en-têtes, onglets et barres de navigation), sans toucher aux
 // champs dans lesquels l'utilisateur doit pouvoir saisir/rechercher du texte.
