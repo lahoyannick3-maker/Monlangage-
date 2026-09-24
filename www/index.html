@@ -1207,6 +1207,9 @@ const CODES_ERREUR_RECONNUS = new Set([
 // L'executeur est asynchrone mais, sans point de cession explicite, le navigateur
 let executionEnCours = false;
 let demandeArret = false;
+// Promise du prechauffage silencieux en cours (voir tout en bas du fichier), ou null si
+// termine/pas encore demarre. executerScriptLocal l'attend avant de toucher scopes/fonctions.
+let _prechauffagePromise = null;
 // Timer unique utilise par attendre(). Il est global afin que l'arret d'urgence puisse
 // annuler une attente meme lorsque le moteur execute le script dans la WebView du service.
 let attenteEnCoursMLG = null;
@@ -9931,6 +9934,14 @@ async function executerScriptLocal(script, options = {}) {
   const afficherMarqueursExecution = options.afficherMarqueursExecution !== false;
   const afficherInviteExecution = options.afficherInviteExecution !== false;
 
+  // Le prechauffage silencieux (voir tout en bas du fichier) touche le meme etat global
+  // (scopes/fonctions/modules) qu'une vraie execution. S'il est encore en cours -- console
+  // ET service partagent ce risque, le service pouvant recevoir un script des l'instant ou
+  // sa WebView headless est prete, independamment de l'etat du prechauffage -- on attend
+  // qu'il se termine plutot que d'ecraser son etat en plein milieu (resultats faux des deux
+  // cotes, temps de CETTE execution fausse par la concurrence).
+  if (_prechauffagePromise) await _prechauffagePromise;
+
   scopes = [{}];
   profondeurAppel = 0;
   PROFONDEUR_APPEL_MAX = PROFONDEUR_APPEL_MAX_DEFAUT;
@@ -10205,30 +10216,39 @@ async function _executerScriptSilencieux(script) {
 }
 
 setTimeout(function () {
-  try {
-    let scopeJetable = { i: 0, x: 0, v: [1, 2, 3, 4, 5] };
-    let ctxJetable = { getVar: (nom) => scopeJetable[nom] };
-    for (let n = 0; n < 3000; n++) {
-      scopeJetable.i = n % 100;
-      scopeJetable.x = evalExprSansEntreeSync("i*2+1", ctxJetable);
-      evalExprSansEntreeSync("i<50 et x>0", ctxJetable);
-      evalExprSansEntreeSync("v[1]+v[2]-i", ctxJetable);
-      evalExprSansEntreeSync("(i+1)^2", ctxJetable);
+  if (executionEnCours) return; // l'utilisateur a deja lance un vrai script avant meme le debut du prechauffage.
+  btnRun.disabled = true;
+  btnRunFond.disabled = true;
+  _prechauffagePromise = (async function () {
+    try {
+      let scopeJetable = { i: 0, x: 0, v: [1, 2, 3, 4, 5] };
+      let ctxJetable = { getVar: (nom) => scopeJetable[nom] };
+      for (let n = 0; n < 3000; n++) {
+        scopeJetable.i = n % 100;
+        scopeJetable.x = evalExprSansEntreeSync("i*2+1", ctxJetable);
+        evalExprSansEntreeSync("i<50 et x>0", ctxJetable);
+        evalExprSansEntreeSync("v[1]+v[2]-i", ctxJetable);
+        evalExprSansEntreeSync("(i+1)^2", ctxJetable);
+      }
+    } catch (e) {
+      // Le prechauffage ne doit jamais faire echouer le chargement de la page.
     }
-  } catch (e) {
-    // Le prechauffage ne doit jamais faire echouer le chargement de la page.
-  }
-  _executerScriptSilencieux(
-    "pou(i,1,2000){\n" +
-    "  x~i*2\n" +
-    "  si(x>1000) { y~x-1 }\n" +
-    "  sinon { y~x+1 }\n" +
-    "}\n" +
-    "v~c(1,2,3)\n" +
-    "z~v[1]+v[2]\n" +
-    "fonc double(n){ retour n*2 }\n" +
-    "w~double(5)\n"
-  );
+    await _executerScriptSilencieux(
+      "pou(i,1,2000){\n" +
+      "  x~i*2\n" +
+      "  si(x>1000) { y~x-1 }\n" +
+      "  sinon { y~x+1 }\n" +
+      "}\n" +
+      "v~c(1,2,3)\n" +
+      "z~v[1]+v[2]\n" +
+      "fonc double(n){ retour n*2 }\n" +
+      "w~double(5)\n"
+    );
+  })().finally(function () {
+    _prechauffagePromise = null;
+    btnRun.disabled = false;
+    btnRunFond.disabled = false;
+  });
 }, 0);
 // Désactive les actions natives Copier/Couper/Coller sur les éléments d'interface
 // (barres d'outils, en-têtes, onglets et barres de navigation), sans toucher aux
