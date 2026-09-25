@@ -1207,9 +1207,6 @@ const CODES_ERREUR_RECONNUS = new Set([
 // L'executeur est asynchrone mais, sans point de cession explicite, le navigateur
 let executionEnCours = false;
 let demandeArret = false;
-// Promise du prechauffage silencieux en cours (voir tout en bas du fichier), ou null si
-// termine/pas encore demarre. executerScriptLocal l'attend avant de toucher scopes/fonctions.
-let _prechauffagePromise = null;
 // Timer unique utilise par attendre(). Il est global afin que l'arret d'urgence puisse
 // annuler une attente meme lorsque le moteur execute le script dans la WebView du service.
 let attenteEnCoursMLG = null;
@@ -4323,7 +4320,7 @@ function analyserLigneImport(ligne) {
 // comme prefixe si aucun sunom~ n'est fourni). Identifiant nu -> outils.mlg dans le dossier du
 // script courant. Texte |...| -> chemin explicite (absolu si commence par "/", sinon relatif au
 // dossier du script courant), extension requise dans ce cas.
-function resoudreCheminImport(cibleBrute, ligneErreur) {
+function resoudreCheminImport(cibleBrute, ligneErreur, dossierBase = null) {
   let mTexte = cibleBrute.match(/^\|([^|]*)\|$/);
   let cheminBrut, nomModuleParDefaut;
   if (mTexte) {
@@ -4342,8 +4339,11 @@ function resoudreCheminImport(cibleBrute, ligneErreur) {
   if (cheminBrut.startsWith("/")) {
     chemin = cheminBrut;
   } else {
-    let onglet = trouverOnglet(ongletActifId);
-    let dossier = onglet && onglet.dossier;
+    let dossier = dossierBase;
+    if (!dossier) {
+      let onglet = trouverOnglet(ongletActifId);
+      dossier = onglet && onglet.dossier;
+    }
     if (!dossier) {
       throw new ErreurLangage("import(...) : impossible de resoudre un chemin relatif -- ce script n'a pas encore ete enregistre sur le stockage (enregistre-le d'abord avec un nom, ou utilise un chemin absolu |...|)", ligneErreur);
     }
@@ -4381,26 +4381,18 @@ async function chargerModule(chemin, alias, ligneErreur) {
   } catch (e) {
     throw new ErreurLangage("import(...) : erreur dans le module '" + chemin + "' : " + e.message, ligneErreur);
   }
-  // v1 : un module ne peut pas lui-meme importer un autre module (pas de namespacing recursif
-  // pour l'instant). On le detecte explicitement plutot que de laisser un import(...) imbrique
-  // se faire ignorer silencieusement (il ne serait jamais charge, mais la ligne serait quand
-  // meme reconnue comme "un import deja traite" et sautee sans rien faire).
-  for (let tm of tokensModule) {
-    let estImport = false;
-    try { estImport = !!analyserLigneImport(tm.texte); } catch (_) { estImport = true; }
-    if (estImport) {
-      throw new ErreurLangage("import(...) : le module '" + chemin + "' contient lui-meme un import -- un module ne peut pas encore importer un autre module (limitation v1)", ligneErreur);
-    }
-  }
-
   let fonctionsPrec = fonctions, classesPrec = classes, scopesPrec = scopes;
   pileImportEnCours.push(chemin);
   fonctions = {};
   classes = {};
   scopes = [{}];
   try {
+    let dernierSlash = chemin.lastIndexOf("/");
+    let dossierModule = dernierSlash >= 0 ? chemin.substring(0, dernierSlash) : "";
+
     preRegistrerFonctions(tokensModule);
     await preRegistrerClasses(tokensModule);
+    await preRegistrerImports(tokensModule, dossierModule);
     await executerTokens(tokensModule, 0, tokensModule.length);
     modules[alias] = { fonctions: fonctions, classes: classes, scope: scopes[0], chemin: chemin };
   } catch (e) {
@@ -4480,7 +4472,7 @@ async function appliquerImportSelectif(chemin, noms, ligneErreur) {
 // script, peu importe ou la ligne apparait textuellement. Saute entierement les blocs classe
 // (memes regles que preRegistrerFonctions : un import(...) a l'interieur d'une classe n'a pas
 // de sens et n'est pas reconnu).
-async function preRegistrerImports(tokens) {
+async function preRegistrerImports(tokens, dossierBase = null) {
   let i = 0;
   while (i < tokens.length) {
     let t = tokens[i];
@@ -4498,7 +4490,7 @@ async function preRegistrerImports(tokens) {
       throw new ErreurLangage(e.message, t.ligne);
     }
     if (desc) {
-      let resolu = resoudreCheminImport(desc.cible, t.ligne);
+      let resolu = resoudreCheminImport(desc.cible, t.ligne, dossierBase);
       if (desc.forme === "complet") {
         await chargerModule(resolu.chemin, desc.alias || resolu.nomModuleParDefaut, t.ligne);
       } else {
@@ -9934,14 +9926,6 @@ async function executerScriptLocal(script, options = {}) {
   const afficherMarqueursExecution = options.afficherMarqueursExecution !== false;
   const afficherInviteExecution = options.afficherInviteExecution !== false;
 
-  // Le prechauffage silencieux (voir tout en bas du fichier) touche le meme etat global
-  // (scopes/fonctions/modules) qu'une vraie execution. S'il est encore en cours -- console
-  // ET service partagent ce risque, le service pouvant recevoir un script des l'instant ou
-  // sa WebView headless est prete, independamment de l'etat du prechauffage -- on attend
-  // qu'il se termine plutot que d'ecraser son etat en plein milieu (resultats faux des deux
-  // cotes, temps de CETTE execution fausse par la concurrence).
-  if (_prechauffagePromise) await _prechauffagePromise;
-
   scopes = [{}];
   profondeurAppel = 0;
   PROFONDEUR_APPEL_MAX = PROFONDEUR_APPEL_MAX_DEFAUT;
@@ -10168,88 +10152,31 @@ printInvite();
 // cotes) est nettement plus lent tant qu'il n'a pas vu un morceau de code tourner
 // plusieurs fois (compilation/optimisation progressive) -- constate sur le tout
 // PREMIER script execute apres l'ouverture de l'app ou apres la creation de la
-// WebView headless du service. Les executions suivantes, dans la MEME webview,
-// sont plus rapides sans que rien n'ait change dans le code lui-meme.
-// On paie donc ce cout une fois, silencieusement, sur du code JETABLE (jamais
-// affiche, jamais melange a l'etat de l'utilisateur), juste apres le chargement
-// de la page plutot que sur le premier vrai script.
-//
-// Deux volets :
-// 1) evalExprSansEntreeSync isole (contexte jetable local, aucune variable globale
-//    touchee) -- le poste le plus couteux mesure par benchmark_cascade.mlg.
-// 2) executerCommandeSimple + mecanique de boucle + parsing complet, via un vrai
-//    script jetable execute a travers TOUT le pipeline (tokeniser/parser/
-//    verifierSyntaxeSansRisque/executerTokens) -- comme executerScriptLocal, mais
-//    sans aucune interaction UI (pas de print/afficherConsole/btnRun/indicateur
-//    d'attente). Ce volet TOUCHE l'etat global (scopes/fonctions/modules), mais
-//    executerScriptLocal les reinitialise de toute facon inconditionnellement au
-//    debut de CHAQUE execution reelle -- rien ne peut donc "fuiter" vers le
-//    premier vrai script de l'utilisateur. Seul risque reel : une collision si un
-//    vrai script demarre PENDANT que ce volet tourne encore (fenetre minuscule,
-//    juste apres le chargement de page) -- gardee par la verification de
-//    executionEnCours avant de toucher quoi que ce soit.
-async function _executerScriptSilencieux(script) {
-  if (executionEnCours) return; // un vrai script a deja demarre : on n'y touche pas.
-  scopes = [{}];
-  profondeurAppel = 0;
-  PROFONDEUR_APPEL_MAX = PROFONDEUR_APPEL_MAX_DEFAUT;
-  fonctions = {};
-  modules = {};
-  pileImportEnCours = [];
-  enregistrerFonctionsBase();
-  demandeArret = false;
-  executionEnCours = true;
+// WebView headless du service. On paie donc ce cout une fois, silencieusement, sur
+// du code JETABLE (contexte totalement isole, AUCUNE variable globale touchee --
+// scopes/fonctions/modules restent intacts, donc aucun risque de collision avec un
+// vrai script qui demarrerait en parallele), juste apres le chargement de la page.
+// Cible evalExprSansEntreeSync (chemin AST + repli), le poste le plus couteux
+// mesure par benchmark_cascade.mlg. Volontairement limite a ce seul poste : un
+// essai plus large touchant executerCommandeSimple/scopes n'a pas montre de
+// benefice net sur mesures reelles et ajoutait un risque de concurrence avec une
+// vraie execution -- non retente ici.
+setTimeout(function () {
   try {
-    let tokens = parser(script);
-    let erreursSyntaxe = verifierSyntaxeSansRisque(script, tokens);
-    if (erreursSyntaxe.length === 0) {
-      preRegistrerFonctions(tokens);
-      await preRegistrerClasses(tokens);
-      await preRegistrerImports(tokens);
-      await executerTokens(tokens);
+    let scopeJetable = { i: 0, x: 0, v: [1, 2, 3, 4, 5] };
+    let ctxJetable = { getVar: (nom) => scopeJetable[nom] };
+    for (let n = 0; n < 3000; n++) {
+      scopeJetable.i = n % 100;
+      scopeJetable.x = evalExprSansEntreeSync("i*2+1", ctxJetable);
+      evalExprSansEntreeSync("i<50 et x>0", ctxJetable);
+      evalExprSansEntreeSync("v[1]+v[2]-i", ctxJetable);
+      evalExprSansEntreeSync("(i+1)^2", ctxJetable);
     }
   } catch (e) {
-    // Prechauffage : seul le passage du code compte, le resultat n'a aucune importance.
+    // Le prechauffage ne doit jamais faire echouer le chargement de la page.
   }
-  executionEnCours = false;
-  demandeArret = false;
-}
-
-setTimeout(function () {
-  if (executionEnCours) return; // l'utilisateur a deja lance un vrai script avant meme le debut du prechauffage.
-  btnRun.disabled = true;
-  btnRunFond.disabled = true;
-  _prechauffagePromise = (async function () {
-    try {
-      let scopeJetable = { i: 0, x: 0, v: [1, 2, 3, 4, 5] };
-      let ctxJetable = { getVar: (nom) => scopeJetable[nom] };
-      for (let n = 0; n < 3000; n++) {
-        scopeJetable.i = n % 100;
-        scopeJetable.x = evalExprSansEntreeSync("i*2+1", ctxJetable);
-        evalExprSansEntreeSync("i<50 et x>0", ctxJetable);
-        evalExprSansEntreeSync("v[1]+v[2]-i", ctxJetable);
-        evalExprSansEntreeSync("(i+1)^2", ctxJetable);
-      }
-    } catch (e) {
-      // Le prechauffage ne doit jamais faire echouer le chargement de la page.
-    }
-    await _executerScriptSilencieux(
-      "pou(i,1,2000){\n" +
-      "  x~i*2\n" +
-      "  si(x>1000) { y~x-1 }\n" +
-      "  sinon { y~x+1 }\n" +
-      "}\n" +
-      "v~c(1,2,3)\n" +
-      "z~v[1]+v[2]\n" +
-      "fonc double(n){ retour n*2 }\n" +
-      "w~double(5)\n"
-    );
-  })().finally(function () {
-    _prechauffagePromise = null;
-    btnRun.disabled = false;
-    btnRunFond.disabled = false;
-  });
 }, 0);
+
 // Désactive les actions natives Copier/Couper/Coller sur les éléments d'interface
 // (barres d'outils, en-têtes, onglets et barres de navigation), sans toucher aux
 // champs dans lesquels l'utilisateur doit pouvoir saisir/rechercher du texte.
