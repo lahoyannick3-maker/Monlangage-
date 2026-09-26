@@ -224,6 +224,7 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -860,6 +861,118 @@ public class MonLangageBridge {
             } catch (Exception e) {
                 return null;
             }
+        }
+
+        // ===================== Stockage des paquets installes (prive a l'app) =====================
+        // Dossier dedie, dans le stockage PRIVE de l'app (context.getFilesDir() : jamais visible
+        // sans root, jamais accessible via lireFichier/ecrireFichier ni un gestionnaire de
+        // fichiers classique). Volontairement SEPARE du stockage partage utilise par
+        // lireFichier/ecrireFichier ci-dessus : un script .mlg ne doit jamais pouvoir lire ou
+        // modifier un paquet installe directement -- seules les commandes du gestionnaire
+        // (install.paquet/desinstall.paquet/liste.paquet/info.paquet, cote JS) appellent ces
+        // methodes ; elles ne sont pas exposees comme fonctions MonLangage generiques.
+
+        private File dossierPaquets() {
+            File dossier = new File(context.getFilesDir(), "paquets");
+            if (!dossier.exists()) dossier.mkdirs();
+            return dossier;
+        }
+
+        // Rejette tout chemin relatif qui tenterait de sortir du dossier des paquets (ex: "../../"
+        // ou un chemin absolu) -- le nom de paquet/module vient d'un paquet.json telecharge
+        // depuis Internet, jamais totalement fiable.
+        private File cheminPaquetSecurise(String cheminRelatif) throws IOException {
+            File base = dossierPaquets().getCanonicalFile();
+            File cible = new File(base, cheminRelatif).getCanonicalFile();
+            if (!cible.getPath().equals(base.getPath()) && !cible.getPath().startsWith(base.getPath() + File.separator)) {
+                throw new IOException("Chemin de paquet invalide : " + cheminRelatif);
+            }
+            return cible;
+        }
+
+        @JavascriptInterface
+        public boolean paquetEcrireFichier(String cheminRelatif, String contenu) {
+            try {
+                File fichier = cheminPaquetSecurise(cheminRelatif);
+                File parent = fichier.getParentFile();
+                if (parent != null && !parent.exists()) parent.mkdirs();
+                try (FileOutputStream sortie = new FileOutputStream(fichier)) {
+                    sortie.write(contenu.getBytes(StandardCharsets.UTF_8));
+                }
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public String paquetLireFichier(String cheminRelatif) {
+            try {
+                File fichier = cheminPaquetSecurise(cheminRelatif);
+                StringBuilder contenu = new StringBuilder();
+                try (BufferedReader lecteur = new BufferedReader(new InputStreamReader(
+                        new FileInputStream(fichier), StandardCharsets.UTF_8))) {
+                    String ligne;
+                    boolean premiere = true;
+                    while ((ligne = lecteur.readLine()) != null) {
+                        if (!premiere) contenu.append("\\n");
+                        contenu.append(ligne);
+                        premiere = false;
+                    }
+                }
+                return contenu.toString();
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        @JavascriptInterface
+        public boolean paquetExisteFichier(String cheminRelatif) {
+            try {
+                File fichier = cheminPaquetSecurise(cheminRelatif);
+                return fichier.exists() && fichier.isFile();
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        // Liste les noms (fichiers ET dossiers) directement a l'interieur du dossier relatif
+        // donne (pas recursif). "" = racine du dossier des paquets (un dossier par paquet
+        // installe). "[]" si le dossier n'existe pas ou en cas d'erreur.
+        @JavascriptInterface
+        public String paquetListerDossier(String dossierRelatif) {
+            try {
+                File dossier = cheminPaquetSecurise(dossierRelatif);
+                if (!dossier.exists() || !dossier.isDirectory()) return "[]";
+                String[] noms = dossier.list();
+                if (noms == null) return "[]";
+                JSONArray tableau = new JSONArray();
+                for (String nom : noms) tableau.put(nom);
+                return tableau.toString();
+            } catch (Exception e) {
+                return "[]";
+            }
+        }
+
+        // Supprime un paquet installe (dossier + tout son contenu, recursif). Utilise par
+        // desinstall.paquet(...). VRAI en cas de succes (ou si le dossier n'existait deja pas).
+        @JavascriptInterface
+        public boolean paquetSupprimerDossier(String dossierRelatif) {
+            try {
+                File dossier = cheminPaquetSecurise(dossierRelatif);
+                if (!dossier.exists()) return true;
+                return supprimerRecursif(dossier);
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        private boolean supprimerRecursif(File f) {
+            if (f.isDirectory()) {
+                File[] enfants = f.listFiles();
+                if (enfants != null) for (File enfant : enfants) supprimerRecursif(enfant);
+            }
+            return f.delete();
         }
 
 
