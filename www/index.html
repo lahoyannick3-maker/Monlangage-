@@ -1436,7 +1436,7 @@ function detokeniserExpr(tokens) {
       case 'not': return 'non';
       case 'dan': return 'dan';
       case 'str': return '|' + t.v + '|';
-      default: throw new Error("Jeton inattendu dans le corps d'une fonction anonyme");
+      default: throw new Error("Corps de fonction anonyme invalide : \"" + _decrireJetonExpr(t) + "\" n'est pas autorise ici (une fonction anonyme fonc(...){...} ne contient qu'une seule expression)");
     }
   });
   // Bug reel trouve et corrige : l'ancien .join(' ') mettait un espace entre TOUS les jetons,
@@ -1536,7 +1536,7 @@ function sauterOperandeBooleen(tokens, debut, niveau) {
       }
       suffixes_(); return;
     }
-    throw new Error("Expression invalide (jeton inattendu)");
+    throw new Error("Expression invalide : \"" + _decrireJetonExpr(t) + "\" ne peut pas commencer une expression ici");
   }
   function suffixes_() {
     while (true) {
@@ -1607,7 +1607,7 @@ function trouverFinCorpsAnonyme(tokens, debut) {
       }
       suffixes_(); return;
     }
-    throw new Error("Corps de fonction anonyme invalide (jeton inattendu)");
+    throw new Error("Corps de fonction anonyme invalide : \"" + _decrireJetonExpr(t) + "\" ne peut pas commencer une expression ici");
   }
   function suffixes_() {
     while (true) {
@@ -4291,8 +4291,18 @@ function analyserLigneImport(ligne) {
     let listeBrute = mDe[2].trim();
     if (listeBrute === "") throw new Error("de ... import(...) : liste de noms vide");
     let noms = splitTopLevelComma(listeBrute).map(item => {
-      let m = item.trim().match(/^([a-zA-Z_]\w*)(?:\s+sunom~([a-zA-Z_]\w*))?$/);
-      if (!m) throw new Error("de ... import(...) : element invalide \"" + item.trim() + "\" (attendu: nom ou nom sunom~alias)");
+      let texte = item.trim();
+      let m = texte.match(/^([a-zA-Z_]\w*)(?:\s+sunom~([a-zA-Z_]\w*))?$/);
+      if (!m) {
+        // Erreur frequente : une virgule juste avant sunom~ (ex: "copierListe,sunom~cp") fait
+        // passer "sunom~cp" pour un DEUXIEME nom a importer, au lieu du renommage du premier.
+        // La virgule separe des noms DIFFERENTS entre eux ; sunom~alias se colle (avec un espace,
+        // sans virgule) apres le nom qu'il renomme.
+        let indice = /^sunom~/.test(texte)
+          ? " -- il manque le nom a renommer juste avant (et sans virgule) : \"nomOriginal sunom~" + texte.slice(6) + "\", pas \"..., sunom~" + texte.slice(6) + "\""
+          : "";
+        throw new Error("de ... import(...) : \"" + texte + "\" n'est pas un nom d'import valide" + indice + ". Un element est soit un simple nom (ex: copierListe), soit un nom suivi de sunom~alias SANS virgule entre les deux pour le renommer (ex: copierListe sunom~cp). La virgule separe seulement des noms differents : import(a, b sunom~c, d)");
+      }
       return { nom: m[1], alias: m[2] || m[1] };
     });
     return { forme: "selectif", cible: cibleBrute, noms: noms };
@@ -4315,17 +4325,21 @@ function analyserLigneImport(ligne) {
   return null;
 }
 
-// Resout la "cible" brute d'un import (identifiant nu SANS extension, ou texte |chemin.mlg|
-// explicite) en un chemin de fichier complet, et determine le nom de module par defaut (utilise
-// comme prefixe si aucun sunom~ n'est fourni). Identifiant nu -> outils.mlg dans le dossier du
-// script courant. Texte |...| -> chemin explicite (absolu si commence par "/", sinon relatif au
-// dossier du script courant), extension requise dans ce cas.
+// Resout la "cible" brute d'un import (identifiant nu SANS extension, ou texte |chemin| explicite
+// -- .mlg est ajoute automatiquement des deux cotes si absent) en un chemin de fichier complet,
+// et determine le nom de module par defaut (utilise comme prefixe si aucun sunom~ n'est fourni).
+// Identifiant nu -> outils.mlg dans le dossier du script courant. Texte |...| -> chemin explicite
+// (absolu si commence par "/", sinon relatif au dossier du script courant).
 function resoudreCheminImport(cibleBrute, ligneErreur, dossierBase = null) {
   let mTexte = cibleBrute.match(/^\|([^|]*)\|$/);
   let cheminBrut, nomModuleParDefaut;
   if (mTexte) {
     cheminBrut = mTexte[1].trim();
     if (cheminBrut === "") throw new ErreurLangage("import(...) : chemin vide", ligneErreur);
+    // Comme ecrire.fichier(...)/lire.fichier(...) : si aucune extension n'est donnee, .mlg est
+    // ajoute automatiquement -- sinon |trier_vecteur| (sans .mlg) ne trouve jamais le fichier
+    // reellement enregistre sous trier_vecteur.mlg, meme avec le bon dossier.
+    if (!/\.[a-zA-Z0-9]+$/.test(cheminBrut)) cheminBrut += ".mlg";
     let base = cheminBrut.substring(cheminBrut.lastIndexOf("/") + 1);
     nomModuleParDefaut = base.replace(/\.mlg$/i, "");
   } else {
