@@ -90,6 +90,18 @@ if (!manifest.includes('ACCESS_NETWORK_STATE')) {
   console.log('[patch-android] AndroidManifest.xml : permissions reseau/sms ajoutees.');
 }
 
+// INTERNET : necessaire a telechargerTexte(...) (gestionnaire de paquets -- index.json/
+// paquet.json/modules .mlg depuis GitHub). Capacitor l'ajoute deja generalement par defaut,
+// mais on le declare explicitement plutot que de compter dessus, comme toutes les permissions
+// ci-dessus.
+const permissionInternet =
+`    <uses-permission android:name="android.permission.INTERNET" />
+`;
+if (!manifest.includes('android.permission.INTERNET"')) {
+  manifest = manifest.replace('<application', permissionInternet + '\n    <application');
+  console.log('[patch-android] AndroidManifest.xml : permission INTERNET ajoutee.');
+}
+
 // Depuis Android 11 (API 30), un package ne "voit" plus les autres apps installees par
 // defaut (visibilite des paquets) : PackageManager.getLaunchIntentForPackage("com.whatsapp")
 // renvoie null MEME SI WhatsApp est installe, tant que le paquet n'est pas declare ici. Sans
@@ -226,6 +238,8 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -860,6 +874,47 @@ public class MonLangageBridge {
                 return contenu.toString();
             } catch (Exception e) {
                 return null;
+            }
+        }
+
+        // ===================== Telechargement (gestionnaire de paquets) =====================
+        // Recupere le contenu texte (UTF-8) d'une URL https -- index.json/paquet.json/modules
+        // .mlg depuis le depot GitHub des paquets. Volontairement en Java plutot que fetch()
+        // cote JS : la console (origine https://localhost, via le Bridge Capacitor) et le
+        // service en arriere-plan (origine file://, WebView headless independante) peuvent se
+        // comporter differemment vis-a-vis de CORS -- un appel reseau Java direct se comporte
+        // pareil dans les deux cas, sans cette incertitude.
+        // https uniquement (jamais http en clair). null si echec (reseau, timeout, code HTTP
+        // different de 200, URL invalide) -- jamais d'exception qui remonterait telle quelle.
+        @JavascriptInterface
+        public String telechargerTexte(String urlTexte) {
+            HttpURLConnection connexion = null;
+            try {
+                URL url = new URL(urlTexte);
+                if (!"https".equals(url.getProtocol())) return null;
+                connexion = (HttpURLConnection) url.openConnection();
+                connexion.setRequestMethod("GET");
+                connexion.setConnectTimeout(15000);
+                connexion.setReadTimeout(15000);
+                connexion.setInstanceFollowRedirects(true);
+                int code = connexion.getResponseCode();
+                if (code != 200) return null;
+                StringBuilder contenu = new StringBuilder();
+                try (BufferedReader lecteur = new BufferedReader(new InputStreamReader(
+                        connexion.getInputStream(), StandardCharsets.UTF_8))) {
+                    String ligne;
+                    boolean premiere = true;
+                    while ((ligne = lecteur.readLine()) != null) {
+                        if (!premiere) contenu.append("\\n");
+                        contenu.append(ligne);
+                        premiere = false;
+                    }
+                }
+                return contenu.toString();
+            } catch (Exception e) {
+                return null;
+            } finally {
+                if (connexion != null) connexion.disconnect();
             }
         }
 
