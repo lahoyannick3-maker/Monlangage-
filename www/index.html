@@ -454,8 +454,9 @@ affi(|Bonjour |, nom)</textarea>
   <div id="console">
     <div id="headerConsole" style="display:flex; align-items:center; gap:10px;">
       <button id="btnRetour">← Retour</button>
-      <span>Console MonLangage v4.0</span>
+      <span id="titreConsole">Console MonLangage v4.0</span>
       <button id="btnArretUrgence" type="button" hidden>🛑 Arrêt d’urgence</button>
+      <button id="btnBasculePaquets" type="button" title="Gestionnaire de paquets" style="margin-left:auto;">📦 Paquets</button>
     </div>
     <div id="output"></div>
   </div>
@@ -1119,6 +1120,16 @@ function arreterIndicateurAttente() {
 
 let enTrainDeTaper = false;
 let modeConsoleCommande = false;
+// Bascule "Gestionnaire de paquets" (voir btnBasculePaquets) : reutilise l'ecran/la saisie de la
+// console normale, mais route Entree vers executerCommandePaquet(...) au lieu du pipeline MLG --
+// jamais les deux en meme temps.
+let modeGestionnairePaquets = false;
+function basculerGestionnairePaquets() {
+  modeGestionnairePaquets = !modeGestionnairePaquets;
+  titreConsole.textContent = modeGestionnairePaquets ? "Gestionnaire de paquets" : "Console MonLangage v4.0";
+  btnBasculePaquets.textContent = modeGestionnairePaquets ? "📦 Console MLG" : "📦 Paquets";
+  focaliserSaisieConsole();
+}
 // Fonction (definie par demanderSaisieConsole pendant une saisie entr() en attente) qui
 // permet d'annuler cette attente depuis l'exterieur, notamment depuis le bouton "Retour".
 let annulerSaisieEnCours = null;
@@ -4359,17 +4370,101 @@ function resoudreCheminImport(cibleBrute, ligneErreur, dossierBase = null) {
       dossier = onglet && onglet.dossier;
     }
     if (!dossier) {
-      throw new ErreurLangage("import(...) : impossible de resoudre un chemin relatif -- ce script n'a pas encore ete enregistre sur le stockage (enregistre-le d'abord avec un nom, ou utilise un chemin absolu |...|)", ligneErreur);
+      // Forme |chemin| explicite relative : aucun repli possible, le chemin designe un fichier
+      // precis -- on ne peut pas continuer sans savoir par rapport a quoi le resoudre.
+      if (mTexte) {
+        throw new ErreurLangage("import(...) : impossible de resoudre un chemin relatif -- ce script n'a pas encore ete enregistre sur le stockage (enregistre-le d'abord avec un nom, ou utilise un chemin absolu |...|)", ligneErreur);
+      }
+      // Identifiant nu SANS dossier local connu (script jamais enregistre) : pas une erreur en
+      // soi, ca signifie juste qu'il n'y a rien a chercher en local -- chemin=null fait passer
+      // chargerModule(...) directement aux paquets natifs/installes.
+      chemin = null;
+    } else {
+      chemin = dossier.replace(/\/+$/, "") + "/" + cheminBrut;
     }
-    chemin = dossier.replace(/\/+$/, "") + "/" + cheminBrut;
   }
-  return { chemin: chemin, nomModuleParDefaut: nomModuleParDefaut };
+  return { chemin: chemin, nomModuleParDefaut: nomModuleParDefaut, estIdentifiant: !mTexte };
 }
 
-// Charge le fichier a "chemin", l'execute ISOLE (son propre fonctions{}/classes{}/scope, jamais
-// melange a ceux du script qui importe -- comme un module Python), et l'enregistre sous
-// modules[alias]. Rend ensuite chacune de ses fonctions/classes appelable via "alias.nom(...)".
-async function chargerModule(chemin, alias, ligneErreur) {
+// Paquets natifs (integres a l'app au moment du build, sans besoin d'Internet, jamais
+// desinstallables) : nom de module -> code source .mlg. Vide pour l'instant -- point
+// d'extension pour embarquer des modules directement dans l'app plus tard, sans passer par le
+// depot GitHub. Voir chargerModule(...) pour l'ordre de resolution complet.
+const PAQUETS_NATIFS = {};
+
+// Cherche un module nomme "nomModule" parmi les paquets EXTERNES installes (stockage prive de
+// l'app -- voir paquetLireFichier/paquetListerDossier cote Java, jamais accessible via
+// lireFichier/ecrireFichier ni un gestionnaire de fichiers classique). Contrairement a un
+// chemin local, on ne sait pas d'avance dans QUEL paquet un module se trouve (le nom du paquet
+// et celui du module sont deux choses differentes, ex: le paquet "outils" expose le module
+// "bonjour") : chaque paquet.json installe est donc consulte (son champ "modules") jusqu'a en
+// trouver un qui declare ce module. Renvoie null si aucun ne correspond.
+// Revalide "type: mlg" A LA LECTURE, pas seulement a l'installation -- defense en profondeur si
+// un paquet.json a ete altere apres coup (jamais un paquet non-mlg execute, meme dans ce cas).
+async function chercherModuleInstalle(nomModule) {
+  if (!(window.MonLangage && typeof window.MonLangage.paquetListerDossier === "function")) return null;
+  let nomsPaquets;
+  try { nomsPaquets = JSON.parse(window.MonLangage.paquetListerDossier("")); } catch (e) { return null; }
+  if (!Array.isArray(nomsPaquets)) return null;
+  for (let nomPaquet of nomsPaquets) {
+    let texteManifest = window.MonLangage.paquetLireFichier(nomPaquet + "/paquet.json");
+    if (texteManifest === null) continue;
+    let manifest;
+    try { manifest = JSON.parse(texteManifest); } catch (e) { continue; }
+    if (manifest.type !== "mlg") continue; // paquet non-mlg : jamais charge automatiquement par import()
+    if (!Array.isArray(manifest.modules) || manifest.modules.indexOf(nomModule) === -1) continue;
+    let texte = window.MonLangage.paquetLireFichier(nomPaquet + "/modules/" + nomModule + ".mlg");
+    if (texte === null) continue;
+    return { texte: texte, nomPaquet: nomPaquet };
+  }
+  return null;
+}
+
+// Charge le fichier a "resolu.chemin" (ou, pour un identifiant nu, essaie dans l'ordre : local
+// -> paquet natif -> paquet installe -- voir chercherModuleInstalle ci-dessus), l'execute ISOLE
+// (son propre fonctions{}/classes{}/scope, jamais melange a ceux du script qui importe -- comme
+// un module Python), et l'enregistre sous modules[alias]. Rend ensuite chacune de ses
+// fonctions/classes appelable via "alias.nom(...)".
+async function chargerModule(resolu, alias, ligneErreur) {
+  // Compatibilite : accepte aussi un simple chemin (string) -- forme |chemin| explicite, sans
+  // repli possible sur les paquets (le chemin designe deja un emplacement precis).
+  if (typeof resolu === "string") resolu = { chemin: resolu, nomModuleParDefaut: null, estIdentifiant: false };
+
+  if (!(window.MonLangage && typeof window.MonLangage.lireFichier === "function")) {
+    throw new ErreurIndisponibleHorsApp("import(...) : disponible uniquement dans l'app installee (rebuild requis)");
+  }
+
+  let chemin = resolu.chemin;
+  let texte = null;
+
+  if (resolu.estIdentifiant) {
+    // 1) Local : comme avant, mais un echec (fichier absent, permission refusee -- lireFichier
+    // renvoie null dans les deux cas --, ou aucun dossier local connu : resolu.chemin est alors
+    // null, voir resoudreCheminImport) fait simplement passer au niveau suivant plutot que
+    // d'echouer tout de suite, puisqu'un paquet natif/installe n'a besoin d'aucun des deux.
+    texte = chemin !== null ? window.MonLangage.lireFichier(chemin) : null;
+    // 2) Paquet natif (integre a l'app).
+    if (texte === null && Object.prototype.hasOwnProperty.call(PAQUETS_NATIFS, resolu.nomModuleParDefaut)) {
+      texte = PAQUETS_NATIFS[resolu.nomModuleParDefaut];
+      chemin = "natif:" + resolu.nomModuleParDefaut;
+    }
+    // 3) Paquet externe installe.
+    if (texte === null) {
+      let trouve = await chercherModuleInstalle(resolu.nomModuleParDefaut);
+      if (trouve) {
+        texte = trouve.texte;
+        chemin = "paquet:" + trouve.nomPaquet + "/" + resolu.nomModuleParDefaut;
+      }
+    }
+  } else {
+    // Forme |chemin| explicite : jamais de repli sur les paquets, le chemin designe un fichier
+    // precis -- on garde donc le message d'erreur specifique "permission refusee" ici.
+    if (window.MonLangage.permissionStockageAccordee && !window.MonLangage.permissionStockageAccordee()) {
+      throw new ErreurPermissionRefusee("import(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
+    }
+    texte = window.MonLangage.lireFichier(chemin);
+  }
+
   if (Object.prototype.hasOwnProperty.call(modules, alias)) {
     if (modules[alias].chemin === chemin) return; // deja charge sous cet alias : rien a faire
     throw new ErreurLangage("import(...) : l'alias \"" + alias + "\" est deja utilise pour un autre module (utilise sunom~ pour en choisir un autre)", ligneErreur);
@@ -4377,15 +4472,9 @@ async function chargerModule(chemin, alias, ligneErreur) {
   if (pileImportEnCours.includes(chemin)) {
     throw new ErreurLangage("import(...) : import circulaire detecte (" + [...pileImportEnCours, chemin].join(" -> ") + ")", ligneErreur);
   }
-  if (!(window.MonLangage && typeof window.MonLangage.lireFichier === "function")) {
-    throw new ErreurIndisponibleHorsApp("import(...) : disponible uniquement dans l'app installee (rebuild requis)");
-  }
-  if (window.MonLangage && typeof window.MonLangage.permissionStockageAccordee === "function" && !window.MonLangage.permissionStockageAccordee()) {
-    throw new ErreurPermissionRefusee("import(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
-  }
-  let texte = window.MonLangage.lireFichier(chemin);
   if (texte === null || texte === undefined) {
-    throw new ErreurFichierIntrouvable("import(...) : impossible de lire le module '" + chemin + "'");
+    let cheminAffiche = chemin !== null ? chemin : resolu.nomModuleParDefaut;
+    throw new ErreurFichierIntrouvable("import(...) : impossible de lire le module '" + cheminAffiche + "'" + (resolu.estIdentifiant ? " (cherche en local, dans les paquets natifs, puis dans les paquets installes)" : ""));
   }
   let tokensModule;
   try {
@@ -4455,16 +4544,16 @@ let __compteurImportTmp = 0;
 // prefixe), puis recopie SEULEMENT les noms demandes directement dans fonctions{}/classes{}
 // globaux -- chacun garde neanmoins le contexte (fonctions/classes/scope) de son module
 // d'origine via __moduleEnv, pour que ses appels internes non-prefixes continuent de fonctionner.
-async function appliquerImportSelectif(chemin, noms, ligneErreur) {
+async function appliquerImportSelectif(resolu, noms, ligneErreur) {
   let aliasInterne = "__import_selectif_" + (__compteurImportTmp++);
-  await chargerModule(chemin, aliasInterne, ligneErreur);
+  await chargerModule(resolu, aliasInterne, ligneErreur);
   let modInfo = modules[aliasInterne];
   let moduleEnv = { fonctions: modInfo.fonctions, classes: modInfo.classes, env: [modInfo.scope] };
   for (let { nom, alias } of noms) {
     let estFonction = Object.prototype.hasOwnProperty.call(modInfo.fonctions, nom);
     let estClasse = Object.prototype.hasOwnProperty.call(modInfo.classes, nom);
     if (!estFonction && !estClasse) {
-      throw new ErreurLangage("de ... import(...) : \"" + nom + "\" est introuvable dans le module '" + chemin + "'", ligneErreur);
+      throw new ErreurLangage("de ... import(...) : \"" + nom + "\" est introuvable dans le module '" + modInfo.chemin + "'", ligneErreur);
     }
     if (Object.prototype.hasOwnProperty.call(fonctions, alias) || Object.prototype.hasOwnProperty.call(classes, alias)) {
       throw new ErreurLangage("de ... import(...) : \"" + alias + "\" existe deja dans ce script -- renomme a l'import avec : " + nom + " sunom~nouveauNom", ligneErreur);
@@ -4506,12 +4595,147 @@ async function preRegistrerImports(tokens, dossierBase = null) {
     if (desc) {
       let resolu = resoudreCheminImport(desc.cible, t.ligne, dossierBase);
       if (desc.forme === "complet") {
-        await chargerModule(resolu.chemin, desc.alias || resolu.nomModuleParDefaut, t.ligne);
+        await chargerModule(resolu, desc.alias || resolu.nomModuleParDefaut, t.ligne);
       } else {
-        await appliquerImportSelectif(resolu.chemin, desc.noms, t.ligne);
+        await appliquerImportSelectif(resolu, desc.noms, t.ligne);
       }
     }
     i++;
+  }
+}
+
+// ===================== Gestionnaire de paquets =====================
+// Ces 4 fonctions sont volontairement ABSENTES de fonctionsBase/fonctionsExpression -- donc
+// injoignables depuis n'importe quel code .mlg (script importe OU tape dans la console MLG).
+// Un script ne doit jamais pouvoir installer/desinstaller un paquet silencieusement rien qu'en
+// import(...)ant ou en tournant : ces commandes ne sont accessibles que depuis l'ecran dedie
+// "Gestionnaire de paquets" (action explicite de l'utilisateur), via executerCommandePaquet(...)
+// tout en bas, qui les appelle directement en JS -- pas par le pipeline MLG normal.
+
+// A REMPLACER par l'URL brute reelle du depot GitHub des paquets (branche principale).
+const DEPOT_PAQUETS_URL = "https://github.com/lahoyannick3-maker/Paquets_Monlangage-.git";
+
+function _verifierReseauPaquets() {
+  if (!(window.MonLangage && typeof window.MonLangage.telechargerTexte === "function")) {
+    throw new Error("Gestionnaire de paquets : disponible uniquement dans l'app installee (rebuild requis)");
+  }
+}
+
+async function _telechargerJSONPaquet(urlRelative) {
+  let texte = window.MonLangage.telechargerTexte(DEPOT_PAQUETS_URL + urlRelative);
+  if (texte === null) throw new Error("Impossible de telecharger '" + urlRelative + "' (verifie la connexion, ou que le fichier existe dans le depot)");
+  try {
+    return JSON.parse(texte);
+  } catch (e) {
+    throw new Error("'" + urlRelative + "' n'est pas un JSON valide");
+  }
+}
+
+async function installerPaquet(nom) {
+  _verifierReseauPaquets();
+  if (!/^[a-zA-Z_][\w-]*$/.test(nom)) throw new Error("Nom de paquet invalide : \"" + nom + "\"");
+
+  let index = await _telechargerJSONPaquet("index.json");
+  let entree = Array.isArray(index.paquets) ? index.paquets.find(p => p.nom === nom) : null;
+  if (!entree) throw new Error("Paquet \"" + nom + "\" introuvable dans le depot");
+
+  let manifest = await _telechargerJSONPaquet(entree.chemin + "/paquet.json");
+  if (manifest.type !== "mlg") {
+    throw new Error("Paquet \"" + nom + "\" refuse : type \"" + manifest.type + "\" non autorise (seuls les paquets \"mlg\" peuvent etre installes depuis un depot externe)");
+  }
+  if (!Array.isArray(manifest.modules)) throw new Error("paquet.json de \"" + nom + "\" : champ \"modules\" manquant ou invalide");
+
+  let modulesInstalles = [];
+  for (let nomModule of manifest.modules) {
+    if (!/^[a-zA-Z_][\w-]*$/.test(nomModule)) throw new Error("Nom de module invalide dans \"" + nom + "\" : \"" + nomModule + "\"");
+    let texteModule = window.MonLangage.telechargerTexte(DEPOT_PAQUETS_URL + entree.chemin + "/modules/" + nomModule + ".mlg");
+    if (texteModule === null) throw new Error("Impossible de telecharger le module \"" + nomModule + "\" du paquet \"" + nom + "\"");
+    let okEcriture = window.MonLangage.paquetEcrireFichier(nom + "/modules/" + nomModule + ".mlg", texteModule);
+    if (!okEcriture) throw new Error("Impossible d'enregistrer le module \"" + nomModule + "\" (stockage)");
+    modulesInstalles.push(nomModule);
+  }
+
+  let okManifest = window.MonLangage.paquetEcrireFichier(nom + "/paquet.json", JSON.stringify(manifest));
+  if (!okManifest) throw new Error("Impossible d'enregistrer paquet.json pour \"" + nom + "\"");
+
+  return "Paquet \"" + nom + "\" (v" + (manifest.version || "?") + ") installe -- " + modulesInstalles.length + " module(s) : " + modulesInstalles.join(", ");
+}
+
+async function desinstallerPaquet(nom) {
+  if (!(window.MonLangage && typeof window.MonLangage.paquetExisteFichier === "function")) {
+    throw new Error("Gestionnaire de paquets : disponible uniquement dans l'app installee (rebuild requis)");
+  }
+  if (!window.MonLangage.paquetExisteFichier(nom + "/paquet.json")) {
+    throw new Error("Le paquet \"" + nom + "\" n'est pas installe");
+  }
+  let ok = window.MonLangage.paquetSupprimerDossier(nom);
+  if (!ok) throw new Error("Echec de la suppression du paquet \"" + nom + "\"");
+  return "Paquet \"" + nom + "\" desinstalle";
+}
+
+async function listerPaquets() {
+  if (!(window.MonLangage && typeof window.MonLangage.paquetListerDossier === "function")) {
+    throw new Error("Gestionnaire de paquets : disponible uniquement dans l'app installee (rebuild requis)");
+  }
+  let noms;
+  try { noms = JSON.parse(window.MonLangage.paquetListerDossier("")); } catch (e) { noms = []; }
+  if (!Array.isArray(noms) || noms.length === 0) return ["Aucun paquet installe"];
+  let lignes = [];
+  for (let nom of noms) {
+    let texteManifest = window.MonLangage.paquetLireFichier(nom + "/paquet.json");
+    if (texteManifest === null) { lignes.push(nom + " (paquet.json illisible)"); continue; }
+    try {
+      let m = JSON.parse(texteManifest);
+      lignes.push(nom + " v" + (m.version || "?") + " -- " + (m.description || ""));
+    } catch (e) {
+      lignes.push(nom + " (paquet.json corrompu)");
+    }
+  }
+  return lignes;
+}
+
+async function infoPaquet(nom) {
+  if (!(window.MonLangage && typeof window.MonLangage.paquetLireFichier === "function")) {
+    throw new Error("Gestionnaire de paquets : disponible uniquement dans l'app installee (rebuild requis)");
+  }
+  let texteManifest = window.MonLangage.paquetLireFichier(nom + "/paquet.json");
+  if (texteManifest === null) throw new Error("Le paquet \"" + nom + "\" n'est pas installe");
+  let m;
+  try { m = JSON.parse(texteManifest); } catch (e) { throw new Error("paquet.json de \"" + nom + "\" est corrompu"); }
+  return [
+    "Nom : " + m.nom,
+    "Version : " + (m.version || "?"),
+    "Description : " + (m.description || "(aucune)"),
+    "Type : " + (m.type || "?"),
+    "Modules : " + (Array.isArray(m.modules) ? m.modules.join(", ") : "(aucun)")
+  ];
+}
+
+// Analyse et execute une ligne du "Gestionnaire de paquets" -- PAS le langage MLG, une mini-
+// syntaxe dediee limitee a 4 commandes fixes. Renvoie un tableau de lignes de texte a afficher.
+async function executerCommandePaquet(ligne) {
+  ligne = ligne.trim();
+  let m = ligne.match(/^(install|desinstall|liste|info)\.paquet\(\s*([a-zA-Z_][\w-]*)?\s*\)$/);
+  if (!m) {
+    return ["Commande inconnue : \"" + ligne + "\" -- attendu : install.paquet(nom), desinstall.paquet(nom), liste.paquet(), info.paquet(nom)"];
+  }
+  let commande = m[1], nom = m[2];
+  try {
+    if (commande === "install") {
+      if (!nom) return ["install.paquet(nom) attend un nom de paquet"];
+      return [await installerPaquet(nom)];
+    }
+    if (commande === "desinstall") {
+      if (!nom) return ["desinstall.paquet(nom) attend un nom de paquet"];
+      return [await desinstallerPaquet(nom)];
+    }
+    if (commande === "liste") return await listerPaquets();
+    if (commande === "info") {
+      if (!nom) return ["info.paquet(nom) attend un nom de paquet"];
+      return await infoPaquet(nom);
+    }
+  } catch (e) {
+    return ["Erreur : " + e.message];
   }
 }
 
@@ -6310,6 +6534,57 @@ function enregistrerFonctionsBase() {
     fonctionsBase["temps"] = fonctionsExpression["temps"] = async function(args, ctxExpr) {
         if (args.length !== 0) throw new Error("temps() n'attend aucun argument");
         return Date.now();
+    };
+
+    // ===================== TEMPORAIRE — test du pont natif "stockage des paquets" =====================
+    // testPaquets() : verifie une a une les 5 methodes natives ajoutees dans MonLangageBridge
+    // (paquetEcrireFichier/paquetLireFichier/paquetExisteFichier/paquetListerDossier/
+    // paquetSupprimerDossier), y compris la protection contre les chemins hors du dossier
+    // paquets/. Renvoie une liste() de lignes "OK: ..." / "ECHEC: ...", une par verification --
+    // fais affi(testPaquets()) pour les voir. A RETIRER une fois validee.
+    fonctionsBase["testPaquets"] = fonctionsExpression["testPaquets"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("testPaquets() n'attend aucun argument");
+        if (typeof window.MonLangage === "undefined" || typeof window.MonLangage.paquetEcrireFichier !== "function") {
+            return { __type: "liste", elements: ["ECHEC: window.MonLangage.paquetEcrireFichier n'existe pas -- rebuild pas encore installe sur ce telephone ?"] };
+        }
+        let resultats = [];
+        function verifier(libelle, condition) {
+            resultats.push((condition ? "OK: " : "ECHEC: ") + libelle);
+        }
+
+        let dossierTest = "testeur_" + Date.now();
+        let cheminFichier = dossierTest + "/fichier.txt";
+        let contenuAttendu = "contenu de test 12345";
+
+        let ecritOk = window.MonLangage.paquetEcrireFichier(cheminFichier, contenuAttendu);
+        verifier("paquetEcrireFichier(...) reussit", ecritOk === true);
+
+        let existeApres = window.MonLangage.paquetExisteFichier(cheminFichier);
+        verifier("paquetExisteFichier(...) voit le fichier juste ecrit", existeApres === true);
+
+        let relu = window.MonLangage.paquetLireFichier(cheminFichier);
+        verifier("paquetLireFichier(...) renvoie exactement ce qui a ete ecrit", relu === contenuAttendu);
+
+        let listeRacine = [];
+        try { listeRacine = JSON.parse(window.MonLangage.paquetListerDossier("")); } catch (e) { }
+        verifier("paquetListerDossier(\"\") voit le dossier '" + dossierTest + "' a la racine", listeRacine.indexOf(dossierTest) !== -1);
+
+        let listeSousDossier = [];
+        try { listeSousDossier = JSON.parse(window.MonLangage.paquetListerDossier(dossierTest)); } catch (e) { }
+        verifier("paquetListerDossier(...) voit 'fichier.txt' dans le sous-dossier", listeSousDossier.indexOf("fichier.txt") !== -1);
+
+        // Verifie que la protection contre l'evasion de dossier fonctionne reellement : une
+        // tentative de sortir de paquets/ doit echouer, pas etre acceptee silencieusement.
+        let evasionRefusee = window.MonLangage.paquetEcrireFichier("../../../../tmp/evasion_test.txt", "ne devrait jamais s'ecrire");
+        verifier("une tentative de sortir du dossier paquets/ (../../..) est refusee", evasionRefusee === false);
+
+        let suppressionOk = window.MonLangage.paquetSupprimerDossier(dossierTest);
+        verifier("paquetSupprimerDossier(...) reussit", suppressionOk === true);
+
+        let existeApresSuppression = window.MonLangage.paquetExisteFichier(cheminFichier);
+        verifier("le fichier n'existe plus apres suppression", existeApresSuppression === false);
+
+        return { __type: "liste", elements: resultats };
     };
 
     // date() : date et heure ACTUELLES, lisibles, sous forme de texte "JJ/MM/AAAA HH:MM:SS"
@@ -10083,6 +10358,24 @@ outputDiv.addEventListener("keydown", async function(e) {
     let cmd = target.innerText;
     target.contentEditable = "false";
     if (cmd.trim() !== "") {
+      if (modeGestionnairePaquets) {
+        // Mode gestionnaire de paquets : PAS le pipeline MLG (parser/executerTokens) -- une
+        // mini-syntaxe a 4 commandes fixes, executee a part (voir executerCommandePaquet(...)).
+        // Un script .mlg ne passe jamais par ce chemin, meme en mode console normale.
+        demandeArret = false;
+        executionEnCours = true;
+        demarrerIndicateurAttente();
+        try {
+          let lignes = await executerCommandePaquet(cmd);
+          for (let ligne of lignes) print(ligne, ligne.indexOf("Erreur") === 0 ? "erreur" : "");
+        } catch (e) {
+          print("Erreur: " + e.message, "erreur");
+        } finally {
+          arreterIndicateurAttente();
+          executionEnCours = false;
+          demandeArret = false;
+        }
+      } else {
       modeConsoleCommande = true;
       demandeArret = false;
       executionEnCours = true;
@@ -10101,6 +10394,7 @@ outputDiv.addEventListener("keydown", async function(e) {
         modeConsoleCommande = false;
         executionEnCours = false;
         demandeArret = false;
+      }
       }
     }
     printInvite();
@@ -10154,6 +10448,7 @@ outputDiv.addEventListener("input", function(e) {
 
 
 btnRun.addEventListener("click", runScript);
+btnBasculePaquets.addEventListener("click", basculerGestionnairePaquets);
 btnRunFond.addEventListener("click", runScriptArrierePlan);
 
 /* ===================== INITIALISATION ===================== */
