@@ -289,6 +289,7 @@
     }
     #cadreSpecification { flex: 1; min-height: 0; border: 0; width: 100%; background: #0d1117; }
   .invite { color: #58a6ff; font-weight: bold; user-select: none; }
+  .invitePaquets { color: #e3b341; font-weight: bold; user-select: none; }
   .ligneCommande { }
   .cmdInput { outline: none; }
   .entrInput { outline: none; }
@@ -1128,6 +1129,19 @@ function basculerGestionnairePaquets() {
   modeGestionnairePaquets = !modeGestionnairePaquets;
   titreConsole.textContent = modeGestionnairePaquets ? "Gestionnaire de paquets" : "Console MonLangage v4.0";
   btnBasculePaquets.textContent = modeGestionnairePaquets ? "📦 Console MLG" : "📦 Paquets";
+  // Met a jour tout de suite le symbole/la couleur de l'invite DEJA affichee (pas seulement la
+  // prochaine, via printInvite()) : sinon, basculer avant d'avoir valide la ligne en cours
+  // laisse un "# " bleu visible alors que la saisie est desormais routee vers le gestionnaire
+  // de paquets (ou l'inverse) -- trompeur.
+  let saisies = outputDiv.querySelectorAll(".cmdInput, .entrInput");
+  let derniereSaisie = saisies.length ? saisies[saisies.length - 1] : null;
+  if (derniereSaisie) {
+    let invite = derniereSaisie.previousElementSibling;
+    if (invite && (invite.className === "invite" || invite.className === "invitePaquets")) {
+      invite.className = modeGestionnairePaquets ? "invitePaquets" : "invite";
+      invite.textContent = modeGestionnairePaquets ? "📦 " : "# ";
+    }
+  }
   focaliserSaisieConsole();
 }
 // Fonction (definie par demanderSaisieConsole pendant une saisie entr() en attente) qui
@@ -7855,8 +7869,11 @@ function printInvite() {
   let ligne = document.createElement("div");
   ligne.className = "ligneCommande";
   let invite = document.createElement("span");
-  invite.className = "invite";
-  invite.textContent = "# ";
+  // Console MLG normale ("# ", bleu) vs Gestionnaire de paquets ("📦 ", ambre) -- les deux
+  // partagent le meme historique a l'ecran, donc sans ce marqueur impossible de savoir apres
+  // coup, en remontant, dans quel mode une ligne passee avait ete tapee.
+  invite.className = modeGestionnairePaquets ? "invitePaquets" : "invite";
+  invite.textContent = modeGestionnairePaquets ? "📦 " : "# ";
   invite.contentEditable = "false";
   let input = document.createElement("span");
   input.className = "cmdInput";
