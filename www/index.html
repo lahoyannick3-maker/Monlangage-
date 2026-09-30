@@ -4712,7 +4712,7 @@ async function preRegistrerImports(tokens, dossierBase = null) {
 }
 
 // ===================== Gestionnaire de paquets =====================
-// Ces 4 fonctions sont volontairement ABSENTES de fonctionsBase/fonctionsExpression -- donc
+// Ces fonctions (install/desinstall/liste/info/dispo + fonction.dan.module) sont volontairement ABSENTES de fonctionsBase/fonctionsExpression -- donc
 // injoignables depuis n'importe quel code .mlg (script importe OU tape dans la console MLG).
 // Un script ne doit jamais pouvoir installer/desinstaller un paquet silencieusement rien qu'en
 // import(...)ant ou en tournant : ces commandes ne sont accessibles que depuis l'ecran dedie
@@ -4818,13 +4818,145 @@ async function infoPaquet(nom) {
   ];
 }
 
+// paquet.dispo() : paquets disponibles sur le depot (index.json + paquet.json de chacun), avec
+// un repere pour ceux deja installes. Lecture seule : n'ecrit rien sur le telephone.
+async function paquetsDisponibles() {
+  _verifierReseauPaquets();
+  let index = await _telechargerJSONPaquet("index.json");
+  if (!Array.isArray(index.paquets) || index.paquets.length === 0) return ["Aucun paquet disponible dans le depot"];
+  let installes = {};
+  if (typeof window.MonLangage.paquetListerDossier === "function") {
+    let noms = [];
+    try { noms = JSON.parse(window.MonLangage.paquetListerDossier("")); } catch (e) { noms = []; }
+    for (let n of (Array.isArray(noms) ? noms : [])) {
+      let t = window.MonLangage.paquetLireFichier(n + "/paquet.json");
+      let v = "?";
+      if (typeof t === "string") { try { v = JSON.parse(t).version || "?"; } catch (e) { } }
+      installes[n] = v;
+    }
+  }
+  let lignes = [index.paquets.length + " paquet(s) disponible(s) :"];
+  for (let entree of index.paquets) {
+    let nom = entree && entree.nom;
+    if (typeof nom !== "string") continue;
+    let manifest = null;
+    try { manifest = await _telechargerJSONPaquet(entree.chemin + "/paquet.json"); } catch (e) { manifest = null; }
+    let version = (manifest && manifest.version) || entree.version || "?";
+    let ligne = nom + " v" + version;
+    if (manifest) {
+      ligne += " -- " + (manifest.description || "(aucune description)");
+      if (manifest.type !== "mlg") ligne += " [non installable : type \"" + manifest.type + "\"]";
+    } else {
+      ligne += " -- (paquet.json illisible)";
+    }
+    if (Object.prototype.hasOwnProperty.call(installes, nom)) {
+      ligne += installes[nom] === version ? " [installe]" : " [installe v" + installes[nom] + ", v" + version + " disponible]";
+    }
+    lignes.push(ligne);
+  }
+  return lignes;
+}
+
+// Analyse STATIQUE d'un module : liste ses fonc et ses classe (avec leurs methodes) telles
+// qu'ecrites, sans rien executer (un import(...), un affi(...) ou une boucle du module ne
+// tournent jamais ici). Renvoie { fonctions:[signature], classes:[{nom, parent, methodes:[signature]}] }.
+function inventaireModule(texte) {
+  let tokens = parser(texte);
+  let erreurs = verifierSyntaxeSansRisque(texte, tokens);
+  if (erreurs.length > 0) throw new Error("erreur de syntaxe ligne " + erreurs[0].ligne + " : " + erreurs[0].message);
+  let fonctionsTrouvees = [], classesTrouvees = [];
+  let i = 0;
+  while (i < tokens.length) {
+    let t = tokens[i];
+    let mClasse = t.texte.match(/^classe\s+(\w+)(?:\s+herite\s+(\w+))?$/);
+    if (mClasse) {
+      if (!tokens[i+1] || tokens[i+1].texte !== "{") throw new ErreurLangage("Manque { apres la definition de classe " + mClasse[1], t.ligne);
+      let fin = trouverFinBloc(tokens, i + 2, t.ligne);
+      let methodes = [];
+      let j = i + 2;
+      while (j < fin - 1) {
+        let mm = tokens[j].texte.match(/^fonc\s+(\w+)\((.*)\)$/);
+        if (mm && tokens[j+1] && tokens[j+1].texte === "{") {
+          methodes.push(mm[1] + "(" + mm[2].trim() + ")");
+          j = trouverFinBloc(tokens, j + 2, tokens[j].ligne);
+        } else j++;
+      }
+      classesTrouvees.push({ nom: mClasse[1], parent: mClasse[2] || null, methodes: methodes });
+      i = fin;
+      continue;
+    }
+    let m = t.texte.match(/^fonc\s+(\w+)\((.*)\)$/);
+    if (m && tokens[i+1] && tokens[i+1].texte === "{") {
+      fonctionsTrouvees.push(m[1] + "(" + m[2].trim() + ")");
+      i = trouverFinBloc(tokens, i + 2, t.ligne);
+    } else i++;
+  }
+  return { fonctions: fonctionsTrouvees, classes: classesTrouvees };
+}
+
+// fonction.dan.module(module) : fonctions/classes d'un module, resolu comme import(...) :
+// local (dossier du script courant, ou |chemin|) -> paquet natif -> paquet installe.
+async function fonctionsDansModule(cible) {
+  let resolu;
+  try { resolu = resoudreCheminImport(cible, 0); }
+  catch (e) { throw new Error(e.message); }
+  let texte = null, origine = null;
+  if (resolu.chemin !== null) {
+    if (window.MonLangage && typeof window.MonLangage.lireFichier === "function") {
+      texte = lireTexteLocalOuNull(resolu.chemin);
+      if (texte !== null) origine = "local : " + resolu.chemin;
+    }
+  }
+  if (resolu.estIdentifiant) {
+    let nomModule = resolu.nomModuleParDefaut;
+    if (texte === null && Object.prototype.hasOwnProperty.call(PAQUETS_NATIFS, nomModule)) {
+      texte = PAQUETS_NATIFS[nomModule];
+      origine = "paquet natif";
+    }
+    if (texte === null) {
+      let trouve = await chercherModuleInstalle(nomModule);
+      if (trouve) { texte = trouve.texte; origine = "paquet installe \"" + trouve.nomPaquet + "\""; }
+    }
+  }
+  if (texte === null) {
+    throw new Error("module introuvable : '" + (resolu.estIdentifiant ? resolu.nomModuleParDefaut : resolu.chemin) + "'" + (resolu.estIdentifiant ? " (cherche en local, dans les paquets natifs, puis dans les paquets installes)" : ""));
+  }
+  let inv;
+  try { inv = inventaireModule(texte); }
+  catch (e) { throw new Error("module '" + resolu.nomModuleParDefaut + "' illisible : " + e.message); }
+  let lignes = ["Module \"" + resolu.nomModuleParDefaut + "\" (" + origine + ")"];
+  if (inv.fonctions.length === 0 && inv.classes.length === 0) {
+    lignes.push("(aucune fonction ni classe)");
+    return lignes;
+  }
+  if (inv.fonctions.length > 0) {
+    lignes.push("Fonctions :");
+    for (let f of inv.fonctions) lignes.push("  " + f);
+  }
+  for (let c of inv.classes) {
+    lignes.push("Classe " + c.nom + (c.parent ? " (herite " + c.parent + ")" : "") + " :");
+    if (c.methodes.length === 0) lignes.push("  (aucune methode)");
+    for (let mt of c.methodes) lignes.push("  " + mt);
+  }
+  return lignes;
+}
+
 // Analyse et execute une ligne du "Gestionnaire de paquets" -- PAS le langage MLG, une mini-
 // syntaxe dediee limitee a 4 commandes fixes. Renvoie un tableau de lignes de texte a afficher.
 async function executerCommandePaquet(ligne) {
   ligne = ligne.trim();
+  if (/^paquet\.dispo\(/.test(ligne)) {
+    if (!/^paquet\.dispo\(\s*\)$/.test(ligne)) return ["paquet.dispo() ne prend aucun argument"];
+    try { return await paquetsDisponibles(); } catch (e) { return ["Erreur : " + e.message]; }
+  }
+  if (/^fonction\.dan\.module\(/.test(ligne)) {
+    let mf = ligne.match(/^fonction\.dan\.module\(\s*(.+?)\s*\)$/);
+    if (!mf) return ["fonction.dan.module(module) attend un nom de module (ex: copier) ou un chemin |...|"];
+    try { return await fonctionsDansModule(mf[1]); } catch (e) { return ["Erreur : " + e.message]; }
+  }
   let m = ligne.match(/^(install|desinstall|liste|info)\.paquet\(\s*([a-zA-Z_][\w-]*)?\s*\)$/);
   if (!m) {
-    return ["Commande inconnue : \"" + ligne + "\" -- attendu : install.paquet(nom), desinstall.paquet(nom), liste.paquet(), info.paquet(nom)"];
+    return ["Commande inconnue : \"" + ligne + "\" -- attendu : install.paquet(nom), desinstall.paquet(nom), liste.paquet(), info.paquet(nom), paquet.dispo(), fonction.dan.module(module)"];
   }
   let commande = m[1], nom = m[2];
   try {
