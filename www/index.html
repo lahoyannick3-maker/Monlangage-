@@ -2387,7 +2387,13 @@ function evaluerArbreRapide(noeud, ctx) {
     case 'dan': return testerAppartenance(evaluerArbreRapide(noeud.g, ctx), evaluerArbreRapide(noeud.d, ctx));
     case 'cmp': return combinerComparaison(evaluerArbreRapide(noeud.g, ctx), evaluerArbreRapide(noeud.d, ctx), noeud.op);
     case 'add': return combinerAddition(evaluerArbreRapide(noeud.g, ctx), evaluerArbreRapide(noeud.d, ctx), noeud.op);
-    case 'mul': return combinerMultiplication(evaluerArbreRapide(noeud.g, ctx), evaluerArbreRapide(noeud.d, ctx), noeud.op);
+    case 'mul': {
+      let g = evaluerArbreRapide(noeud.g, ctx), d = evaluerArbreRapide(noeud.d, ctx);
+      if (noeud.op === '.') return produitScalaire(g, d);
+      if (noeud.op === '×') return produitVectoriel(g, d);
+      if (noeud.op === '..') return produitMatriciel(g, d);
+      return combinerMultiplication(g, d, noeud.op);
+    }
     case 'seq': {
       let g = evaluerArbreRapide(noeud.g, ctx), d = evaluerArbreRapide(noeud.d, ctx);
       verifierNombre(g, ':'); verifierNombre(d, ':');
@@ -3252,14 +3258,33 @@ function combinerPuissance(g, d) {
   }
 
   if (estMatrice(g) || estMatrice(d)) {
-    if (estMatrice(g) && estMatrice(d)) {
-      if (g.nlig !== d.nlig || g.ncol !== d.ncol) throw new Error("'^' : dimensions incompatibles entre les deux matrices (" + g.nlig + "x" + g.ncol + " et " + d.nlig + "x" + d.ncol + ")");
-      return { __type: "matrice", nlig: g.nlig, ncol: g.ncol, donnees: g.donnees.map((v, i) => combiner2(v, d.donnees[i])) };
-    }
     if (estVecteur(g) || estVecteur(d)) throw new Error("'^' : impossible de combiner une matrice et un vecteur");
-    let mat = estMatrice(g) ? g : d, scal = estMatrice(g) ? d : g;
-    let donnees = mat.donnees.map(v => estMatrice(g) ? combiner2(v, scal) : combiner2(scal, v));
-    return { __type: "matrice", nlig: mat.nlig, ncol: mat.ncol, donnees: donnees };
+    if (estMatrice(d)) throw new Error("'^' : matrice^matrice n'est pas defini (utilise '..' pour un produit matriciel)");
+    // g est une matrice, d un nombre : puissance matricielle usuelle (a^n = a..a..a..., n fois),
+    // pas element par element -- convention standard en algebre lineaire pour une matrice CARREE
+    // elevee a un exposant entier. exposant~0 -> matrice identite ; negatif ou non entier -> pas
+    // pris en charge (inversion de matrice non implementee).
+    let exposant = typeof d === 'bigint' ? Number(d) : d;
+    if (typeof exposant !== 'number' || !Number.isInteger(exposant)) {
+      throw new Error("'^' sur une matrice : l'exposant doit etre un nombre entier (recu " + exposant + ")");
+    }
+    if (exposant < 0) {
+      throw new Error("'^' sur une matrice : exposant negatif (" + exposant + ") -- l'inverse d'une matrice n'est pas pris en charge");
+    }
+    if (g.nlig !== g.ncol) throw new Error("'^' sur une matrice : la matrice doit etre carree (recu " + g.nlig + "x" + g.ncol + ")");
+    if (exposant === 0) {
+      let donnees = new Array(g.nlig * g.nlig).fill(0);
+      for (let i = 0; i < g.nlig; i++) donnees[i * g.nlig + i] = 1;
+      return { __type: "matrice", nlig: g.nlig, ncol: g.nlig, donnees: donnees };
+    }
+    // Exponentiation rapide par elevation au carre : log2(n) produits matriciels plutot que n.
+    let resultat = null, base = g, n = exposant;
+    while (n > 0) {
+      if (n % 2 === 1) resultat = resultat === null ? base : produitMatriciel(resultat, base);
+      n = Math.floor(n / 2);
+      if (n > 0) base = produitMatriciel(base, base);
+    }
+    return resultat;
   }
   if (estVecteur(g) || estVecteur(d)) {
     if (estVecteur(g) && estVecteur(d)) {
@@ -3304,7 +3329,13 @@ function produitMatriciel(g, d) {
     for (let j = 0; j < d.ncol; j++) {
       let s = 0;
       for (let k = 0; k < g.ncol; k++) s += g.donnees[k * g.nlig + i] * d.donnees[j * d.nlig + k];
-      donnees[j * g.nlig + i] = s;
+      // Nettoie les residus de precision flottante qui s'accumulent notamment quand un des
+      // operandes vient deja d'un calcul arrondi (ex: inverse(...), qui arrondit a 1e-9) : sur
+      // une somme de plusieurs termes (une ligne x colonne), l'erreur de chaque terme se
+      // compose et depasse 1e-9 -- ce niveau-la serait donc insuffisant pour vraiment l'effacer
+      // (round(x*1e9)/1e9 transforme 1.9999999989e-9 en 2e-9, pas en 0). 1e-6 laisse une marge
+      // large sans jamais affecter un resultat legitime a cette echelle (rarissime en pratique).
+      donnees[j * g.nlig + i] = Math.round(s * 1e6) / 1e6;
     }
   }
   return { __type: "matrice", nlig: g.nlig, ncol: d.ncol, donnees: donnees };
@@ -3425,6 +3456,45 @@ function transposerMatrice(m) {
     }
   }
   return { __type: "matrice", nlig: C, ncol: R, donnees: donnees };
+}
+
+// Inverse d'une matrice carree, par elimination de Gauss-Jordan avec pivot partiel (meme
+// stabilite numerique/meme seuil 1e-12 que determinantMatrice(...) ci-dessus, pour rester
+// coherent : une matrice que det(...) juge non nulle est aussi jugee inversible ici).
+function inverserMatrice(m) {
+  if (!estMatrice(m)) throw new ErreurTypeInvalide("inverse(...) attend une matrice");
+  if (m.nlig !== m.ncol) throw new Error("inverse(...) : la matrice doit etre carree (recue : " + m.nlig + "x" + m.ncol + ")");
+  let n = m.nlig;
+  // Matrice augmentee [A | I], en lignes (comme determinantMatrice(...)) -- m.donnees est
+  // stocke par colonne, d'ou la conversion a[ligne][colonne] = donnees[colonne*n + ligne].
+  let a = [];
+  for (let l = 0; l < n; l++) {
+    let ligne = [];
+    for (let c = 0; c < n; c++) ligne.push(m.donnees[c * n + l]);
+    for (let c = 0; c < n; c++) ligne.push(l === c ? 1 : 0);
+    a.push(ligne);
+  }
+  for (let col = 0; col < n; col++) {
+    let pivot = col;
+    for (let l = col + 1; l < n; l++) if (Math.abs(a[l][col]) > Math.abs(a[pivot][col])) pivot = l;
+    if (Math.abs(a[pivot][col]) < 1e-12) throw new Error("inverse(...) : matrice non inversible (determinant nul)");
+    if (pivot !== col) { let tmp = a[pivot]; a[pivot] = a[col]; a[col] = tmp; }
+    let diviseur = a[col][col];
+    for (let c = 0; c < 2 * n; c++) a[col][c] /= diviseur;
+    for (let l = 0; l < n; l++) {
+      if (l === col) continue;
+      let facteur = a[l][col];
+      if (facteur === 0) continue;
+      for (let c = 0; c < 2 * n; c++) a[l][c] -= facteur * a[col][c];
+    }
+  }
+  // Reconvertit la moitie droite (l'inverse) au stockage par colonne du langage, en arrondissant
+  // les residus de precision flottante (meme convention que determinantMatrice(...)).
+  let donnees = new Array(n * n);
+  for (let l = 0; l < n; l++) {
+    for (let c = 0; c < n; c++) donnees[c * n + l] = Math.round(a[l][n + c] * 1e9) / 1e9;
+  }
+  return { __type: "matrice", nlig: n, ncol: n, donnees: donnees };
 }
 
 // nom.ajout(...) : ajoute des elements a un vecteur/une matrice EXISTANTS, sans rien ecraser.
@@ -4406,6 +4476,14 @@ function resoudreCheminImport(cibleBrute, ligneErreur, dossierBase = null) {
 // depot GitHub. Voir chargerModule(...) pour l'ordre de resolution complet.
 const PAQUETS_NATIFS = {};
 
+// Lit un fichier local via le pont natif. Renvoie TOUJOURS un texte ou null : le pont Android
+// peut renvoyer null ou undefined pour un fichier absent/illisible, les deux veulent dire "absent".
+function lireTexteLocalOuNull(chemin) {
+  let r;
+  try { r = window.MonLangage.lireFichier(chemin); } catch (e) { return null; }
+  return typeof r === "string" ? r : null;
+}
+
 // Cherche un module nomme "nomModule" parmi les paquets EXTERNES installes (stockage prive de
 // l'app -- voir paquetLireFichier/paquetListerDossier cote Java, jamais accessible via
 // lireFichier/ecrireFichier ni un gestionnaire de fichiers classique). Contrairement a un
@@ -4415,20 +4493,25 @@ const PAQUETS_NATIFS = {};
 // trouver un qui declare ce module. Renvoie null si aucun ne correspond.
 // Revalide "type: mlg" A LA LECTURE, pas seulement a l'installation -- defense en profondeur si
 // un paquet.json a ete altere apres coup (jamais un paquet non-mlg execute, meme dans ce cas).
-async function chercherModuleInstalle(nomModule) {
+async function chercherModuleInstalle(nomModule, nomPaquetPrefere = null) {
   if (!(window.MonLangage && typeof window.MonLangage.paquetListerDossier === "function")) return null;
   let nomsPaquets;
   try { nomsPaquets = JSON.parse(window.MonLangage.paquetListerDossier("")); } catch (e) { return null; }
   if (!Array.isArray(nomsPaquets)) return null;
+  // Un module de paquet qui en importe un autre (ex: trier_vecteur -> copier) le cherche d'abord
+  // DANS SON PROPRE PAQUET, puis seulement dans les autres paquets installes.
+  if (nomPaquetPrefere && nomsPaquets.indexOf(nomPaquetPrefere) !== -1) {
+    nomsPaquets = [nomPaquetPrefere].concat(nomsPaquets.filter(n => n !== nomPaquetPrefere));
+  }
   for (let nomPaquet of nomsPaquets) {
     let texteManifest = window.MonLangage.paquetLireFichier(nomPaquet + "/paquet.json");
-    if (texteManifest === null) continue;
+    if (typeof texteManifest !== "string") continue;
     let manifest;
     try { manifest = JSON.parse(texteManifest); } catch (e) { continue; }
     if (manifest.type !== "mlg") continue; // paquet non-mlg : jamais charge automatiquement par import()
     if (!Array.isArray(manifest.modules) || manifest.modules.indexOf(nomModule) === -1) continue;
     let texte = window.MonLangage.paquetLireFichier(nomPaquet + "/modules/" + nomModule + ".mlg");
-    if (texte === null) continue;
+    if (typeof texte !== "string") continue;
     return { texte: texte, nomPaquet: nomPaquet };
   }
   return null;
@@ -4456,7 +4539,12 @@ async function chargerModule(resolu, alias, ligneErreur) {
     // renvoie null dans les deux cas --, ou aucun dossier local connu : resolu.chemin est alors
     // null, voir resoudreCheminImport) fait simplement passer au niveau suivant plutot que
     // d'echouer tout de suite, puisqu'un paquet natif/installe n'a besoin d'aucun des deux.
-    texte = chemin !== null ? window.MonLangage.lireFichier(chemin) : null;
+    // Le pont Android peut renvoyer null OU undefined pour un fichier absent : tout ce qui n'est
+    // pas un texte compte comme "absent" (sinon le repli sur les paquets ne se declenche jamais).
+    // Un chemin virtuel "paquet:..."/"natif:..." (import depuis un module de paquet) n'existe pas
+    // sur le stockage : on ne le lit pas, on passe directement aux paquets.
+    let cheminVirtuel = chemin !== null && /^(paquet|natif):/.test(chemin);
+    texte = (chemin !== null && !cheminVirtuel) ? lireTexteLocalOuNull(chemin) : null;
     // 2) Paquet natif (integre a l'app).
     if (texte === null && Object.prototype.hasOwnProperty.call(PAQUETS_NATIFS, resolu.nomModuleParDefaut)) {
       texte = PAQUETS_NATIFS[resolu.nomModuleParDefaut];
@@ -4464,7 +4552,12 @@ async function chargerModule(resolu, alias, ligneErreur) {
     }
     // 3) Paquet externe installe.
     if (texte === null) {
-      let trouve = await chercherModuleInstalle(resolu.nomModuleParDefaut);
+      let nomPaquetImporteur = null;
+      if (chemin !== null) {
+        let mp = chemin.match(/^paquet:([^\/]+)\//);
+        if (mp) nomPaquetImporteur = mp[1];
+      }
+      let trouve = await chercherModuleInstalle(resolu.nomModuleParDefaut, nomPaquetImporteur);
       if (trouve) {
         texte = trouve.texte;
         chemin = "paquet:" + trouve.nomPaquet + "/" + resolu.nomModuleParDefaut;
@@ -4476,7 +4569,7 @@ async function chargerModule(resolu, alias, ligneErreur) {
     if (window.MonLangage.permissionStockageAccordee && !window.MonLangage.permissionStockageAccordee()) {
       throw new ErreurPermissionRefusee("import(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
     }
-    texte = window.MonLangage.lireFichier(chemin);
+    texte = lireTexteLocalOuNull(chemin);
   }
 
   if (Object.prototype.hasOwnProperty.call(modules, alias)) {
@@ -5112,6 +5205,11 @@ let aideCommandes = [
       "Renvoie la transposee d'une matrice : les lignes deviennent des colonnes et inversement.",
       "Une matrice nlig x ncol devient une matrice ncol x nlig."
     ], exemple: "m ~ matrice(1:6, nlig~2, ncol~3)\ntrans(m)   ->   une matrice 3x2" },
+  { noms: ["inverse"], categorie: "Creer un vecteur/une matrice", syntaxe: "inverse(m)", description: [
+      "Renvoie l'inverse d'une matrice carree (celle telle que m .. inverse(m) donne la matrice identite).",
+      "La matrice doit etre carree (autant de lignes que de colonnes).",
+      "Erreur si la matrice n'est pas inversible (determinant nul, comme det(m)==0)."
+    ], exemple: "m ~ matrice(c(4,2,7,6), nlig~2, ncol~2)\ninverse(m)   ->   une matrice 2x2\nm..inverse(m)   ->   la matrice identite" },
 
   { noms: ["lon"], categorie: "Infos sur un vecteur/une matrice", syntaxe: "lon(v)", description: [
       "Renvoie le nombre d'elements d'un vecteur ou d'une matrice.",
@@ -6447,6 +6545,13 @@ function enregistrerFonctionsBase() {
         let m = await evalExpr(args[0], ctxExpr);
         if (!estMatrice(m)) throw new ErreurTypeInvalide("trans(...) attend une matrice");
         return transposerMatrice(m);
+    };
+
+    // inverse(...) : inverse d'une matrice carree (Gauss-Jordan, voir inverserMatrice(...)).
+    fonctionsBase["inverse"] = fonctionsExpression["inverse"] = async function(args, ctxExpr) {
+        if (args.length < 1) throw new Error("inverse(...) attend un argument");
+        let m = await evalExpr(args[0], ctxExpr);
+        return inverserMatrice(m);
     };
 
     // suchaq(matrice, marge, fonction) : comme apply() en R.
@@ -8122,8 +8227,11 @@ function splitTopLevelComma(str) {
   for (let ch of str) {
     if (ch === '|') { dansTexte = !dansTexte; buf += ch; continue; }
     if (!dansTexte) {
-      if (ch === '(') depth++;
-      if (ch === ')') depth--;
+      // Les crochets [...] (indexation m[i,j]) comptent aussi comme profondeur : sans ca,
+      // "m[1,2]" en argument se coupait en "m[1" et "2]" a la virgule interne, au lieu de
+      // rester un seul argument (voir accederMatrice(...)/parsePrimaryBrute plus haut).
+      if (ch === '(' || ch === '[') depth++;
+      if (ch === ')' || ch === ']') depth--;
       if (ch === ',' && depth === 0) { parts.push(buf); buf = ""; continue; }
     }
     buf += ch;
