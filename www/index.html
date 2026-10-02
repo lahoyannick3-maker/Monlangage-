@@ -263,6 +263,25 @@
        ambiguite plutot que de compter sur le comportement par defaut. */
     #output { flex: 1; background: #010409; padding: 0 10px 10px 10px; overflow-y: auto; min-height: 0; white-space: pre-wrap; -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
     #output:focus { outline: none; }
+    /* Champ de saisie INVISIBLE (1px, transparent) qui sert uniquement a ouvrir le clavier du systeme
+       et a recevoir les frappes pour touche() : il n'affiche ni champ ni bouton. */
+    #champTouche { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; margin: 0; font-size: 16px; color: transparent; background: transparent; caret-color: transparent; pointer-events: none; }
+    /* Boutons construits par le script avec bouton(...) : n'existent que si le script les demande. */
+    #espaceLibre { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
+    #boiteZoneDessin { display: none; position: absolute; left: 0; top: 0; width: 100%; height: 100%; background: transparent; }
+    #zoneDessin { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+    body.avecZone #boiteZoneDessin { display: block; }
+    #zoneBoutons { flex-shrink: 0; display: grid; gap: 6px; background: #0d1117; border-top: 1px solid #30363d; padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px)); -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; touch-action: manipulation; }
+    #zoneBoutons[hidden] { display: none; }
+    #zoneBoutons button { background: #21262d; color: #f0f6fc; border: 1px solid #30363d; border-radius: 10px; font-size: 18px; min-height: 52px; padding: 0 8px; overflow: hidden; touch-action: manipulation; -webkit-user-select: none; user-select: none; }
+    #zoneBoutons button:active { background: #388bfd; }
+    #zoneBoutons button.coloree { background: var(--bg); color: var(--fg); }
+    #zoneBoutons button.coloree:active { background: var(--bg); filter: brightness(1.4); }
+    .boutonsDansConsole { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); grid-template-rows:repeat(3,minmax(36px,auto)); gap:6px; width:100%; margin:5px 0; align-items:center; justify-items:center; }
+    .boutonsDansConsole button { background:#21262d; color:#f0f6fc; border:1px solid #30363d; border-radius:9px; min-height:36px; padding:5px 12px; font-size:16px; touch-action:manipulation; }
+    .boutonsDansConsole button.coloree { background: var(--bg); color: var(--fg); }
+    .boutonsDansConsole button.coloree:active { filter: brightness(1.4); }
+    body.avecBoutons #indicateurAttente, body.scriptJeu #indicateurAttente { display: none; }
 
     /* ===================== ECRAN SPECIFICATION OFFICIELLE ===================== */
     #ecranSpecification {
@@ -459,7 +478,11 @@ affi(|Bonjour |, nom)</textarea>
       <button id="btnArretUrgence" type="button" hidden>🛑 Arrêt d’urgence</button>
       <button id="btnBasculePaquets" type="button" title="Gestionnaire de paquets" style="margin-left:auto;">📦 Paquets</button>
     </div>
-    <div id="output"></div>
+    <div id="espaceLibre">
+      <div id="output"></div>
+      <div id="boiteZoneDessin"><canvas id="zoneDessin"></canvas></div>
+    </div>
+    <div id="zoneBoutons" hidden></div>
   </div>
 
   <div id="dialogueArrierePlan" class="dialogueOverlay" aria-hidden="true">
@@ -590,9 +613,13 @@ let _cacheSegmentsExpression = new Map(); // str -> { version, segments }
 // numero de ligne propre (il est fabrique a partir de tokens d'expression, qui n'en portent
 // pas), donc on reutilise la derniere ligne source reellement executee.
 let ligneExpressionCourante = 0;
-let commandes = ["affi", "pou", "tanqer", "stop", "continu", "si", "sinon", "sision", "essai", "attrape", "fonc", "retour", "entr", "c", "liste", "texte", "seq", "rep", "alea", "ralea", "matrice", "lon", "dim", "limiteRecursion", "entier", "reel", "som", "moy", "var", "sd", "max", "min", "suchaq", "det", "trace", "trans", "aide", "base", "effa", "voi", "lettr", "Lettr", "VRAI", "FAUX", "pasdefini", "ecrire.cle", "lire.cle", "ajout.cle"];
+let commandes = ["affi", "pou", "tanqer", "casse", "quitte", "continu", "si", "sinon", "sision", "essai", "attrape", "fonc", "retour", "entr", "c", "liste", "texte", "seq", "rep", "alea", "ralea", "matrice", "lon", "dim", "limiteRecursion", "entier", "reel", "som", "moy", "var", "sd", "max", "min", "suchaq", "det", "trace", "trans", "aide", "base", "effa", "voi", "lettr", "Lettr", "VRAI", "FAUX", "pasdefini", "ecrire.cle", "lire.cle", "ajout.cle"];
 
 let outputDiv = document.getElementById("output");
+// Couleur du texte de affi(...) fixee par couleur(...) ; null = couleur normale. Remise a null au debut et a la fin de chaque script.
+let couleurConsole = null;
+// Sons du jeu (son/note) : etat du moteur audio. Declare ici, tres tot, car reinitialiserTouches() les utilise.
+let audioCtx = null, audioMaitre = null, voixSon = [], prochainIdSon = 1;
 let codeArea = document.getElementById("code");
 let codeHighlight = document.getElementById("codeHighlight");
 let numeros = document.getElementById("numeros");
@@ -1029,12 +1056,12 @@ function focaliserSaisieConsole() {
 function afficherConsole() {
   ecranEditeur.classList.add("masque");
   ecranConsole.classList.add("actif");
-  // L'invite (# ...) a pu etre creee pendant que la console etait cachee
-  // (display:none), auquel cas le focus() initial n'avait aucun effet :
-  // on refocalise ici la derniere zone de saisie visible.
-  focaliserSaisieConsole();
+  // Pendant l'execution, ne jamais refocaliser l'ancienne invite (#).
+  // Les champs entr() se focalisent eux-memes au moment où le script les demande.
+  if (!executionEnCours) focaliserSaisieConsole();
 }
 function afficherEditeur() {
+  if (!executionEnCours) effacerZone();
   ecranConsole.classList.remove("actif");
   ecranEditeur.classList.remove("masque");
 }
@@ -1160,6 +1187,377 @@ class ErreurLangage extends Error {
 // N'est jamais affichee comme une erreur du langage.
 class ExecutionInterrompue extends Error {
   constructor() { super("Execution interrompue"); }
+}
+
+// ===================== TOUCHES (jeux) : touche() / touche.dispo() =====================
+// Commandes MLG AUTONOMES, comme entr() mais sans jamais bloquer : elles lisent le clavier (physique
+// ou clavier du telephone, que le premier appel ouvre tout seul via un champ invisible) et n'affichent
+// AUCUN bouton ni aucun champ. Un script qui veut des touches visibles les construit lui-meme avec bouton(...).
+// Aucun nom de touche n'est invente par le langage : valeur du clavier brute, ou valeur du bouton.
+// File des touches pressees depuis le dernier appel : touche() rend la plus ancienne (ou un texte
+// vide s'il n'y en a pas), touche.dispo() dit s'il y en a. Rien n'est capte tant que le script n'a
+// pas appele touche()/touche.dispo() au moins une fois : la saisie de la console reste normale.
+let fileTouches = [];
+let toucheActive = false;
+// Politique d'ouverture du clavier : auto (defaut), vrai (force), faux (desactive).
+let politiqueClavier = "auto";
+const FILE_TOUCHES_MAX = 64; // au-dela, les plus anciennes sont oubliees (jamais de croissance infinie)
+function empilerTouche(nom) {
+  fileTouches.push(nom);
+  if (fileTouches.length > FILE_TOUCHES_MAX) fileTouches.shift();
+}
+function reinitialiserTouches() { fileTouches.length = 0; toucheActive = false; politiqueClavier = "auto"; desactiverSaisieTouche(); effacerBoutons(); document.body.classList.remove("scriptJeu"); couleurConsole = null; arreterSonsJeu(); fileDoigts.length = 0; doigtIdActif = null; }
+
+// ----- Saisie invisible de touche() : ouvre le clavier du systeme, comme entr(), sans bloquer -----
+// Sur un telephone sans clavier physique, aucune frappe n'arrive tant qu'aucun champ n'a le focus :
+// le premier appel de touche()/touche.dispo() donne donc le focus a un champ invisible (1px,
+// transparent), ce qui ouvre le clavier du systeme. Le script, lui, ne s'arrete jamais.
+let champToucheEl = null;
+let traiteesTouche = 0; // nombre de caracteres du champ deja livres a la file (pendant une composition)
+function flushChampTouche(fin) {
+  let v = champToucheEl.value;
+  if (v.length > traiteesTouche) {
+    for (let c of Array.from(v.slice(traiteesTouche))) empilerTouche(c);
+  }
+  traiteesTouche = v.length;
+  // Hors composition (ou composition terminee) : le champ est vide pour la frappe suivante.
+  if (fin) { champToucheEl.value = ""; traiteesTouche = 0; }
+}
+function creerChampTouche() {
+  let el = document.createElement("input");
+  el.type = "text";
+  el.id = "champTouche";
+  el.setAttribute("aria-hidden", "true");
+  el.tabIndex = -1;
+  el.readOnly = politiqueClavier === "faux" || (politiqueClavier === "auto" && boutonsPersonnalisesPresents());
+  el.autocomplete = "off";
+  el.setAttribute("autocorrect", "off");
+  el.setAttribute("autocapitalize", "off");
+  el.spellcheck = false;
+  // Frappes "texte" : le caractere est lu dans le champ, tel quel (clavier du telephone comme clavier physique).
+  el.addEventListener("input", (ev) => { if (!toucheActive) return; flushChampTouche(!ev.isComposing); });
+  el.addEventListener("compositionend", () => { if (toucheActive) flushChampTouche(true); });
+  // Touches "sans caractere" (fleches, Entree, Echap, Retour arriere...) : valeur brute du clavier.
+  // Les touches a un seul caractere sont laissees a l'evenement input (sinon elles compteraient deux fois).
+  el.addEventListener("keydown", (ev) => {
+    if (!toucheActive || ev.isComposing || ev.ctrlKey || ev.altKey || ev.metaKey) return;
+    if (!ev.key || ev.key.length === 1 || TOUCHES_IGNOREES.has(ev.key)) return;
+    ev.preventDefault();
+    empilerTouche(ev.key);
+  });
+  document.body.appendChild(el);
+  return el;
+}
+function activerSaisieTouche() {
+  if (toucheActive) return;
+  toucheActive = true;
+  if (!champToucheEl) champToucheEl = creerChampTouche();
+  champToucheEl.value = "";
+  traiteesTouche = 0;
+  if (politiqueClavier === "vrai" || (politiqueClavier === "auto" && !boutonsPersonnalisesPresents())) champToucheEl.focus({ preventScroll: true });
+}
+function boutonsPersonnalisesPresents() {
+  return boutonsActifs.size > 0 || !!(outputDiv && outputDiv.querySelector(".boutonsDansConsole button[data-valeur]"));
+}
+function appliquerPolitiqueClavier() {
+  if (!champToucheEl) return;
+  const ouvrir = politiqueClavier === "vrai" ||
+    (politiqueClavier === "auto" && !boutonsPersonnalisesPresents());
+  // Android WebView peut conserver le clavier virtuel après un simple blur().
+  // readonly empêche le champ invisible de solliciter l'IME en mode boutons.
+  champToucheEl.readOnly = !ouvrir;
+  if (!toucheActive) return;
+  if (ouvrir) {
+    champToucheEl.focus({ preventScroll: true });
+  } else {
+    champToucheEl.blur();
+    if (document.activeElement === champToucheEl) document.activeElement.blur();
+  }
+}
+function desactiverSaisieTouche() {
+  if (!champToucheEl) return;
+  champToucheEl.value = "";
+  traiteesTouche = 0;
+  if (document.activeElement === champToucheEl) champToucheEl.blur(); // referme le clavier
+}
+
+// ----- Boutons construits par le script : bouton(libelle, valeur, colonne, ligne [, largeur, hauteur]) -----
+// Un bouton n'envoie QUE la valeur choisie par le script dans la file de touche() : le langage
+// n'invente ni nom de touche ni bouton. Ils vivent sous la console (hors #output : effa() ne les
+// efface pas) et disparaissent a la fin du script.
+const BOUTONS_MAX = 40, BOUTONS_COLONNES_MAX = 12, BOUTONS_LIGNES_MAX = 8, BOUTONS_LIBELLE_MAX = 20;
+let boutonsActifs = new Map(); // "colonne,ligne" -> { libelle, valeur, larg, haut, el }
+function effacerBoutons() {
+  boutonsActifs.clear();
+  let z = document.getElementById("zoneBoutons");
+  if (z) { z.hidden = true; z.textContent = ""; z.style.gridTemplateColumns = ""; }
+  if (outputDiv) outputDiv.querySelectorAll(".boutonsDansConsole").forEach(el => el.remove());
+  document.body.classList.remove("avecBoutons");
+}
+function ajusterGrilleBoutons() {
+  let z = document.getElementById("zoneBoutons");
+  let colonnes = 1;
+  for (let b of boutonsActifs.values()) colonnes = Math.max(colonnes, b.col + b.larg - 1);
+  z.style.gridTemplateColumns = "repeat(" + colonnes + ", minmax(0, 1fr))";
+}
+// ===================== SON DU JEU : son(effet) / note(...) / son.arrete / vibre =====================
+// Sons SYNTHETISES (aucun fichier) avec WebAudio, dans l'app : ils suivent le volume media du telephone
+// et peuvent etre coupes par lui. Ils ne bloquent jamais le script et s'arretent avec lui.
+// (Pour une alerte fiable meme en silencieux : alerte.*, cote natif.)
+const SON_VOIX_MAX = 16, SON_DUREE_MAX = 10;
+const SON_FORMES = { sinus: "sine", carree: "square", triangle: "triangle", dent: "sawtooth" };
+const SON_EFFETS = {
+  bip:       [{ t0: 0, dur: 0.09, type: "carree", f0: 880, vol: 0.6 }],
+  clic:      [{ t0: 0, dur: 0.03, type: "bruit", f0: 6000, f1: 1500, vol: 0.7 }],
+  pop:       [{ t0: 0, dur: 0.10, type: "sinus", f0: 700, f1: 150, vol: 1 }],
+  piece:     [{ t0: 0, dur: 0.07, type: "carree", f0: 988, vol: 0.5 }, { t0: 0.07, dur: 0.28, type: "carree", f0: 1319, vol: 0.5 }],
+  saut:      [{ t0: 0, dur: 0.18, type: "carree", f0: 220, f1: 660, vol: 0.5 }],
+  tir:       [{ t0: 0, dur: 0.20, type: "dent", f0: 900, f1: 110, vol: 0.5 }],
+  explosion: [{ t0: 0, dur: 0.70, type: "bruit", f0: 2500, f1: 80, vol: 1 }, { t0: 0, dur: 0.40, type: "sinus", f0: 120, f1: 40, vol: 0.8 }],
+  perdu:     [{ t0: 0, dur: 0.15, type: "dent", f0: 440, vol: 0.5 }, { t0: 0.15, dur: 0.15, type: "dent", f0: 349, vol: 0.5 }, { t0: 0.30, dur: 0.45, type: "dent", f0: 262, vol: 0.5 }],
+  gagne:     [{ t0: 0, dur: 0.10, type: "carree", f0: 523, vol: 0.5 }, { t0: 0.10, dur: 0.10, type: "carree", f0: 659, vol: 0.5 }, { t0: 0.20, dur: 0.10, type: "carree", f0: 784, vol: 0.5 }, { t0: 0.30, dur: 0.35, type: "carree", f0: 1047, vol: 0.5 }]
+};
+function verifierRunPourSon(nomFonction) {
+  if (window.MonLangageServiceNative) throw new Error(nomFonction + " est indisponible en arriere-plan : lance ce script avec RUN au lieu de FOND (pour une alerte en arriere-plan, utilise alerte.son)");
+}
+function contexteAudio(nomFonction) {
+  if (!audioCtx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) throw new Error(nomFonction + " : l'audio n'est pas disponible sur cet appareil");
+    audioCtx = new AC();
+    let comp = audioCtx.createDynamicsCompressor(); // evite la saturation quand plusieurs sons se superposent
+    audioMaitre = audioCtx.createGain(); audioMaitre.gain.value = 0.35;
+    audioMaitre.connect(comp); comp.connect(audioCtx.destination);
+  }
+  if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+  return audioCtx;
+}
+let tamponBruit = null;
+function creerTamponBruit(ctx) {
+  if (!tamponBruit) {
+    tamponBruit = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+    let d = tamponBruit.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  }
+  return tamponBruit;
+}
+function retirerVoixSon(id) {
+  let i = voixSon.findIndex(v => v.id === id);
+  if (i < 0) return;
+  let v = voixSon[i]; voixSon.splice(i, 1);
+  clearTimeout(v.timer);
+  try { v.gv.disconnect(); } catch (e) {}
+}
+function arreterVoixSon(id) {
+  let v = voixSon.find(x => x.id === id);
+  if (!v || !audioCtx) return;
+  let now = audioCtx.currentTime;
+  try { v.gv.gain.cancelScheduledValues(now); v.gv.gain.setValueAtTime(v.gv.gain.value, now); v.gv.gain.linearRampToValueAtTime(0, now + 0.01); } catch (e) {}
+  for (let src of v.sources) { try { src.stop(now + 0.02); } catch (e) {} }
+  clearTimeout(v.timer);
+  v.timer = setTimeout(() => retirerVoixSon(id), 60);
+  voixSon = voixSon.filter(x => x.id !== id); // plus compte dans les 16 voix des maintenant
+  setTimeout(() => { try { v.gv.disconnect(); } catch (e) {} }, 80);
+}
+function arreterSonsJeu() {
+  for (let v of voixSon.slice()) arreterVoixSon(v.id);
+  try { if (navigator.vibrate) navigator.vibrate(0); } catch (e) {}
+}
+function jouerSegmentsSon(segments, volume, nomFonction) {
+  let ctx = contexteAudio(nomFonction);
+  while (voixSon.length >= SON_VOIX_MAX) arreterVoixSon(voixSon[0].id); // plein : on coupe le plus ancien
+  let t = ctx.currentTime + 0.01;
+  let gv = ctx.createGain(); gv.gain.value = volume; gv.connect(audioMaitre);
+  let sources = [], fin = 0;
+  for (let sg of segments) {
+    let t0 = t + sg.t0, t1 = t0 + sg.dur, src;
+    if (sg.type === "bruit") { src = ctx.createBufferSource(); src.buffer = creerTamponBruit(ctx); src.loop = true; }
+    else {
+      src = ctx.createOscillator(); src.type = SON_FORMES[sg.type];
+      src.frequency.setValueAtTime(sg.f0, t0);
+      if (sg.f1 && sg.f1 !== sg.f0) src.frequency.exponentialRampToValueAtTime(sg.f1, t1);
+    }
+    let g = ctx.createGain(), att = 0.005, rel = Math.min(0.04, sg.dur * 0.4); // attaque/relachement courts : pas de claquement
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(sg.vol, t0 + att);
+    g.gain.setValueAtTime(sg.vol, Math.max(t0 + att, t1 - rel));
+    g.gain.linearRampToValueAtTime(0, t1);
+    if (sg.type === "bruit") {
+      let f = ctx.createBiquadFilter(); f.type = "lowpass";
+      f.frequency.setValueAtTime(sg.f0, t0); f.frequency.exponentialRampToValueAtTime(Math.max(20, sg.f1 || sg.f0), t1);
+      src.connect(f); f.connect(g);
+    } else src.connect(g);
+    g.connect(gv);
+    src.start(t0); src.stop(t1 + 0.02);
+    sources.push(src); fin = Math.max(fin, sg.t0 + sg.dur);
+  }
+  let id = prochainIdSon++;
+  voixSon.push({ id: id, gv: gv, sources: sources, timer: setTimeout(() => retirerVoixSon(id), (fin + 0.15) * 1000) });
+  return id;
+}
+// "la4", "do#3", "solb5", "re" (octave 4 par defaut), accents acceptes : renvoie la frequence en Hz, ou null.
+function frequenceNote(texte) {
+  let t = String(texte).trim().toLowerCase().replace(/é/g, "e").replace(/è/g, "e");
+  let m = /^(do|re|mi|fa|sol|la|si)(#|b)?(-?\d+)?$/.exec(t);
+  if (!m) return null;
+  let base = { do: 0, re: 2, mi: 4, fa: 5, sol: 7, la: 9, si: 11 }[m[1]] + (m[2] === "#" ? 1 : m[2] === "b" ? -1 : 0);
+  let octave = m[3] === undefined ? 4 : parseInt(m[3], 10);
+  let midi = 12 * (octave + 1) + base;
+  return 440 * Math.pow(2, (midi - 69) / 12);
+}
+
+// ===================== ZONE DE DESSIN : zone(l, h) / zone.rectangle / zone.cercle / ... =====================
+// Les commandes de dessin ne touchent PAS l'ecran : elles remplissent une liste cachee (cmds).
+// Seul zone.montre() copie cette liste dans "vue" et la peint d'un coup : l'ecran passe d'une image
+// complete a la suivante, sans etat intermediaire (pas de clignotement). zone.efface() vide cmds.
+const ZONE_DIM_MAX = 10000, ZONE_CMDS_MAX = 5000, ZONE_TEXTE_MAX = 200;
+const ZONE_COULEURS = { rouge: "#e5484d", vert: "#3fb950", bleu: "#388bfd", jaune: "#f2cc0c", orange: "#f0883e", violet: "#a371f7", rose: "#f778ba", cyan: "#39c5cf", blanc: "#ffffff", noir: "#000000", gris: "#8b949e", marron: "#9e6a3a" };
+let zoneEtat = null; // { l, h, cmds: [], vue: [], montreeUneFois: bool }
+function zoneCouleur(v, nomFonction) {
+  if (typeof v !== "string") throw new Error(nomFonction + " : la couleur doit etre un texte, par exemple |vert| ou |#ff8800|");
+  let c = v.trim().toLowerCase();
+  if (ZONE_COULEURS[c]) return ZONE_COULEURS[c];
+  if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/.test(c)) return c;
+  throw new Error(nomFonction + " : couleur inconnue |" + v + "|. Noms : " + Object.keys(ZONE_COULEURS).join(", ") + ", ou #rrggbb");
+}
+// Comme zoneCouleur, mais accepte aussi |transparent| (renvoie alors null) : fond de la zone / du cadre.
+function zoneCouleurOuTransparent(v, nomFonction) {
+  if (typeof v === "string" && v.trim().toLowerCase() === "transparent") return null;
+  try { return zoneCouleur(v, nomFonction); }
+  catch (e) { if (typeof v === "string") throw new Error(e.message.replace(", ou #rrggbb", ", transparent, ou #rrggbb")); throw e; }
+}
+function zoneNombre(v, nomFonction, nomArg) {
+  if (typeof v !== "number" || !isFinite(v)) throw new Error(nomFonction + " : " + nomArg + " doit etre un nombre");
+  return v;
+}
+function zoneRendre() {
+  let canvas = document.getElementById("zoneDessin");
+  if (!canvas || !zoneEtat) return;
+  let cw = canvas.clientWidth, ch = canvas.clientHeight;
+  if (cw <= 0 || ch <= 0) return;
+  let dpr = Math.min(window.devicePixelRatio || 1, 2); // plafonne : economise la memoire (2 Go de RAM)
+  if (canvas.width !== Math.round(cw * dpr) || canvas.height !== Math.round(ch * dpr)) {
+    canvas.width = Math.round(cw * dpr); canvas.height = Math.round(ch * dpr);
+  }
+  let ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cw, ch);
+  if (zoneEtat.fondCadre) { ctx.fillStyle = zoneEtat.fondCadre; ctx.fillRect(0, 0, cw, ch); }
+  let sc = Math.min(cw / zoneEtat.l, ch / zoneEtat.h);
+  let ox = (cw - zoneEtat.l * sc) / 2, oy = (ch - zoneEtat.h * sc) / 2;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(ox, oy, zoneEtat.l * sc, zoneEtat.h * sc); ctx.clip();
+  if (zoneEtat.fond) { ctx.fillStyle = zoneEtat.fond; ctx.fillRect(ox, oy, zoneEtat.l * sc, zoneEtat.h * sc); }
+  ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.textBaseline = "top";
+  for (let c of zoneEtat.vue) {
+    if (c.t === "r") { ctx.fillStyle = c.c; ctx.fillRect(ox + c.x * sc, oy + c.y * sc, c.w * sc, c.h * sc); }
+    else if (c.t === "c") { ctx.fillStyle = c.c; ctx.beginPath(); ctx.arc(ox + c.x * sc, oy + c.y * sc, Math.max(0, c.r) * sc, 0, Math.PI * 2); ctx.fill(); }
+    else if (c.t === "l") { ctx.strokeStyle = c.c; ctx.lineWidth = Math.max(1, c.e * sc); ctx.beginPath(); ctx.moveTo(ox + c.x * sc, oy + c.y * sc); ctx.lineTo(ox + c.x2 * sc, oy + c.y2 * sc); ctx.stroke(); }
+    else if (c.t === "t") { ctx.fillStyle = c.c; ctx.font = "bold " + Math.max(1, c.s * sc) + "px monospace"; ctx.fillText(c.m, ox + c.x * sc, oy + c.y * sc); }
+    else if (c.t === "p") {
+      ctx.fillStyle = c.c; ctx.beginPath();
+      ctx.moveTo(ox + c.pts[0] * sc, oy + c.pts[1] * sc);
+      for (let i = 2; i < c.pts.length; i += 2) ctx.lineTo(ox + c.pts[i] * sc, oy + c.pts[i + 1] * sc);
+      ctx.closePath(); ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+// Cadre de la zone, en % de l'espace libre (entre l'en-tete de la console et les boutons).
+function appliquerCadreZone(x, y, l, h) {
+  let boite = document.getElementById("boiteZoneDessin");
+  if (!boite) return;
+  boite.style.left = x + "%"; boite.style.top = y + "%";
+  boite.style.width = l + "%"; boite.style.height = h + "%";
+}
+// ----- doigt : evenements tactiles sur la zone, dans les coordonnees de la zone -----
+// Une file separee de celle de touche()/bouton() : [x, y, etat] avec etat "appui" | "bouge" | "fin".
+let fileDoigts = [];
+let doigtIdActif = null; // pointeur dont le geste (appui ... fin) est en cours
+const FILE_DOIGTS_MAX = 64;
+function empilerDoigt(x, y, etat) {
+  let der = fileDoigts.length ? fileDoigts[fileDoigts.length - 1] : null;
+  if (etat === "bouge" && der && der[2] === "bouge") { fileDoigts[fileDoigts.length - 1] = [x, y, etat]; return; } // fusionne les deplacements
+  fileDoigts.push([x, y, etat]);
+  if (fileDoigts.length > FILE_DOIGTS_MAX) fileDoigts.shift();
+}
+function effacerZone() {
+  fileDoigts.length = 0; doigtIdActif = null;
+  zoneEtat = null;
+  appliquerCadreZone(0, 0, 100, 100);
+  document.body.classList.remove("avecZone");
+  let canvas = document.getElementById("zoneDessin");
+  if (canvas) { canvas.width = 1; canvas.height = 1; } // libere la memoire du bitmap
+}
+// Fin de script : si la zone a ete montree, la derniere image reste a l'ecran (toucher la zone ou
+// "Retour" la ferme). Si des formes ont ete dessinees mais zone.montre() n'a JAMAIS ete appele, on le dit.
+function terminerZone() {
+  if (!zoneEtat) return;
+  if (!zoneEtat.montreeUneFois) {
+    let avertir = zoneEtat.cmds.length > 0;
+    effacerZone();
+    if (avertir) print("Attention : des formes ont ete dessinees dans la zone mais zone.montre() n'a jamais ete appele : rien n'a ete affiche.", "erreur");
+  }
+}
+(function () {
+  let boite = document.getElementById("boiteZoneDessin");
+  if (window.ResizeObserver && boite) new ResizeObserver(() => zoneRendre()).observe(boite);
+  let canvas = document.getElementById("zoneDessin");
+  let geste_pendant_script = false;
+  function posDoigt(ev) {
+    let r = canvas.getBoundingClientRect();
+    let sc = Math.min(r.width / zoneEtat.l, r.height / zoneEtat.h);
+    let ox = (r.width - zoneEtat.l * sc) / 2, oy = (r.height - zoneEtat.h * sc) / 2;
+    return { x: Math.round(((ev.clientX - r.left - ox) / sc) * 100) / 100, y: Math.round(((ev.clientY - r.top - oy) / sc) * 100) / 100 };
+  }
+  if (canvas) {
+    canvas.addEventListener("pointerdown", (ev) => {
+      geste_pendant_script = executionEnCours; // un geste commence pendant le script : son "click" final ne fermera pas la zone
+      if (!executionEnCours || !zoneEtat || doigtIdActif !== null) return;
+      let p = posDoigt(ev);
+      if (p.x < 0 || p.y < 0 || p.x > zoneEtat.l || p.y > zoneEtat.h) return; // dans les bandes noires : ignore
+      doigtIdActif = ev.pointerId;
+      try { canvas.setPointerCapture(ev.pointerId); } catch (e) {}
+      empilerDoigt(p.x, p.y, "appui");
+      ev.preventDefault();
+    });
+    canvas.addEventListener("pointermove", (ev) => {
+      if (ev.pointerId !== doigtIdActif || !zoneEtat) return;
+      let p = posDoigt(ev); empilerDoigt(p.x, p.y, "bouge");
+    });
+    const finDoigt = (ev) => {
+      if (ev.pointerId !== doigtIdActif) return;
+      doigtIdActif = null;
+      if (!zoneEtat) return;
+      let p = posDoigt(ev); empilerDoigt(p.x, p.y, "fin");
+    };
+    canvas.addEventListener("pointerup", finDoigt);
+    canvas.addEventListener("pointercancel", finDoigt);
+  }
+  if (canvas) canvas.addEventListener("click", () => {
+    // Doigt encore pose quand le script s'est termine : le relacher ne ferme pas la zone (sinon on ne verrait jamais la derniere image).
+    if (geste_pendant_script) { geste_pendant_script = false; return; }
+    if (!executionEnCours) { effacerZone(); focaliserSaisieConsole(); }
+  });
+})();
+
+function verifierToucheDisponible(nomFonction) {
+  if (window.MonLangageServiceNative) {
+    throw new Error(nomFonction + " est indisponible en arriere-plan (aucune console ni aucun clavier) : lance ce script avec RUN au lieu de FOND");
+  }
+  // Ce script pilote lui-meme l'ecran (touche/bouton) : c'est un "jeu". Le badge "Execution en
+  // cours" est coupe pour toute la duree du script (jusqu'a reinitialiserTouches), meme quand les
+  // boutons sont momentanement effaces/recrees -- sinon il surgit et fait sauter l'interface.
+  document.body.classList.add("scriptJeu");
+}
+
+// Levee par l'instruction quitte : arret VOLONTAIRE et propre de tout le script (comme
+// sys.exit() en Python), de n'importe quelle profondeur (boucles imbriquees, fonctions,
+// modules). Sous-classe de ExecutionInterrompue pour traverser sans etre interceptee tout
+// ce qui laisse deja passer un arret (essai/attrape, imports...), mais le niveau superieur
+// la traite comme une fin NORMALE du script (pas d'erreur, pas de "EXECUTION ARRETEE").
+class QuitteScript extends ExecutionInterrompue {
+  constructor() { super(); this.message = "quitte"; }
 }
 
 // ===================== Hierarchie d'erreurs du langage (systeme de codes) =====================
@@ -5195,22 +5593,125 @@ let aideCommandes = [
       "1) pou(var, debut, fin, pas) : var prend d'abord la valeur debut, puis debut+pas, et ainsi de suite jusqu'a fin (fin incluse). pas est facultatif : vaut 1 par defaut, et peut etre negatif (pour compter a l'envers).",
       "debut, fin et pas peuvent etre des expressions complexes (avec des parentheses, ^, des appels de fonction, etc.), separees par des virgules.",
       "2) pou(var dan objet) : var prend tour a tour chaque valeur de objet, qui doit etre un vecteur ou une liste() (chaque element de la liste, pas ses indices).",
-      "stop permet d'arreter la boucle avant la fin (voir aide(stop))."
+      "casse permet d'arreter la boucle avant la fin (voir aide(casse))."
     ], exemple: "pou(i, 1, 5){ affi(i) }   ->   affiche 1 2 3 4 5\npou(i, 10, 1, -1){ affi(i) }   ->   compte a l'envers de 10 a 1\npou(x dan c(3,7,9)){ affi(x) }   ->   affiche 3 7 9" },
-  { noms: ["stop"], categorie: "Controle", syntaxe: "stop", description: [
-      "Arrete immediatement la boucle (pou ou tanqer) en cours, et continue l'execution juste apres cette boucle.",
-      "Utilisable a l'interieur d'un pou(...){...} ou d'un tanqer(...){...}, y compris a l'interieur d'un si(...) place dans la boucle."
-    ], exemple: "pou(i, 1, 10){\n  si(i==4){ stop }\n  affi(i)\n}   ->   affiche 1 2 3" },
+  { noms: ["casse"], categorie: "Controle", syntaxe: "casse", description: [
+      "Arrete immediatement la boucle (pou ou tanqer) en cours, et continue l'execution juste apres cette boucle (comme break en Python).",
+      "Ne sort que de la boucle la plus interne : pour sortir de plusieurs boucles imbriquees d'un coup, utilise quitte.",
+      "Utilisable a l'interieur d'un pou(...){...} ou d'un tanqer(...){...}, y compris a l'interieur d'un si(...) place dans la boucle.",
+      "casse remplace l'ancien nom stop : ecrire stop donne une erreur qui indique le nouveau nom."
+    ], exemple: "pou(i, 1, 10){\n  si(i==4){ casse }\n  affi(i)\n}   ->   affiche 1 2 3" },
+  { noms: ["quitte"], categorie: "Controle", syntaxe: "quitte", description: [
+      "Termine immediatement TOUT le script, de n'importe quelle profondeur : boucles imbriquees, fonctions, modules importes (comme sys.exit() en Python).",
+      "Fin normale : aucune erreur n'est affichee, et un bloc essai{...} ne l'intercepte pas.",
+      "Contrairement a casse (qui ne sort que de la boucle la plus interne), quitte n'execute plus aucune ligne apres lui.",
+      "Utilisable partout, y compris hors d'une boucle. quitte() est accepte aussi."
+    ], exemple: "pou(i, 1, 3){\n  pou(j, 1, 3){\n    si(i*j==4){ quitte }\n    affi(i, j)\n  }\n}   ->   s'arrete des que i*j vaut 4" },
+  { noms: ["touche"], categorie: "Console", syntaxe: "touche()", description: [
+      "Lit une touche du clavier SANS ATTENDRE (contrairement a entr(), qui bloque jusqu'a la saisie) : renvoie tout de suite la plus ancienne touche pressee depuis le dernier appel, ou un texte vide || s'il n'y en a aucune.",
+      "La touche est renvoyee TELLE QUE LE CLAVIER L'ANNONCE, le langage ne la traduit pas : a, z, 1 (avec Maj : A, Z), ArrowUp, ArrowDown, ArrowLeft, ArrowRight (fleches), Enter, Escape, Backspace, Tab, et un espace (| |) pour la barre d'espace. Pour ignorer Maj, ecris k.miniscul() (ou touche().miniscul()) : c'est une methode de texte, comme .majuscul() et .suprespac(). Un bouton cree avec bouton(...) renvoie la valeur que tu as choisie.",
+      "Commande autonome, comme entr() : aucun bouton ni champ n'est affiche. Le premier appel ouvre le clavier du telephone (comme entr()) et active la lecture du clavier physique, sans jamais bloquer le script. Si le clavier est ferme, toucher la console le rouvre ; il se ferme a la fin du script. Pour des touches visibles, construis-les toi-meme avec bouton(...).",
+      "Les touches pressees entre deux appels sont gardees dans l'ordre (les 64 dernieres) : touche() les rend une par une. Mets un attendre(...) dans ta boucle de jeu pour fixer la vitesse.",
+      "Indisponible en arriere-plan (bouton FOND) : lance le script avec RUN."
+    ], exemple: "x ~ 5\ntanqer VRAI{\n  k ~ touche()\n  si(k == |q| ou k == |ArrowLeft|){ x ~ x-1 }\n  si(k == |d| ou k == |ArrowRight|){ x ~ x+1 }\n  si(k == |Escape|){ quitte }\n  effa()\n  affi(|x =|, x)\n  attendre(0.1)\n}" },
+  { noms: ["bouton"], categorie: "Console", syntaxe: "bouton(libelle, valeur, colonne, ligne [, largeur, hauteur] [, couleur])", description: [
+      "Affiche un bouton sous la console, que TON script construit : rien n'apparait si tu n'appelles pas bouton(...). Quand on le touche, la valeur (texte ou nombre, non vide) que tu as choisie est ajoutee a la file lue par touche() : le bouton se comporte comme une touche du clavier, avec le nom que tu lui donnes.",
+      "libelle : le texte affiche (20 caracteres au maximum). colonne et ligne : sa place dans une grille (1 = premiere ; 12 colonnes et 8 lignes au maximum). largeur et hauteur (facultatives, 1 par defaut) : sa taille en cases.",
+      "couleur (facultative, toujours en DERNIER argument) : la couleur de fond du bouton, un nom (rouge, vert, bleu, jaune, orange, violet, rose, cyan, blanc, noir, gris, marron) ou |#rrggbb|. Le texte passe tout seul en sombre ou en clair pour rester lisible. Exemples : bouton(|OK|, |ok|, 1, 1, |vert|) (5 arguments) ou bouton(|OK|, |ok|, 1, 1, 2, 1, |vert|) (7 arguments, avec largeur et hauteur).",
+      "Rappeler bouton(...) sur la meme case la remplace (tu peux changer son libelle ou sa valeur). 40 boutons au maximum. Les boutons ne sont pas effaces par effa() et disparaissent a la fin du script, ou avec bouton.efface().",
+      "Indisponible en arriere-plan (bouton FOND) : lance le script avec RUN."
+    ], exemple: "bouton(|▲|, |z|, 2, 1)\nbouton(|◀|, |q|, 1, 2)\nbouton(|▼|, |s|, 2, 2)\nbouton(|▶|, |d|, 3, 2)\nbouton(|quitter|, |Escape|, 5, 1, 2, 2)\ntanqer VRAI{\n  k ~ touche()\n  si(k == |Escape|){ quitte }\n  si(k != ||){ affi(k) }\n  attendre(0.05)\n}" },
+  { noms: ["clavier"], categorie: "Console", syntaxe: "clavier(VRAI/FAUX)", description: ["VRAI force l'ouverture du clavier virtuel ; FAUX empeche son ouverture automatique."], exemple: "clavier(FAUX)" },
+  { noms: ["clavier.auto"], categorie: "Console", syntaxe: "clavier.auto()", description: ["Restaure le mode automatique : clavier ouvert s'il n'y a pas de boutons personnalises, ferme sinon."], exemple: "clavier.auto()" },
+  { noms: ["bouton.position"], categorie: "Console", syntaxe: "bouton.position(libelle,valeur,colonne,ligne [,couleur])", description: ["Place un bouton dans la grille de la console (colonne et ligne de 1 a 3). Les appels consecutifs se regroupent.", "couleur (facultative, en dernier) : la couleur de fond du bouton, comme pour bouton(...)."], exemple: "bouton.position(|OK|,|ok|,2,2)" },
+  { noms: ["bouton.centre", "bouton.gauche", "bouton.droite", "bouton.bas"], categorie: "Console", syntaxe: "bouton.centre(libelle,valeur [,couleur]) / bouton.gauche(...) / bouton.droite(...) / bouton.bas(...)", description: ["Ajoutent un bouton dans une grille compacte partagee par les appels consecutifs : centre en haut, gauche et droite au milieu, bas au centre.", "couleur (facultative, en dernier) : la couleur de fond du bouton, comme pour bouton(...). Exemple : bouton.centre(|HAUT|,|haut|,|vert|)."], exemple: "bouton.centre(|HAUT|,|haut|)\nbouton.gauche(|GAUCHE|,|gauche|)\nbouton.droite(|DROITE|,|droite|)\nbouton.bas(|BAS|,|bas|)" },
+  { noms: ["bouton.efface"], categorie: "Console", syntaxe: "bouton.efface()", description: [
+      "Retire tous les boutons affiches par bouton(...). Sans effet s'il n'y en a pas. Ne prend aucun argument.",
+      "Les boutons disparaissent aussi tout seuls a la fin du script."
+    ], exemple: "bouton(|OK|, |ok|, 1, 1)\nattendre(2)\nbouton.efface()" },
+  { noms: ["son"], categorie: "Console", syntaxe: "son(effet)   ou   son(effet, volume)", description: [
+      "Joue un effet sonore integre et renvoie son numero (a garder dans une variable si tu veux le couper avec son.arrete(numero)). Ne bloque jamais le script : il continue tout de suite, et plusieurs sons peuvent se jouer en meme temps.",
+      "effet : bip, clic, pop, piece, saut, tir, explosion, perdu ou gagne (sons fabriques par le code, sans fichier). volume (facultatif) : de 0 a 1, 1 par defaut.",
+      "Pour le JEU : le son suit le volume media du telephone et peut etre coupe par lui (mode silencieux). Il s'arrete avec le script. 16 sons a la fois au maximum (le plus ancien est coupe). Indisponible en arriere-plan (FOND). Pour une alerte fiable meme en silencieux, utilise alerte.son."
+    ], exemple: "son(|piece|)\nson(|explosion|, 0.5)\ns ~ son(|gagne|)\nson.arrete(s)" },
+  { noms: ["note"], categorie: "Console", syntaxe: "note(frequence, duree)   ou   note(frequence, duree, volume)   ou   note(frequence, duree, volume, forme)", description: [
+      "Joue une note et renvoie son numero. Ne bloque pas : pour une melodie, mets des attendre(...) entre les notes.",
+      "frequence : un nombre en Hz (de 20 a 20000, par exemple 440) ou un nom de note en solfege avec l'octave : |do4|, |la4|, |do#3|, |solb5| (octave 4 si omise : |re|). duree : de 0.01 a 10 secondes. volume : de 0 a 1 (1 par defaut). forme : |sinus| (par defaut), |carree| (son retro), |triangle| ou |dent|.",
+      "Les arguments facultatifs se donnent dans l'ordre : pour choisir la forme, donne aussi le volume. Memes regles que son() : volume media, arret avec le script, 16 sons a la fois, RUN seulement."
+    ], exemple: "note(|do4|, 0.2)\nattendre(0.2)\nnote(|mi4|, 0.2)\nattendre(0.2)\nnote(|sol4|, 0.4, 0.5, |carree|)\nattendre(0.4)" },
+  { noms: ["son.arrete"], categorie: "Console", syntaxe: "son.arrete()   ou   son.arrete(numero)", description: [
+      "Sans argument, coupe tous les sons du jeu. Avec un numero (renvoye par son() ou note()), coupe seulement ce son. Un numero inconnu ou deja termine est ignore sans erreur. Les sons s'arretent de toute facon a la fin du script."
+    ], exemple: "s ~ note(300, 10)\nattendre(1)\nson.arrete(s)" },
+  { noms: ["vibre"], categorie: "Console", syntaxe: "vibre(ms)   ou   vibre(liste(pause, vibre, pause, ...))", description: [
+      "Fait vibrer le telephone pendant ms millisecondes (0 a 5000), ou selon un motif : une liste de durees qui alternent pause, vibration, pause... (20 valeurs au maximum). vibre(0) arrete la vibration. Ne bloque pas le script.",
+      "Pour le JEU : elle suit les reglages du telephone et s'arrete avec le script. Certains appareils n'ont pas de vibreur : l'appel est alors simplement ignore. Indisponible en arriere-plan (FOND). Pour une alerte fiable meme en silencieux, utilise alerte.vibre."
+    ], exemple: "vibre(80)\nvibre(liste(0, 200, 100, 200))" },
+  { noms: ["couleur"], categorie: "Console", syntaxe: "couleur(nom)   ou   couleur()", description: [
+      "Change la couleur du texte des prochains affi(...), jusqu'au prochain couleur(...). nom : rouge, vert, bleu, jaune, orange, violet, rose, cyan, blanc, noir, gris, marron, ou |#rrggbb| (les memes que dans la zone de dessin).",
+      "couleur() sans argument revient a la couleur normale. effa() ne la change pas, et elle est remise a zero au debut et a la fin de chaque script. Ne change que le texte affiche apres l'appel : ce qui est deja a l'ecran garde sa couleur."
+    ], exemple: "couleur(|vert|)\naffi(|Bravo !|)\ncouleur(|#ff8800|)\naffi(|Attention|)\ncouleur()\naffi(|Texte normal|)" },
+  { noms: ["zone"], categorie: "Console", syntaxe: "zone(largeur, hauteur)   ou   zone(largeur, hauteur, couleur)", description: [
+      "Cree une zone de dessin, posee par-dessus l'affichage texte de la console. Sans zone.cadre(...), elle couvre tout l'espace libre (entre l'en-tete et les boutons) ; avec, elle n'en occupe qu'une partie et les affi(...) restent visibles autour. largeur et hauteur sont des unites a toi (pas des pixels) : la zone est etiree pour remplir l'ecran en gardant ses proportions, donc ton jeu a les memes proportions sur tous les telephones. Le point (0, 0) est en haut a gauche et y augmente vers le bas.",
+      "couleur (facultative) : le fond de la zone, un nom, |#rrggbb| ou |transparent| (le texte de la console se voit alors a travers). Noir par defaut. C'est le fond du rectangle de dessin lui-meme ; les bandes autour, quand les proportions different de celles du cadre, se colorent avec zone.cadre(..., couleur).",
+      "Rappeler zone(...) recree la zone. Les formes se dessinent avec zone.rectangle, zone.cercle, zone.ligne, zone.texte et zone.polygone, mais RIEN n'apparait tant que tu n'appelles pas zone.montre().",
+      "A la fin du script, la derniere image montree reste affichee : touche la zone ou ← Retour pour revenir. Indisponible en arriere-plan (bouton FOND) : lance le script avec RUN."
+    ], exemple: "zone(100, 160)\nzone.rectangle(10, 20, 30, 15, |vert|)\nzone.montre()" },
+  { noms: ["zone.cadre"], categorie: "Console", syntaxe: "zone.cadre(x, y, largeur, hauteur)   ou   zone.cadre(x, y, largeur, hauteur, couleur)", description: [
+      "Place la zone dans l'espace libre de la console (entre l'en-tete et les boutons), en pourcentages de 0 a 100 : x et y sont le coin haut-gauche du cadre, largeur et hauteur sa taille. x+largeur et y+hauteur ne peuvent pas depasser 100. Par defaut, la zone est plein cadre : zone.cadre(0, 0, 100, 100).",
+      "La zone garde ses proportions a l'interieur du cadre (bandes noires si elles different). Le texte de affi(...) reste visible autour du cadre, et la zone se pose par-dessus ce qu'elle recouvre. Tu peux rappeler zone.cadre(...) pour deplacer ou agrandir la zone en cours de script.",
+      "couleur (facultative) : la couleur de fond du cadre, c'est-a-dire des bandes autour de la zone, un nom, |#rrggbb| ou |transparent| (le texte de la console reste alors visible dans les bandes). Sans couleur, la couleur actuelle du cadre est conservee (noir bleute par defaut)."
+    ], exemple: "zone(100, 100)\nzone.cadre(25, 50, 50, 50)\naffi(|Score : 12|)\nzone.cercle(50, 50, 30, |rouge|)\nzone.montre()" },
+  { noms: ["zone.efface"], categorie: "Console", syntaxe: "zone.efface()", description: [
+      "Vide la liste des formes en cours de dessin. L'ecran ne change PAS : l'ancienne image reste visible jusqu'au prochain zone.montre(). Appelle-la au debut de chaque image d'un jeu."
+    ], exemple: "zone(100, 160)\nzone.efface()\nzone.cercle(50, 80, 10, |rouge|)\nzone.montre()" },
+  { noms: ["zone.montre"], categorie: "Console", syntaxe: "zone.montre()", description: [
+      "Affiche d'un coup toutes les formes dessinees depuis le dernier zone.efface(). L'ecran passe directement de l'ancienne image complete a la nouvelle, sans etat intermediaire : c'est ce qui evite le clignotement. Si tu oublies de l'appeler, l'ecran ne change pas.",
+      "Cede aussi la main au navigateur pour que l'image soit vraiment peinte, meme dans une boucle sans attendre()."
+    ], exemple: "zone(100, 160)\ny ~ 0\ntanqer(y < 150){\n  zone.efface()\n  zone.rectangle(45, y, 10, 10, |vert|)\n  zone.montre()\n  y ~ y+2\n  attendre(0.03)\n}" },
+  { noms: ["zone.rectangle"], categorie: "Console", syntaxe: "zone.rectangle(x, y, largeur, hauteur, couleur)", description: [
+      "Dessine un rectangle plein dont le coin haut-gauche est en (x, y). couleur : un nom (rouge, vert, bleu, jaune, orange, violet, rose, cyan, blanc, noir, gris, marron) ou |#rrggbb|."
+    ], exemple: "zone(100, 160)\nzone.rectangle(10, 20, 30, 15, |vert|)\nzone.montre()" },
+  { noms: ["zone.cercle"], categorie: "Console", syntaxe: "zone.cercle(x, y, rayon, couleur)", description: [
+      "Dessine un disque plein de centre (x, y). couleur : un nom ou |#rrggbb|."
+    ], exemple: "zone(100, 160)\nzone.cercle(50, 80, 10, |rouge|)\nzone.montre()" },
+  { noms: ["zone.ligne"], categorie: "Console", syntaxe: "zone.ligne(x1, y1, x2, y2, couleur)   ou   zone.ligne(x1, y1, x2, y2, couleur, epaisseur)", description: [
+      "Trace un segment de (x1, y1) a (x2, y2). couleur : un nom ou |#rrggbb|.",
+      "epaisseur (facultative) : l'epaisseur en unites de la zone, par exemple 0.5 pour un trait fin ou 3 pour un trait epais. Par defaut 1 unite. Le trait fait toujours au moins 1 pixel a l'ecran."
+    ], exemple: "zone(100, 160)\nzone.ligne(10, 10, 90, 10, |blanc|)\nzone.ligne(10, 20, 90, 20, |blanc|, 0.4)\nzone.ligne(10, 30, 90, 30, |blanc|, 4)\nzone.montre()" },
+  { noms: ["zone.texte"], categorie: "Console", syntaxe: "zone.texte(x, y, message, taille, couleur)", description: [
+      "Ecrit un message (texte ou nombre, 200 caracteres au maximum) dont le coin haut-gauche est en (x, y). taille : hauteur des lettres en unites de la zone. couleur : un nom ou |#rrggbb|."
+    ], exemple: "zone(100, 160)\nzone.texte(5, 5, |Score 3|, 8, |jaune|)\nzone.montre()" },
+  { noms: ["zone.polygone"], categorie: "Console", syntaxe: "zone.polygone(liste(x1,y1, x2,y2, x3,y3, ...), couleur)", description: [
+      "Dessine une forme pleine a partir d'une liste de coordonnees a la suite (x1, y1, x2, y2, ...). La forme est refermee automatiquement ; il faut au moins 3 points (6 nombres, en nombre pair)."
+    ], exemple: "zone(100, 160)\nzone.polygone(liste(50,20, 80,100, 20,100), |bleu|)\nzone.montre()" },
+  { noms: ["touche.dispo"], categorie: "Console", syntaxe: "touche.dispo()", description: [
+      "Renvoie VRAI si au moins une touche attend d'etre lue par touche(), FAUX sinon. Ne consomme aucune touche et n'attend pas.",
+      "Utile pour ne lire une touche que quand il y en a une, ou pour attendre une pression : tanqer(non touche.dispo()){ attendre(0.05) }.",
+      "Comme touche(), commande autonome (aucune interface affichee) et indisponible en arriere-plan (FOND)."
+    ], exemple: "affi(|Appuie sur une touche|)\ntanqer(non touche.dispo()){ attendre(0.05) }\naffi(|Tu as appuye sur|, touche())" },
+  { noms: ["rythme"], categorie: "Controle", syntaxe: "rythme(secondes){ ... }", description: [
+      "Repete le bloc a cadence reguliere : un tour toutes les `secondes`. Le temps passe dans le bloc est deduit de l'attente, donc le rythme reste regulier meme si ton code prend du temps, alors que tanqer(VRAI){ ... attendre(0.04) } ralentit des qu'un tour est long. La duree doit etre d'au moins 0.001.",
+      "Si un tour dure plus que la duree, il n'y a pas de rattrapage en rafale : le tour suivant demarre tout de suite et la cadence repart de la.",
+      "Boucle infinie : sors avec casse (quitte la boucle) ou quitte (arrete le script). continu saute la fin du tour mais garde la cadence. rythme n'affiche rien tout seul : appelle zone.montre() toi-meme dans le bloc."
+    ], exemple: "zone(100, 160)\ny~0\nrythme(0.05){\n  zone.efface()\n  zone.rectangle(45, y, 10, 10, |vert|)\n  zone.montre()\n  y~y+2\n  si(y>150){ casse }\n}" },
+  { noms: ["doigt.dispo"], categorie: "Console", syntaxe: "doigt.dispo()", description: [
+      "Renvoie VRAI si au moins un evenement du doigt attend d'etre lu par doigt(), FAUX sinon. Ne consomme rien et n'attend pas. Il faut avoir cree une zone avec zone(...). Indisponible en arriere-plan (FOND)."
+    ], exemple: "zone(100, 100)\nzone.montre()\ntanqer(non doigt.dispo()){ attendre(0.05) }\naffi(|Tu as touche la zone|)" },
+  { noms: ["doigt"], categorie: "Console", syntaxe: "doigt()", description: [
+      "Lit l'evenement tactile le plus ancien sur la zone : liste(x, y, etat). x et y sont dans les coordonnees de la zone (0,0 en haut a gauche), etat vaut |appui| (le doigt se pose), |bouge| (il glisse) ou |fin| (il se leve). Sans evenement, renvoie une liste vide : teste avec doigt.dispo().",
+      "Un appui dans les bandes noires autour de la zone est ignore, mais un glissement qui sort de la zone continue d'etre suivi (x et y peuvent alors depasser la zone). Les deplacements successifs sont fusionnes : tu lis la position la plus recente. Un seul doigt est suivi a la fois.",
+      "Separe de touche() et des boutons : les deux files ne se melangent pas. Un balayage se calcule en comparant l'|appui| et la |fin|."
+    ], exemple: "zone(100, 160)\nzone.montre()\ntanqer(VRAI){\n  si(doigt.dispo()){\n    d ~ doigt()\n    affi(d)\n  }\n  attendre(0.02)\n}" },
   { noms: ["continu"], categorie: "Controle", syntaxe: "continu", description: [
       "Interrompt uniquement le tour en cours de la boucle (pou ou tanqer), et passe directement au tour suivant : le reste du bloc est saute pour ce tour, mais la boucle continue.",
-      "Contrairement a stop, ca ne quitte pas la boucle.",
+      "Contrairement a casse, ca ne quitte pas la boucle.",
       "Utilisable a l'interieur d'un pou(...){...} ou d'un tanqer(...){...}, y compris a l'interieur d'un si(...) place dans la boucle."
     ], exemple: "pou(i, 1, 5){\n  si(i==3){ continu }\n  affi(i)\n}   ->   affiche 1 2 4 5" },
   { noms: ["tanqer"], categorie: "Controle", syntaxe: "tanqer(condition){ ... }  /  tanqer VRAI{ ... }", description: [
       "Repete le bloc tant que la condition reste vraie.",
-      "S'arrete des que la condition devient fausse (ou plus tot si stop est rencontre).",
+      "S'arrete des que la condition devient fausse (ou plus tot si casse est rencontre).",
       "tanqer VRAI{...} (ou tanqer V{...}) : raccourci sans parentheses pour une boucle infinie, comme while True en Python. Pas besoin d'ecrire une condition bidon toujours vraie."
-    ], exemple: "x ~ 0\ntanqer(x<5){ x ~ x+1 }\n\ni ~ 0\ntanqer VRAI{\n  i ~ i+1\n  si(i>=3){ stop }\n}" },
+    ], exemple: "x ~ 0\ntanqer(x<5){ x ~ x+1 }\n\ni ~ 0\ntanqer VRAI{\n  i ~ i+1\n  si(i>=3){ casse }\n}" },
   { noms: ["si"], categorie: "Controle", syntaxe: "si(condition){ ... }", description: [
       "Execute le bloc uniquement si la condition est vraie. Fonctionne comme if() en R.",
       "Peut etre suivi de sinon si(...){...} et/ou d'un sinon final (tous optionnels)."
@@ -5654,7 +6155,7 @@ let aideCommandes = [
       "une boucle (tanqer/attendre) si tu veux reagir a un changement de connexion.",
       "type.connexion() : \"wifi\", \"mobile\", \"ethernet\", \"autre\" ou \"aucune\".",
       "Necessite l'app native, aucune permission a accorder."
-    ], exemple: "tanqer VRAI{\n    si(connexion.disponible()){\n        affi(|Connecte en |, type.connexion())\n        stop\n    }\n    attendre(5)\n}" },
+    ], exemple: "tanqer VRAI{\n    si(connexion.disponible()){\n        affi(|Connecte en |, type.connexion())\n        casse\n    }\n    attendre(5)\n}" },
 
   { noms: ["niveau.batterie", "batterie.encharge"], categorie: "Controle", syntaxe: "niveau.batterie()  /  batterie.encharge()", description: [
       "niveau.batterie() : pourcentage de batterie restant, de 0 a 100.",
@@ -5683,7 +6184,7 @@ let aideCommandes = [
       "automatiquement si besoin (a accorder puis relancer le script). Android peut",
       "demander une confirmation supplementaire si trop de SMS partent d'un coup vers trop",
       "de destinataires differents en peu de temps (protection systeme anti-spam)."
-    ], exemple: "pou(msg dan sms.recus(60)){\n    si(msg[1] == |stop|){\n        envoyer.sms(msg[0], |Bien recu, arret confirme.|)\n    }\n}" },
+    ], exemple: "pou(msg dan sms.recus(60)){\n    si(msg[2] == |stop|){\n        envoyer.sms(msg[1], |Bien recu, arret confirme.|)\n    }\n}" },
 
   { noms: ["ouvrir.whatsapp", "messenger.ouvrir"], categorie: "Controle", syntaxe: "ouvrir.whatsapp()  /  ouvrir.whatsapp(numero, message)  /  messenger.ouvrir(destinataire, message)", description: [
       "ouvrir.whatsapp() ouvre simplement WhatsApp. ouvrir.whatsapp(numero, message) ouvre la conversation avec le numero et pre-remplit le message. messenger.ouvrir(destinataire, message) ouvre Messenger avec le texte pre-rempli.",
@@ -7702,6 +8203,345 @@ function enregistrerFonctionsBase() {
 
     // effa() : efface toute la console (comme l'ancien bouton "Effacer Console").
     // effa(a, e, ...) : supprime ces variables de la memoire (sans toucher a l'affichage).
+    // touche() : lecture NON bloquante du clavier. Renvoie la plus ancienne touche pressee depuis le
+    // dernier appel ("haut", "bas", "gauche", "droite", "espace", "entree", "echap", ou la lettre/le
+    // chiffre tape en minuscule), ou un texte vide s'il n'y en a pas : le script n'attend jamais.
+    // Aucune interface n'est affichee. Le premier appel active la capture du clavier.
+    fonctionsBase["touche"] = fonctionsExpression["touche"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("touche() ne prend aucun argument");
+        verifierToucheDisponible("touche()");
+        activerSaisieTouche();
+        // File vide : on cede la main une fois au navigateur pour qu'une frappe deja arrivee soit
+        // prise en compte, meme dans une boucle d'attente active sans attendre().
+        if (fileTouches.length === 0) await respirer(true);
+        return fileTouches.length > 0 ? fileTouches.shift() : "";
+    };
+    // touche.dispo() : VRAI si au moins une touche attend d'etre lue par touche(), FAUX sinon.
+    // Ne consomme rien et n'attend pas.
+    fonctionsBase["touche.dispo"] = fonctionsExpression["touche.dispo"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("touche.dispo() ne prend aucun argument");
+        verifierToucheDisponible("touche.dispo()");
+        activerSaisieTouche();
+        if (fileTouches.length === 0) await respirer(true);
+        return fileTouches.length > 0;
+    };
+
+    // clavier(VRAI/FAUX) et clavier.auto() controlent l'ouverture du clavier virtuel.
+    fonctionsBase["clavier"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("clavier(VRAI) ou clavier(FAUX) attend un argument");
+        let v = await evalExpr(args[0], ctxExpr);
+        if (v !== true && v !== false) throw new Error("clavier(...) attend VRAI ou FAUX");
+        politiqueClavier = v ? "vrai" : "faux";
+        appliquerPolitiqueClavier();
+        return undefined;
+    };
+    fonctionsBase["clavier.auto"] = async function(args) {
+        if (args.length !== 0) throw new Error("clavier.auto() ne prend aucun argument");
+        politiqueClavier = "auto";
+        appliquerPolitiqueClavier();
+        return undefined;
+    };
+
+    // bouton(libelle, valeur, colonne, ligne [, largeur, hauteur]) : grille sous la console.
+
+    // Quand on le touche, la VALEUR (choisie par le script) est ajoutee a la file lue par touche().
+    // colonne/ligne placent le bouton dans une grille (1 = premiere) ; largeur/hauteur (en cases,
+    // 1 par defaut) l'agrandissent. Rappeler bouton(...) sur la meme case le remplace.
+    // Couleur d'un bouton : { bg, fg } (texte sombre sur fond clair, clair sur fond sombre).
+    function couleurBoutonDepuis(v, nom) {
+        let bg = zoneCouleur(v, nom);
+        let h = bg.slice(1); if (h.length === 3) h = h.split("").map(c => c + c).join("");
+        let lum = (0.299 * parseInt(h.slice(0, 2), 16) + 0.587 * parseInt(h.slice(2, 4), 16) + 0.114 * parseInt(h.slice(4, 6), 16)) / 255;
+        return { bg: bg, fg: lum > 0.6 ? "#0d1117" : "#f0f6fc" };
+    }
+    fonctionsBase["bouton"] = async function(args, ctxExpr) {
+        if (args.length < 4 || args.length > 7) throw new Error("bouton(libelle, valeur, colonne, ligne) attend 4 arguments, plus largeur et hauteur (6), et/ou une couleur (5 ou 7) : bouton(libelle, valeur, colonne, ligne, couleur) ou bouton(libelle, valeur, colonne, ligne, largeur, hauteur, couleur)");
+        verifierToucheDisponible("bouton(...)");
+        let libelle = await evalExpr(args[0], ctxExpr);
+        let valeur = await evalExpr(args[1], ctxExpr);
+        let col = await evalExpr(args[2], ctxExpr);
+        let lig = await evalExpr(args[3], ctxExpr);
+        let avecTaille = args.length >= 6; // 6 ou 7 arguments : largeur et hauteur ; 5 ou 7 : couleur en dernier
+        let larg = avecTaille ? await evalExpr(args[4], ctxExpr) : 1;
+        let haut = avecTaille ? await evalExpr(args[5], ctxExpr) : 1;
+        let couleurBtn = null;
+        if (args.length === 5 || args.length === 7) {
+            couleurBtn = couleurBoutonDepuis(await evalExpr(args[args.length - 1], ctxExpr), "bouton(...)");
+        }
+        for (let [nom, v] of [["le libelle", libelle], ["la valeur", valeur]]) {
+            if (typeof v === "number" && isFinite(v)) { if (nom === "le libelle") libelle = String(v); else valeur = String(v); }
+            else if (typeof v !== "string") throw new ErreurTypeInvalide("bouton(...) : " + nom + " doit etre un texte (ou un nombre)");
+        }
+        if (libelle === "") throw new Error("bouton(...) : le libelle ne peut pas etre vide");
+        if (libelle.length > BOUTONS_LIBELLE_MAX) throw new Error("bouton(...) : libelle trop long (" + BOUTONS_LIBELLE_MAX + " caracteres au maximum)");
+        if (valeur === "") throw new Error("bouton(...) : la valeur ne peut pas etre vide (touche() renvoie || quand aucune touche n'est pressee)");
+        for (let [nom, v, max] of [["colonne", col, BOUTONS_COLONNES_MAX], ["ligne", lig, BOUTONS_LIGNES_MAX], ["largeur", larg, BOUTONS_COLONNES_MAX], ["hauteur", haut, BOUTONS_LIGNES_MAX]]) {
+            if (typeof v !== "number" || !Number.isInteger(v) || v < 1 || v > max) throw new Error("bouton(...) : " + nom + " doit etre un entier entre 1 et " + max);
+        }
+        if (col + larg - 1 > BOUTONS_COLONNES_MAX) throw new Error("bouton(...) : le bouton depasse la derniere colonne (" + BOUTONS_COLONNES_MAX + ")");
+        if (lig + haut - 1 > BOUTONS_LIGNES_MAX) throw new Error("bouton(...) : le bouton depasse la derniere ligne (" + BOUTONS_LIGNES_MAX + ")");
+        let cle = col + "," + lig;
+        let ancien = boutonsActifs.get(cle);
+        if (ancien && ancien.libelle === libelle && ancien.valeur === valeur && ancien.larg === larg && ancien.haut === haut && (ancien.couleur ? ancien.couleur.bg : null) === (couleurBtn ? couleurBtn.bg : null)) return undefined; // deja tel quel : on ne touche pas au DOM
+        if (!ancien && boutonsActifs.size >= BOUTONS_MAX) throw new Error("bouton(...) : " + BOUTONS_MAX + " boutons au maximum");
+        let z = document.getElementById("zoneBoutons");
+        let el = document.createElement("button");
+        el.type = "button";
+        el.textContent = libelle;
+        el.setAttribute("data-valeur", valeur);
+        el.style.gridColumn = col + " / span " + larg;
+        el.style.gridRow = lig + " / span " + haut;
+        if (couleurBtn) { el.classList.add("coloree"); el.style.setProperty("--bg", couleurBtn.bg); el.style.setProperty("--fg", couleurBtn.fg); }
+        if (ancien) z.replaceChild(el, ancien.el); else z.appendChild(el);
+        boutonsActifs.set(cle, { col: col, lig: lig, libelle: libelle, valeur: valeur, larg: larg, haut: haut, couleur: couleurBtn, el: el });
+        ajusterGrilleBoutons();
+        z.hidden = false;
+        document.body.classList.add("avecBoutons"); // la pastille "Execution en cours" chevaucherait les boutons
+        appliquerPolitiqueClavier();
+        return undefined;
+    };
+    // Variantes en flux : les appels consecutifs partagent une grille compacte dans la console.
+    async function ajouterBoutonsFlux(args, alignement, nom, ctxExpr) {
+        if (args.length < 2 || args.length > 7) throw new Error(nom+"(libelle,valeur[,colonne,ligne[,largeur,hauteur]][,couleur]) attend 2, 4 ou 6 arguments, plus une couleur en dernier (3, 5 ou 7)");
+        verifierToucheDisponible(nom+"(...)");
+        let avecCouleur = args.length % 2 === 1; // 3, 5 ou 7 arguments : la couleur est le dernier
+        let nPos = avecCouleur ? args.length - 1 : args.length; // arguments de position : 2, 4 ou 6
+        let libelle=await evalExpr(args[0],ctxExpr), valeur=await evalExpr(args[1],ctxExpr);
+        for (let [n,v] of [["libelle",libelle],["valeur",valeur]]) {
+            if (typeof v==="number" && isFinite(v)) { if(n==="libelle") libelle=String(v); else valeur=String(v); }
+            else if(typeof v!=="string") throw new ErreurTypeInvalide(nom+" : "+n+" doit etre un texte ou un nombre");
+        }
+        if(!libelle || !valeur) throw new Error(nom+" : libelle et valeur ne peuvent pas etre vides");
+        if(libelle.length>BOUTONS_LIBELLE_MAX) throw new Error(nom+" : libelle trop long");
+        let row=outputDiv.lastElementChild;
+        if(!row || !row.classList.contains("boutonsDansConsole")) {
+          row=document.createElement("div"); row.className="boutonsDansConsole"; outputDiv.appendChild(row);
+        }
+        let el=document.createElement("button"); el.type="button"; el.textContent=libelle; el.setAttribute("data-valeur",valeur);
+        if (avecCouleur) {
+            let cb = couleurBoutonDepuis(await evalExpr(args[args.length - 1], ctxExpr), nom + "(...)");
+            el.classList.add("coloree"); el.style.setProperty("--bg", cb.bg); el.style.setProperty("--fg", cb.fg);
+        }
+        if(nPos>=4) {
+            let col=await evalExpr(args[2],ctxExpr), lig=await evalExpr(args[3],ctxExpr);
+            if(!Number.isInteger(col)||!Number.isInteger(lig)||col<1||col>3||lig<1||lig>3) throw new Error(nom+" : colonne et ligne (1-3) doivent etre des entiers");
+            el.style.gridColumn=String(col); el.style.gridRow=String(lig);
+        } else {
+            let pos={centre:[2,1],gauche:[1,2],droite:[3,2],bas:[2,3],position:[1,1]}[alignement] || [1,1];
+            el.style.gridColumn=String(pos[0]); el.style.gridRow=String(pos[1]);
+        }
+        if(nPos===6) {
+            let w=await evalExpr(args[4],ctxExpr), h=await evalExpr(args[5],ctxExpr);
+            if(!Number.isInteger(w)||!Number.isInteger(h)||w<1||h<1) throw new Error(nom+" : largeur/hauteur doivent etre des entiers positifs");
+            el.style.gridColumnEnd="span "+w; el.style.gridRowEnd="span "+h;
+        }
+        row.appendChild(el); outputDiv.scrollTop=outputDiv.scrollHeight;
+        document.body.classList.add("avecBoutons");
+        appliquerPolitiqueClavier();
+    }
+    for (let [nom,align] of [["bouton.position","position"],["bouton.centre","centre"],["bouton.bas","bas"],["bouton.gauche","gauche"],["bouton.droite","droite"]]) {
+        fonctionsBase[nom]=async function(args,ctxExpr){ return ajouterBoutonsFlux(args,align,nom,ctxExpr); };
+    }
+
+    // bouton.efface() : retire tous les boutons affiches par le script.
+    fonctionsBase["bouton.efface"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("bouton.efface() ne prend aucun argument");
+        verifierToucheDisponible("bouton.efface()");
+        effacerBoutons();
+        return undefined;
+    };
+
+    // couleur(nom) : couleur du texte des prochains affi(...), jusqu'au prochain couleur(...) ;
+    // couleur() sans argument revient a la couleur normale. Memes couleurs que la zone de dessin.
+    fonctionsBase["couleur"] = async function(args, ctxExpr) {
+        if (args.length === 0 || (args.length === 1 && args[0].trim() === "")) { couleurConsole = null; return undefined; }
+        if (args.length !== 1) throw new Error("couleur(nom) attend 1 argument (ou aucun pour revenir a la couleur normale)");
+        couleurConsole = zoneCouleur(await evalExpr(args[0], ctxExpr), "couleur()");
+        return undefined;
+    };
+
+    // ----- Sons du jeu -----
+    function volumeSon(v, nom) {
+        if (typeof v !== "number" || !isFinite(v) || v < 0 || v > 1) throw new Error(nom + " : le volume doit etre un nombre entre 0 et 1");
+        return v;
+    }
+    // son(effet[, volume]) : joue un effet integre, renvoie son numero (a garder pour son.arrete(numero)).
+    fonctionsBase["son"] = fonctionsExpression["son"] = async function(args, ctxExpr) {
+        if (args.length < 1 || args.length > 2) throw new Error("son(effet) ou son(effet, volume) attend 1 ou 2 arguments");
+        verifierRunPourSon("son()");
+        let effet = await evalExpr(args[0], ctxExpr);
+        let vol = args.length === 2 ? volumeSon(await evalExpr(args[1], ctxExpr), "son()") : 1;
+        let nom = typeof effet === "string" ? effet.trim().toLowerCase() : "";
+        if (!SON_EFFETS[nom]) throw new Error("son() : effet inconnu" + (typeof effet === "string" ? " |" + effet + "|" : "") + ". Effets : " + Object.keys(SON_EFFETS).join(", "));
+        return jouerSegmentsSon(SON_EFFETS[nom], vol, "son()");
+    };
+    // note(frequence_ou_nom, duree[, volume[, forme]]) : joue une note, renvoie son numero.
+    fonctionsBase["note"] = fonctionsExpression["note"] = async function(args, ctxExpr) {
+        if (args.length < 2 || args.length > 4) throw new Error("note(frequence, duree[, volume[, forme]]) attend 2 a 4 arguments");
+        verifierRunPourSon("note()");
+        let f = await evalExpr(args[0], ctxExpr);
+        let d = await evalExpr(args[1], ctxExpr);
+        let vol = args.length >= 3 ? volumeSon(await evalExpr(args[2], ctxExpr), "note()") : 1;
+        let forme = args.length === 4 ? await evalExpr(args[3], ctxExpr) : "sinus";
+        if (typeof f === "string") {
+            let hz = frequenceNote(f);
+            if (hz === null) throw new Error("note() : nom de note inconnu |" + f + "|. Exemples : |la4|, |do#3|, |solb5|, |re| (octave 4 par defaut)");
+            f = hz;
+        }
+        if (typeof f !== "number" || !isFinite(f) || f < 20 || f > 20000) throw new Error("note() : la frequence doit etre entre 20 et 20000 Hz (ou un nom de note comme |la4|)");
+        if (typeof d !== "number" || !isFinite(d) || d < 0.01 || d > SON_DUREE_MAX) throw new Error("note() : la duree doit etre entre 0.01 et " + SON_DUREE_MAX + " secondes");
+        forme = typeof forme === "string" ? forme.trim().toLowerCase() : "";
+        if (!SON_FORMES[forme]) throw new Error("note() : forme d'onde inconnue. Formes : " + Object.keys(SON_FORMES).join(", "));
+        return jouerSegmentsSon([{ t0: 0, dur: d, type: forme, f0: f, vol: 1 }], vol, "note()");
+    };
+    // son.arrete([numero]) : coupe ce son, ou tous les sons du jeu sans argument. Un numero inconnu ou deja fini est ignore.
+    fonctionsBase["son.arrete"] = async function(args, ctxExpr) {
+        if (args.length > 1) throw new Error("son.arrete() ou son.arrete(numero) attend 0 ou 1 argument");
+        verifierRunPourSon("son.arrete()");
+        if (args.length === 1 && args[0].trim() !== "") {
+            let id = await evalExpr(args[0], ctxExpr);
+            if (typeof id !== "number") throw new Error("son.arrete() : le numero doit etre celui renvoye par son() ou note()");
+            arreterVoixSon(id);
+        } else {
+            for (let v of voixSon.slice()) arreterVoixSon(v.id);
+        }
+        return undefined;
+    };
+    // vibre(ms) ou vibre(liste(pause, vibre, pause, ...)) : vibration du jeu (suit les reglages du telephone). vibre(0) l'arrete.
+    fonctionsBase["vibre"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("vibre(ms) ou vibre(liste(...)) attend 1 argument");
+        verifierRunPourSon("vibre()");
+        let v = await evalExpr(args[0], ctxExpr);
+        let motif;
+        if (typeof v === "number") motif = [v];
+        else if (v && v.__type === "liste") motif = v.elements.slice();
+        else throw new Error("vibre() : donne une duree en millisecondes ou une liste(pause, vibre, pause, ...)");
+        if (motif.length < 1 || motif.length > 20) throw new Error("vibre() : le motif contient 1 a 20 valeurs");
+        for (let x of motif) if (typeof x !== "number" || !isFinite(x) || x < 0 || x > 5000) throw new Error("vibre() : chaque duree doit etre un nombre de millisecondes entre 0 et 5000");
+        try { if (navigator.vibrate) navigator.vibrate(motif.length === 1 && motif[0] === 0 ? 0 : motif); } catch (e) {}
+        return undefined;
+    };
+
+    // ----- Zone de dessin -----
+    function exigerZone(nom) {
+        verifierToucheDisponible(nom);
+        if (!zoneEtat) throw new Error(nom + " : appelle d'abord zone(largeur, hauteur)");
+        return zoneEtat;
+    }
+    function ajouterCmdZone(z, cmd, nom) {
+        if (z.cmds.length >= ZONE_CMDS_MAX) throw new Error(nom + " : trop de formes avant zone.montre() (" + ZONE_CMDS_MAX + " au maximum)");
+        z.cmds.push(cmd);
+    }
+    async function argsZone(args, n, syntaxe, nom, ctxExpr) {
+        if (args.length !== n) throw new Error(syntaxe + " attend " + n + " arguments");
+        let vals = [];
+        for (let a of args) vals.push(await evalExpr(a, ctxExpr));
+        return vals;
+    }
+    // zone(largeur, hauteur) : cree la zone (unites a toi, etirees pour remplir l'ecran) ; la rappeler la recree.
+    fonctionsBase["zone"] = async function(args, ctxExpr) {
+        let v = await argsZone(args, args.length === 3 ? 3 : 2, "zone(largeur, hauteur)  ou  zone(largeur, hauteur, couleur)", "zone", ctxExpr);
+        verifierToucheDisponible("zone()");
+        let l = zoneNombre(v[0], "zone()", "largeur"), h = zoneNombre(v[1], "zone()", "hauteur");
+        if (l <= 0 || h <= 0 || l > ZONE_DIM_MAX || h > ZONE_DIM_MAX) throw new Error("zone() : largeur et hauteur doivent etre entre 1 et " + ZONE_DIM_MAX);
+        let fond = v.length === 3 ? zoneCouleurOuTransparent(v[2], "zone()") : "#000000"; // fond de la zone, noir par defaut
+        zoneEtat = { l: l, h: h, cmds: [], vue: [], montreeUneFois: false, fond: fond, fondCadre: "#010409" };
+        appliquerCadreZone(0, 0, 100, 100);
+        document.body.classList.add("avecZone");
+        zoneRendre();
+        return undefined;
+    };
+    // zone.cadre(x, y, largeur, hauteur) : place la zone dans l'espace libre, en % (0 a 100).
+    fonctionsBase["zone.cadre"] = async function(args, ctxExpr) {
+        let n = "zone.cadre()";
+        let v = await argsZone(args, args.length === 5 ? 5 : 4, "zone.cadre(x, y, largeur, hauteur)  ou  zone.cadre(x, y, largeur, hauteur, couleur)", n, ctxExpr);
+        let zc = exigerZone(n);
+        let x = zoneNombre(v[0], n, "x"), y = zoneNombre(v[1], n, "y"), l = zoneNombre(v[2], n, "largeur"), h = zoneNombre(v[3], n, "hauteur");
+        if (x < 0 || y < 0 || l <= 0 || h <= 0 || x + l > 100.0001 || y + h > 100.0001) throw new Error(n + " : valeurs en % de l'espace libre : x et y entre 0 et 100, largeur et hauteur positives, avec x+largeur et y+hauteur au plus 100");
+        if (v.length === 5) zc.fondCadre = zoneCouleurOuTransparent(v[4], n); // sans couleur : la couleur actuelle du cadre est conservee
+        appliquerCadreZone(x, y, l, h);
+        zoneRendre();
+        return undefined;
+    };
+    // doigt.dispo() : VRAI si un evenement du doigt attend. doigt() : le plus ancien, liste(x, y, etat),
+    // ou une liste vide s'il n'y en a pas. x et y sont dans les coordonnees de la zone.
+    fonctionsBase["doigt.dispo"] = fonctionsExpression["doigt.dispo"] = async function(args, ctxExpr) {
+        if (args.length !== 0 && !(args.length === 1 && args[0].trim() === "")) throw new Error("doigt.dispo() ne prend aucun argument");
+        exigerZone("doigt.dispo()");
+        if (fileDoigts.length === 0) await respirer(true);
+        return fileDoigts.length > 0;
+    };
+    fonctionsBase["doigt"] = fonctionsExpression["doigt"] = async function(args, ctxExpr) {
+        if (args.length !== 0 && !(args.length === 1 && args[0].trim() === "")) throw new Error("doigt() ne prend aucun argument");
+        exigerZone("doigt()");
+        if (fileDoigts.length === 0) await respirer(true);
+        let e = fileDoigts.length > 0 ? fileDoigts.shift() : null;
+        return { __type: "liste", elements: e ? [e[0], e[1], e[2]] : [] };
+    };
+    fonctionsBase["zone.efface"] = async function(args, ctxExpr) {
+        if (args.length !== 0 && !(args.length === 1 && args[0].trim() === "")) throw new Error("zone.efface() ne prend aucun argument");
+        let z = exigerZone("zone.efface()");
+        z.cmds = [];
+        return undefined;
+    };
+    fonctionsBase["zone.montre"] = async function(args, ctxExpr) {
+        if (args.length !== 0 && !(args.length === 1 && args[0].trim() === "")) throw new Error("zone.montre() ne prend aucun argument");
+        let z = exigerZone("zone.montre()");
+        z.vue = z.cmds.slice();
+        z.montreeUneFois = true;
+        zoneRendre();
+        await respirer(true); // laisse le navigateur peindre l'image, meme dans une boucle sans attendre()
+        return undefined;
+    };
+    fonctionsBase["zone.rectangle"] = async function(args, ctxExpr) {
+        let n = "zone.rectangle()";
+        let v = await argsZone(args, 5, "zone.rectangle(x, y, largeur, hauteur, couleur)", n, ctxExpr);
+        let z = exigerZone(n);
+        ajouterCmdZone(z, { t: "r", x: zoneNombre(v[0], n, "x"), y: zoneNombre(v[1], n, "y"), w: zoneNombre(v[2], n, "largeur"), h: zoneNombre(v[3], n, "hauteur"), c: zoneCouleur(v[4], n) }, n);
+        return undefined;
+    };
+    fonctionsBase["zone.cercle"] = async function(args, ctxExpr) {
+        let n = "zone.cercle()";
+        let v = await argsZone(args, 4, "zone.cercle(x, y, rayon, couleur)", n, ctxExpr);
+        let z = exigerZone(n);
+        ajouterCmdZone(z, { t: "c", x: zoneNombre(v[0], n, "x"), y: zoneNombre(v[1], n, "y"), r: zoneNombre(v[2], n, "rayon"), c: zoneCouleur(v[3], n) }, n);
+        return undefined;
+    };
+    fonctionsBase["zone.ligne"] = async function(args, ctxExpr) {
+        let n = "zone.ligne()";
+        let v = await argsZone(args, args.length === 6 ? 6 : 5, "zone.ligne(x1, y1, x2, y2, couleur)  ou  zone.ligne(x1, y1, x2, y2, couleur, epaisseur)", n, ctxExpr);
+        let z = exigerZone(n);
+        let e = 1; // epaisseur par defaut : une unite de la zone
+        if (v.length === 6) { e = zoneNombre(v[5], n, "epaisseur"); if (e <= 0) throw new Error(n + " : l'epaisseur doit etre positive"); }
+        ajouterCmdZone(z, { t: "l", x: zoneNombre(v[0], n, "x1"), y: zoneNombre(v[1], n, "y1"), x2: zoneNombre(v[2], n, "x2"), y2: zoneNombre(v[3], n, "y2"), c: zoneCouleur(v[4], n), e: e }, n);
+        return undefined;
+    };
+    fonctionsBase["zone.texte"] = async function(args, ctxExpr) {
+        let n = "zone.texte()";
+        let v = await argsZone(args, 5, "zone.texte(x, y, message, taille, couleur)", n, ctxExpr);
+        let z = exigerZone(n);
+        let m = v[2];
+        if (typeof m === "number") m = String(m);
+        if (typeof m !== "string") throw new Error(n + " : le message doit etre un texte ou un nombre");
+        if (m.length > ZONE_TEXTE_MAX) m = m.slice(0, ZONE_TEXTE_MAX);
+        let taille = zoneNombre(v[3], n, "taille");
+        if (taille <= 0) throw new Error(n + " : la taille doit etre positive");
+        ajouterCmdZone(z, { t: "t", x: zoneNombre(v[0], n, "x"), y: zoneNombre(v[1], n, "y"), m: m, s: taille, c: zoneCouleur(v[4], n) }, n);
+        return undefined;
+    };
+    // zone.polygone(liste(x1,y1, x2,y2, ...), couleur) : forme pleine, refermee automatiquement (3 points au moins).
+    fonctionsBase["zone.polygone"] = async function(args, ctxExpr) {
+        let n = "zone.polygone()";
+        let v = await argsZone(args, 2, "zone.polygone(liste(x1,y1, x2,y2, ...), couleur)", n, ctxExpr);
+        let z = exigerZone(n);
+        let l = v[0];
+        if (!l || l.__type !== "liste") throw new Error(n + " : le premier argument doit etre une liste de coordonnees : liste(x1,y1, x2,y2, ...)");
+        let pts = l.elements.map((e, i) => zoneNombre(e, n, "la coordonnee " + (i + 1)));
+        if (pts.length < 6 || pts.length % 2 !== 0) throw new Error(n + " : il faut au moins 3 points, soit un nombre PAIR d'au moins 6 coordonnees (x1,y1, x2,y2, x3,y3...)");
+        ajouterCmdZone(z, { t: "p", pts: pts, c: zoneCouleur(v[1], n) }, n);
+        return undefined;
+    };
+
     fonctionsBase["effa"] = async function(args, ctxExpr) {
         if (args.length === 0 || (args.length === 1 && args[0].trim() === "")) {
             clearConsole();
@@ -7872,7 +8712,7 @@ let categorieCouleurs = {
 //   temps~0 -> variable normale
 //   de module import(...) -> "de" reste colore comme commande
 //   si(condition){...}, pou(...), tanqer(...) -> commandes de controle reconnues
-//   stop, continu, retour valeur, classe Nom... -> commandes sans parentheses
+//   casse, quitte, continu, retour valeur, classe Nom... -> commandes sans parentheses
 //   nom.ajout(elements), var.majuscul() -> fonctions colorees (le "." dans leur syntaxe
 //     documentee ne les exempte plus de l'exigence de parenthese, sinon "ajout" se
 //     recolorait par-dessus lui-meme en 2 couleurs a l'interieur de ajout.fichier(...))
@@ -8097,6 +8937,7 @@ function printValeur(texte, classe = "") {
   // saut de ligne, est vide), pour que affi(||) affiche bien une ligne visible, comme
   // affi(| |).
   texteStr = texteStr.split("\n").map(l => l === "" ? "\u00A0" : l).join("\n");
+  if (couleurConsole) div.style.color = couleurConsole;
   div.innerHTML = echapperHTML(texteStr);
   outputDiv.appendChild(div);
   outputDiv.scrollTop = outputDiv.scrollHeight;
@@ -8419,37 +9260,74 @@ async function executerCommandeSimple(ligne) {
   // "chemin" peut etre une variable simple (v[i]~...) ou un chemin d'attributs chaine
   // (moi.compte[i]~..., a.b.c[i]~...), pour rester coherent avec la lecture qui accepte
   // deja moi.comptes[i] dans une expression.
-  let mIdentCrochet = _regexCache(_entreeLigne, 'crochet', ligne, /^([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\[/);
+  let mIdentCrochet = _regexCache(_entreeLigne, 'crochet', ligne, /^([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\s*\[/);
   if (mIdentCrochet) {
     let chemin = mIdentCrochet[1];
-    let j = mIdentCrochet[0].length, depth = 1;
-    while (j < ligne.length && depth > 0) {
-      if (ligne[j] === '[') depth++;
-      else if (ligne[j] === ']') depth--;
-      j++;
+    // Un ou plusieurs groupes de crochets CONSECUTIFS : chemin[a], chemin[a][b], chemin[a][b][c,d]...
+    // (liste de listes, liste de vecteurs, liste de matrices : l[i][j] ~ valeur).
+    let groupes = [];
+    let pos = mIdentCrochet[0].length - 1; // position du premier '['
+    while (pos < ligne.length && ligne[pos] === '[') {
+      let j = pos + 1, depth = 1, dansTexteIdx = false;
+      while (j < ligne.length && depth > 0) {
+        let ch = ligne[j];
+        if (ch === '|') dansTexteIdx = !dansTexteIdx;
+        else if (!dansTexteIdx) {
+          if (ch === '[') depth++;
+          else if (ch === ']') depth--;
+        }
+        j++;
+      }
+      if (depth !== 0) throw new Error("Crochet fermant manquant pour l'indexation de " + chemin);
+      groupes.push(ligne.slice(pos + 1, j - 1));
+      pos = j;
     }
-    if (depth !== 0) throw new Error("Crochet fermant manquant pour l'indexation de " + chemin);
-    let indicesStr = ligne.slice(mIdentCrochet[0].length, j - 1);
-    let reste = ligne.slice(j).trim();
+    let reste = ligne.slice(pos).trim();
     let mTilde = reste.match(/^~\s*(.*)$/);
     if (mTilde) {
-      let indices = splitTopLevelComma(indicesStr);
       let valeur = await evaluerElementBrut(mTilde[1], ctxExpr);
       let cible = resoudreCheminCible(chemin);
+      let nomAff = chemin;
+      // Parent + position de la cible quand elle est un element d'une liste : necessaire pour
+      // reecrire un TEXTE (immuable en JS) apres modification, ex: l[2][1] ~ |x|.
+      let parentListe = null, indiceParent = null;
+      // Descente dans tous les groupes sauf le dernier : chacun doit designer UN element de liste.
+      for (let g = 0; g < groupes.length - 1; g++) {
+        let partsIdx = splitTopLevelComma(groupes[g]);
+        if (partsIdx.length !== 1 || partsIdx[0].trim() === "") {
+          throw new Error(nomAff + " : un indice avant le dernier doit etre un seul nombre (ex: " + chemin + "[i][j] ~ valeur)");
+        }
+        let idx = await evalExpr(partsIdx[0], ctxExpr);
+        verifierIndiceEntier(idx, nomAff);
+        if (!estListe(cible)) {
+          throw new ErreurTypeInvalide(nomAff + " n'est pas une liste : on ne peut pas ecrire " + chemin + groupes.map(x => "[" + x + "]").join("") + " (un vecteur ne contient que des valeurs simples)");
+        }
+        if (idx < 1 || idx > cible.elements.length) {
+          throw new ErreurIndexHorsLimite("Indice " + idx + " hors limites pour " + nomAff + " (taille " + cible.elements.length + ")");
+        }
+        parentListe = cible; indiceParent = idx;
+        cible = cible.elements[idx - 1];
+        nomAff = nomAff + "[" + idx + "]";
+        if (cible === undefined || cible === null) {
+          throw new ErreurTypeInvalide(nomAff + " est pasdefini : rien a modifier a l'interieur");
+        }
+      }
+      let indices = splitTopLevelComma(groupes[groupes.length - 1]);
       if (typeof cible === 'string') {
-        if (indices.length !== 1) throw new Error(chemin + " est du texte (une seule dimension) : indexation a un seul indice, pas [l,c]");
+        if (indices.length !== 1) throw new Error(nomAff + " est du texte (une seule dimension) : indexation a un seul indice, pas [l,c]");
         let idx = indices[0].trim() === "" ? null : await evalExpr(indices[0], ctxExpr);
-        let nouveauTexte = affecterTexte(cible, idx, valeur, chemin);
-        assignerCheminValeur(chemin, nouveauTexte);
+        let nouveauTexte = affecterTexte(cible, idx, valeur, nomAff);
+        if (parentListe) parentListe.elements[indiceParent - 1] = nouveauTexte;
+        else assignerCheminValeur(chemin, nouveauTexte);
       } else if (indices.length === 1) {
         let idx = indices[0].trim() === "" ? null : await evalExpr(indices[0], ctxExpr);
-        affecterUnique(cible, idx, valeur, chemin);
+        affecterUnique(cible, idx, valeur, nomAff);
       } else if (indices.length === 2) {
         let l = indices[0].trim() === "" ? null : await evalExpr(indices[0], ctxExpr);
         let c = indices[1].trim() === "" ? null : await evalExpr(indices[1], ctxExpr);
-        affecterMatrice(cible, l, c, valeur, chemin);
+        affecterMatrice(cible, l, c, valeur, nomAff);
       } else {
-        throw new Error("Indexation invalide pour " + chemin);
+        throw new Error("Indexation invalide pour " + nomAff);
       }
       return;
     }
@@ -9125,7 +10003,7 @@ function verifierSyntaxeProgramme(code, tokens) {
   const dansBoucle = () => {
     for (let k = pile.length - 1; k >= 0; k--) {
       const kd = pile[k].kind;
-      if (kd === 'pou' || kd === 'tanqer') return true;
+      if (kd === 'pou' || kd === 'tanqer' || kd === 'rythme') return true;
       if (kd === 'fonc' || kd === 'classe' || kd === 'racine') return false;
     }
     return false;
@@ -9240,10 +10118,27 @@ function verifierSyntaxeProgramme(code, tokens) {
       continue;
     }
 
+    if (t.startsWith('rythme(') && t.endsWith(')')) {
+      const argR = t.slice(7, -1);
+      if (argR.trim() === "") err(l, "rythme(secondes) attend la duree d'un tour, en secondes : rythme(0.05){ ... }");
+      else testExpr(argR, l, "duree de rythme(...)");
+      i = ouvrirBloc('rythme', "rythme", i, l, erreurs.length > nbAvant);
+      continue;
+    }
+
     // ---- instructions de controle ----
-    if (t === 'stop' || t === 'continu') {
-      if (!dansBoucle()) err(l, t + " n'est utilisable qu'a l'interieur d'une boucle (pou ou tanqer)");
+    if (t === 'stop') {
+      err(l, "stop a ete renomme casse (comme break en Python) : ecris casse");
       i++;
+      continue;
+    }
+    if (t === 'casse' || t === 'continu') {
+      if (!dansBoucle()) err(l, t + " n'est utilisable qu'a l'interieur d'une boucle (pou, tanqer ou rythme)");
+      i++;
+      continue;
+    }
+    if (t === 'quitte' || t === 'quitte()') {
+      i++; // utilisable partout (hors ou dans une boucle/fonction) : termine tout le script
       continue;
     }
     if (t === 'retour' || /^retour[\s(]/.test(t)) {
@@ -9261,7 +10156,7 @@ function verifierSyntaxeProgramme(code, tokens) {
 
     // ---- une ligne suivie de { qui n'est aucun des en-tetes ci-dessus : en-tete mal forme ----
     if (tokens[i + 1] && tokens[i + 1].texte === '{') {
-      err(l, "Instruction de bloc inconnue ou mal formee avant { : \"" + _court(t) + "\" (attendu : si(condition), sinon si(condition), sinon, pou(...), tanqer(condition), tanqer VRAI, fonc nom(...), classe Nom, essai ou attrape)");
+      err(l, "Instruction de bloc inconnue ou mal formee avant { : \"" + _court(t) + "\" (attendu : si(condition), sinon si(condition), sinon, pou(...), tanqer(condition), tanqer VRAI, rythme(secondes), fonc nom(...), classe Nom, essai ou attrape)");
       pile.push({ kind: 'inconnu', nom: t, ligne: l });
       i += 2;
       continue;
@@ -9501,7 +10396,17 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
       }
 
       if (token === 'stop') {
-        return { index: index + 1, signal: { type: 'stop' } };
+        throw new Error("stop a ete renomme casse (comme break en Python) : ecris casse");
+      }
+
+      if (token === 'casse') {
+        return { index: index + 1, signal: { type: 'casse' } };
+      }
+
+      // quitte : termine tout le script immediatement, quelle que soit la profondeur (comme
+      // sys.exit() en Python). Fin normale : aucune erreur n'est affichee.
+      if (token === 'quitte' || token === 'quitte()') {
+        throw new QuitteScript();
       }
 
       if (token === 'continu') {
@@ -9524,7 +10429,7 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
             setVar(entete.varNom, val);
             let res = await executerTokens(tokens, index + 2, finBloc - 1);
             if (res.signal) {
-              if (res.signal.type === 'stop') break;
+              if (res.signal.type === 'casse') break;
               if (res.signal.type === 'continu') continue;
               return res;
             }
@@ -9540,13 +10445,42 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
             setVar(entete.varNom, val);
             let res = await executerTokens(tokens, index + 2, finBloc - 1);
             if (res.signal) {
-              if (res.signal.type === 'stop') break;
+              if (res.signal.type === 'casse') break;
               if (res.signal.type === 'continu') continue;
               return res;
             }
           }
         }
         index = finBloc;
+        continue;
+      }
+
+      // rythme(secondes){...} : boucle a cadence reguliere. Le debut de chaque tour est cale sur une
+      // grille fixe (debut + n * duree) : le temps passe dans le bloc est deduit de l'attente, donc
+      // pas de derive comme avec attendre(). Si un tour depasse la duree, on ne rattrape pas en
+      // rafale : le tour suivant demarre tout de suite et la grille repart de la.
+      // S'arrete avec casse ou quitte ; continu saute la fin du tour mais respecte la cadence.
+      if (token.startsWith('rythme(') && token.endsWith(')')) {
+        let argRythme = token.slice(7, -1);
+        if (!tokens[index+1] || tokens[index+1].texte !== "{") throw new Error("Manque { apres rythme(...)");
+        if (argRythme.trim() === "") throw new Error("rythme(secondes) attend la duree d'un tour, en secondes");
+        let periode = await evalExpr(argRythme, ctxExpr);
+        if (typeof periode !== "number" || !isFinite(periode) || periode < 0.001) throw new Error("rythme(...) attend un nombre de secondes d'au moins 0.001");
+        let finBlocR = trouverFinBloc(tokens, index + 2, ligneActuelle);
+        let prochainTour = performance.now();
+        while (true) {
+          await respirer();
+          let res = await executerTokens(tokens, index + 2, finBlocR - 1);
+          if (res.signal) {
+            if (res.signal.type === 'casse') break;
+            if (res.signal.type !== 'continu') return res;
+          }
+          prochainTour += periode * 1000;
+          let maintenant = performance.now();
+          if (maintenant >= prochainTour) { prochainTour = maintenant; await respirer(true); }
+          else await fonctionsBase["attendre"]([String((prochainTour - maintenant) / 1000)], ctxExpr);
+        }
+        index = finBlocR;
         continue;
       }
 
@@ -9562,7 +10496,7 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
           await respirer();
           let res = await executerTokens(tokens, index + 2, finBloc - 1);
           if (res.signal) {
-            if (res.signal.type === 'stop') break;
+            if (res.signal.type === 'casse') break;
             if (res.signal.type === 'continu') continue;
             return res;
           }
@@ -9610,6 +10544,9 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
       index++;
     } catch (e) {
       if (e instanceof ErreurLangage) throw e;
+      // Un arret (bouton d'arret, quitte) n'est PAS une erreur du langage : on le laisse
+      // remonter tel quel jusqu'au niveau superieur au lieu de l'emballer avec un numero de ligne.
+      if (e instanceof ExecutionInterrompue) throw e;
       // IMPORTANT : toute erreur qui remonte ici est enveloppee dans une ErreurLangage pour lui
       // attacher le numero de ligne (utilise pour l'affichage "Erreur ligne X: ..." si elle
       // n'est interceptee par aucun essai/attrape). Si l'erreur d'origine est une ErreurCode
@@ -10478,7 +11415,17 @@ async function executerScriptLocal(script, options = {}) {
   fonctions = {};
   modules = {};
   pileImportEnCours = [];
+  reinitialiserTouches();
+  effacerZone();
   enregistrerFonctionsBase();
+  // Verrouiller l'ancienne invite de commande avant d'afficher la console :
+  // sinon afficherConsole() lui redonne le focus et Android ouvre le clavier
+  // pendant que le script tourne. Les champs entr() créés ensuite restent utilisables.
+  executionEnCours = true;
+  outputDiv.querySelectorAll(".cmdInput").forEach(el => {
+    el.contentEditable = "false";
+    if (document.activeElement === el) el.blur();
+  });
   if (afficherConsoleExecution) afficherConsole();
   if (afficherMarqueursExecution) print("=== EXECUTION ===");
   btnRun.disabled = true;
@@ -10486,7 +11433,6 @@ async function executerScriptLocal(script, options = {}) {
   // (boucles infinies...). Dans le service (aucune interface), il reste masque.
   btnArretUrgence.hidden = !afficherConsoleExecution;
   demandeArret = false;
-  executionEnCours = true;
   demarrerIndicateurAttente();
   try {
     let tokens = parser(script);
@@ -10500,7 +11446,8 @@ async function executerScriptLocal(script, options = {}) {
     await executerTokens(tokens);
     if (afficherMarqueursExecution) print("=== FIN ===");
   } catch (e) {
-    if (e instanceof ExecutionInterrompue) print("=== EXECUTION ARRETEE ===", "erreur");
+    if (e instanceof QuitteScript) { if (afficherMarqueursExecution) print("=== FIN ==="); }
+    else if (e instanceof ExecutionInterrompue) print("=== EXECUTION ARRETEE ===", "erreur");
     else if (e instanceof ErreurSyntaxeProgramme) {
       const MAX_ERREURS_AFFICHEES = 10;
       for (const er of e.erreurs.slice(0, MAX_ERREURS_AFFICHEES)) print("Erreur de syntaxe ligne " + er.ligne + ": " + er.message, "erreur");
@@ -10514,9 +11461,16 @@ async function executerScriptLocal(script, options = {}) {
   executionEnCours = false;
   demandeArret = false;
   scriptEnArrierePlan = false;
+  reinitialiserTouches();
+  terminerZone();
   btnRun.disabled = false;
   btnArretUrgence.hidden = true;
-  if (afficherInviteExecution && afficherConsoleExecution) printInvite();
+  if (afficherInviteExecution && afficherConsoleExecution) {
+    printInvite();
+    // Une zone reste affichee apres la fin du script : l'invite (cachee dessous) ne doit pas garder
+    // le focus, sinon le clavier s'ouvre et ecrase la zone. Toucher la zone la ferme et rend l'invite.
+    if (zoneEtat && document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  }
 }
 
 window.executerScriptExterne = async function(code) {
@@ -10643,7 +11597,8 @@ outputDiv.addEventListener("keydown", async function(e) {
         preRegistrerFonctions(tokensCmd);
         await executerTokens(tokensCmd);
       } catch (e) {
-        if (e instanceof ExecutionInterrompue) print("=== EXECUTION ARRETEE ===", "erreur");
+        if (e instanceof QuitteScript) { /* fin normale : rien a afficher */ }
+        else if (e instanceof ExecutionInterrompue) print("=== EXECUTION ARRETEE ===", "erreur");
         else if (e instanceof ErreurLangage) print("Erreur ligne " + e.ligne + ": " + e.message, "erreur");
         else print("Erreur: " + e.message, "erreur");
       } finally {
@@ -10651,6 +11606,7 @@ outputDiv.addEventListener("keydown", async function(e) {
         modeConsoleCommande = false;
         executionEnCours = false;
         demandeArret = false;
+        reinitialiserTouches();
       }
       }
     }
@@ -10705,6 +11661,63 @@ outputDiv.addEventListener("input", function(e) {
 
 
 btnRun.addEventListener("click", runScript);
+
+// ----- Touches pour les jeux : clavier -> file fileTouches (aucune interface ajoutee) -----
+// Une saisie entr() en cours (.entrInput) ou un vrai champ de formulaire garde ses frappes.
+function cibleGardeSesFrappes(cible) {
+  return !!cible && ((cible.classList && cible.classList.contains("entrInput")) || /^(INPUT|TEXTAREA|SELECT)$/.test(cible.tagName));
+}
+// Touches seules (modificateurs, etc.) : elles ne produisent rien a lire.
+const TOUCHES_IGNOREES = new Set(["Shift", "Control", "Alt", "AltGraph", "Meta", "CapsLock", "NumLock", "ScrollLock", "Fn", "FnLock", "Dead", "Unidentified", "Process", "Compose"]);
+// Le langage ne traduit RIEN : touche() rend la valeur que le clavier annonce (propriete "key" du
+// navigateur) telle quelle : "a", "Z" (avec Maj), "ArrowUp", "Enter", " " (espace), "Escape"...
+// Phase de capture : les touches du jeu sont prises AVANT l'invite "# " de la console (qui sinon
+// les taperait et executerait une commande a chaque Entree pendant la partie). Actif seulement
+// pendant un script qui a appele touche()/touche.dispo().
+document.addEventListener("keydown", (ev) => {
+  if (!executionEnCours || !toucheActive) return;
+  if (ev.isComposing || ev.ctrlKey || ev.altKey || ev.metaKey) return;
+  if (cibleGardeSesFrappes(ev.target)) return;
+  if (!ev.key || TOUCHES_IGNOREES.has(ev.key)) return;
+  ev.preventDefault();  // pas de saisie dans la console, pas de defilement avec fleches/espace
+  ev.stopPropagation();
+  empilerTouche(ev.key);
+}, true);
+// Clavier du telephone : il n'envoie pas toujours de vraie touche (key = "Unidentified") mais
+// toujours le texte saisi. On le lit ici (tel quel, caractere par caractere), puis on l'empeche
+// d'atteindre l'invite de la console.
+document.addEventListener("beforeinput", (ev) => {
+  if (!executionEnCours || !toucheActive) return;
+  if (ev.isComposing || cibleGardeSesFrappes(ev.target)) return;
+  if (ev.inputType !== "insertText" || !ev.data) return;
+  for (let c of Array.from(ev.data)) empilerTouche(c);
+  ev.preventDefault();
+}, true);
+// Clavier ferme pendant le jeu (touche Retour du telephone, par exemple) : toucher la console le rouvre.
+outputDiv.addEventListener("click", (ev) => {
+  if (!executionEnCours || !toucheActive || !champToucheEl) return;
+  // Un clic sur un bouton du script ne doit jamais rouvrir le clavier.
+  if (ev.target.closest && ev.target.closest(".boutonsDansConsole button[data-valeur]")) return;
+  if (ev.target.closest && ev.target.closest(".entrInput")) return; // une saisie entr() en cours garde son focus
+  // En mode auto, les boutons visibles remplacent le clavier virtuel.
+  // Seul clavier(VRAI) peut forcer son ouverture.
+  if (politiqueClavier === "faux" || (politiqueClavier === "auto" && boutonsPersonnalisesPresents())) return;
+  champToucheEl.focus({ preventScroll: true });
+});
+// Boutons du script : pointerdown (et non click) = reaction immediate au toucher, sans le delai du
+// clic mobile ; preventDefault evite de voler le focus (le clavier du telephone ne s'ouvre ni ne se ferme).
+outputDiv.addEventListener("pointerdown", (ev) => {
+  let b=ev.target.closest && ev.target.closest(".boutonsDansConsole button[data-valeur]");
+  if (!b) return;
+  ev.preventDefault();
+  if (executionEnCours) empilerTouche(b.getAttribute("data-valeur"));
+});
+document.getElementById("zoneBoutons").addEventListener("pointerdown", (ev) => {
+  let bouton = ev.target.closest && ev.target.closest("button[data-valeur]");
+  if (!bouton) return;
+  ev.preventDefault();
+  if (executionEnCours) empilerTouche(bouton.getAttribute("data-valeur"));
+});
 btnBasculePaquets.addEventListener("click", basculerGestionnairePaquets);
 btnRunFond.addEventListener("click", runScriptArrierePlan);
 
