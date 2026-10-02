@@ -75,6 +75,16 @@ if (!manifest.includes('android.permission.WAKE_LOCK')) {
   console.log('[patch-android] AndroidManifest.xml : permission WAKE_LOCK ajoutee.');
 }
 
+// VIBRATE : necessaire pour vibre() (jeu, via navigator.vibrate dans la WebView) et pour
+// alerte.vibre() (natif). Permission "normale" : aucun ecran d'autorisation pour l'utilisateur.
+const permissionVibrate =
+`    <uses-permission android:name="android.permission.VIBRATE" />
+`;
+if (!manifest.includes('android.permission.VIBRATE')) {
+  manifest = manifest.replace('<application', permissionVibrate + '\n    <application');
+  console.log('[patch-android] AndroidManifest.xml : permission VIBRATE ajoutee.');
+}
+
 // Permissions necessaires pour connexion.disponible()/connexion.type() (ACCESS_NETWORK_STATE,
 // permission "normale" sans popup), batterie.niveau()/batterie.encharge() (aucune permission
 // requise), et sms.recus()/sms.envoyer() (READ_SMS/SEND_SMS, permissions "dangereuses" :
