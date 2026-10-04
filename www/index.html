@@ -6255,10 +6255,27 @@ let aideCommandes = [
       "trac(y) : trace le vecteur y en fonction de sa position (1, 2, 3...).",
       "Par defaut, la grille n'est pas affichee (comme en Scilab) : utilise grille() pour l'activer.",
       "Options facultatives (a la suite, dans n'importe quel ordre) : couleur~|...|, type~|...|, titre~|...|, xlab~|...|, ylab~|...|.",
-      "couleur (comme en Scilab, mais en francais) : r=rouge, v=vert, b=bleu (par defaut), n=noir, j=jaune, m=magenta, c=cyan, bl=blanc. On peut aussi mettre un code hexadecimal, ex: couleur~|#ff00aa|.",
+      "couleur (comme en Scilab, mais en francais) : r=rouge, v=vert, b=bleu (par defaut), n=noir, j=jaune, m=magenta, c=cyan, bl=blanc. On peut aussi mettre un nom comme dans zone() : |rouge|, |vert|, |bleu|, |jaune|, |orange|, |violet|, |rose|, |cyan|, |blanc|, |noir|, |gris|, |marron|, ou un code hexadecimal, ex: couleur~|#ff00aa|.",
       "type : |-| pour un trait continu (par defaut), |o| pour des points."
     ], exemple: "x ~ seq(-5,5,0.1)\ny ~ x*x\ntrac(x, y, couleur~|r|, type~|-|, titre~|Ma courbe|)" },
 
+  { noms: ["trac.multi"], categorie: "Graphique", syntaxe: "trac.multi(x, y1, y2, ...)", description: [
+      "Trace plusieurs vecteurs y en fonction du meme vecteur x, sur un seul repere (comme plot(x, y1, y2) en Scilab).",
+      "Sans option couleur, chaque courbe prend automatiquement une couleur differente. Les options facultatives couleur~|...|, type~|...|, titre~|...|, xlab~|...| et ylab~|...| sont communes a toutes les courbes (voir trac) ; avec couleur~|...|, toutes les courbes ont donc la meme couleur."
+    ], exemple: "x ~ seq(-3,3,0.1)\ntrac.multi(x, x, x*x, x*x*x)" },
+  { noms: ["trac.diviser"], categorie: "Graphique", syntaxe: "trac.diviser(lignes, colonnes, position)", description: [
+      "Divise la feuille graphique en une grille de lignes x colonnes zones (64 au plus) et choisit la zone dans laquelle les prochains trac(...) dessinent, comme subplot() en Scilab. position va de 1 a lignes x colonnes, en lisant de gauche a droite puis de haut en bas.",
+      "Une fois la grille commencee, elle garde ses dimensions : change de zone en rappelant trac.diviser avec les memes lignes et colonnes."
+    ], exemple: "x ~ seq(-3,3,0.1)\ntrac.diviser(1, 2, 1)\ntrac(x, x*x)\ntrac.diviser(1, 2, 2)\ntrac(x, x*x*x)" },
+  { noms: ["trac.effa"], categorie: "Graphique", syntaxe: "trac.effa()", description: [
+      "Efface le graphique de la zone active, sans toucher aux autres zones de la feuille. Le prochain trac(...) repart d'un repere vide."
+    ], exemple: "trac(seq(1,5,1))\ntrac.effa()" },
+  { noms: ["feuille"], categorie: "Graphique", syntaxe: "feuille(n)", description: [
+      "Active la feuille graphique numero n (de 1 a 100). Chaque feuille a ses propres zones et son propre historique : les trac(...) suivants dessinent dans cette feuille."
+    ], exemple: "feuille(1)\ntrac(seq(1,5,1))\nfeuille(2)\ntrac(seq(5,1,-1))" },
+  { noms: ["feuille.effa"], categorie: "Graphique", syntaxe: "feuille.effa()", description: [
+      "Efface tous les graphiques de la feuille active, en gardant ses zones et leur historique. Erreur si aucune feuille n'est active."
+    ], exemple: "feuille(1)\ntrac(seq(1,5,1))\nfeuille.effa()" },
   { noms: ["grille"], categorie: "Graphique", syntaxe: "grille()  ou  grille(FAUX)", description: [
       "Active ou desactive la grille sur le dernier graphique trace avec trac(...) — comme xgrid() en Scilab.",
       "grille() : active la grille (par defaut, elle n'est pas affichee).",
@@ -8487,7 +8504,7 @@ function enregistrerFonctionsBase() {
         let autonome = alerteModeCourant === "autonome";
         if (autonome) demanderNotificationsAlerte(pont);
         let id = pont.alerteSon(n, Math.max(1, Math.ceil(duree)), vol, autonome);
-        if (!id) throw new Error("alerte.son() : Android a refuse de jouer le son");
+        if (id <= 0) throw new Error("alerte.son() : " + (id === -1 ? "aucun son d'alarme par defaut sur ce telephone (essaie |sirene| ou |bip|)" : id === -3 ? "Android a refuse de lire le son (le service audio n'a pas pu etre initialise)" : "Android a refuse de jouer le son"));
         return id;
     };
     // alerte.vibre(ms) ou alerte.vibre(liste(pause, vibre, pause, ...)) : renvoie le numero de l'alerte.
@@ -8511,7 +8528,7 @@ function enregistrerFonctionsBase() {
         let autonome = alerteModeCourant === "autonome";
         if (autonome) demanderNotificationsAlerte(pont);
         let id = pont.alerteVibre(JSON.stringify(motif.map(x => Math.round(x))), autonome);
-        if (!id) throw new Error("alerte.vibre() : pas de vibreur sur cet appareil, ou Android a refuse");
+        if (id <= 0) throw new Error("alerte.vibre() : " + (id === -1 ? "ce telephone n'a pas de moteur de vibration (ou il est desactive)" : id === -2 ? "Android a refuse la vibration (permission VIBRATE absente de l'APK ?)" : "motif de vibration invalide"));
         return id;
     };
     // alerte.arrete([numero]) : coupe cette alerte, ou toutes sans argument.
@@ -8592,6 +8609,8 @@ function enregistrerFonctionsBase() {
         // alerte.vibre) : une liste commence par sa pause. Pause nulle : on la retire. Pause > 0 : on attend.
         let ok = false;
         try {
+            // Dans l'app : on demande au telephone s'il a un moteur de vibration (navigator.vibrate repond VRAI meme sans).
+            if (window.MonLangage && typeof window.MonLangage.alerteVibreurDispo === "function" && !window.MonLangage.alerteVibreurDispo()) return false;
             if (navigator.vibrate) {
                 if (typeof v === "number") ok = !!navigator.vibrate(v === 0 ? 0 : [v]);
                 else {
@@ -8830,6 +8849,10 @@ function enregistrerFonctionsBase() {
         // couleur : lettre(s) façon Scilab (r, v, b, n, j, m, c, bl) ou code hexadecimal direct
         let coCode = couleur.trim().toLowerCase();
         if (Object.prototype.hasOwnProperty.call(COULEURS_TRAC, coCode)) couleur = COULEURS_TRAC[coCode];
+        // Memes noms de couleur que zone(), couleur() et bouton() : rouge, vert, bleu, jaune, orange, violet, rose,
+        // cyan, blanc, noir, gris, marron. Sans ca, |rouge| etait un nom CSS invalide et la courbe se dessinait
+        // sans couleur. Les lettres (r, v, b...) et les noms CSS anglais (red...) marchent toujours.
+        else if (Object.prototype.hasOwnProperty.call(ZONE_COULEURS, coCode)) couleur = ZONE_COULEURS[coCode];
 
         // style/type : "-" (trait, par defaut) ou "o" (points), comme les styles plot() de Scilab
         let tyCode = type.trim().toLowerCase();
