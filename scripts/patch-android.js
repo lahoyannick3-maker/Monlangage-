@@ -284,7 +284,46 @@ public class MonLangageBridge {
         this.activity = activity;
     }
 
-    private void runOnUiThread(Runnable action) {
+    // Stockage des cles MLG partage entre l'editeur et la WebView headless.
+    // Namespace distinct : ne touche ni aux preferences du service ni aux autres donnees.
+    private static final String MLG_KEYS_PREFS = "monlangage_user_keys_v1";
+    private static final String MLG_KEYS_PREFIX = "mlg:";
+    @JavascriptInterface
+    public boolean cleEcrire(String cle, String valeurJson) {
+        if (cle == null || valeurJson == null) return false;
+        try { return context.getSharedPreferences(MLG_KEYS_PREFS, Context.MODE_PRIVATE)
+            .edit().putString(MLG_KEYS_PREFIX + cle, valeurJson).commit(); }
+        catch (Exception e) { return false; }
+    }
+    @JavascriptInterface
+    public String cleLire(String cle) {
+        if (cle == null) return null;
+        try { return context.getSharedPreferences(MLG_KEYS_PREFS, Context.MODE_PRIVATE)
+            .getString(MLG_KEYS_PREFIX + cle, null); }
+        catch (Exception e) { return null; }
+    }
+    @JavascriptInterface
+    public boolean cleExiste(String cle) { return cleLire(cle) != null; }
+    @JavascriptInterface
+    public boolean cleSupprimer(String cle) {
+        if (cle == null) return false;
+        try {
+            android.content.SharedPreferences prefs = context.getSharedPreferences(MLG_KEYS_PREFS, Context.MODE_PRIVATE);
+            if (!prefs.contains(MLG_KEYS_PREFIX + cle)) return false;
+            return prefs.edit().remove(MLG_KEYS_PREFIX + cle).commit();
+        } catch (Exception e) { return false; }
+    }
+    @JavascriptInterface
+    public String cleListerJson() {
+        try {
+            JSONArray noms = new JSONArray();
+            java.util.Map<String, ?> toutes = context.getSharedPreferences(MLG_KEYS_PREFS, Context.MODE_PRIVATE).getAll();
+            for (String k : toutes.keySet()) if (k.startsWith(MLG_KEYS_PREFIX)) noms.put(k.substring(MLG_KEYS_PREFIX.length()));
+            return noms.toString();
+        } catch (Exception e) { return "[]"; }
+    }
+
+    private void runOnUiThread {
         if (activity != null) activity.runOnUiThread(action);
         else new android.os.Handler(android.os.Looper.getMainLooper()).post(action);
     }
