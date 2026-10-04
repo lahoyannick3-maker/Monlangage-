@@ -1107,7 +1107,7 @@ public class MonLangageBridge {
 
         // ---------------- Alertes natives : alerte.son / alerte.vibre / alerte.arrete ----------------
         // Delegue a AlerteManager (etat statique : une alerte "autonome" survit au script).
-        // Renvoient le numero de l'alerte, ou 0 si Android a refuse (pas de vibreur, son indisponible...).
+        // Renvoient le numero de l'alerte (> 0), ou un code d'erreur negatif (voir AlerteManager).
         @JavascriptInterface
         public int alerteSon(String nom, int dureeSecondes, double volume, boolean autonome) {
             return AlerteManager.demarrerSon(context, nom, dureeSecondes, volume, autonome);
@@ -1135,6 +1135,12 @@ public class MonLangageBridge {
         @JavascriptInterface
         public void alerteArreterLiees() {
             AlerteManager.arreterLiees(context);
+        }
+
+        // Le telephone a-t-il un moteur de vibration ? (navigator.vibrate repond VRAI meme sans moteur.)
+        @JavascriptInterface
+        public boolean alerteVibreurDispo() {
+            return AlerteManager.vibreurDispo(context);
         }
 
 
@@ -1674,7 +1680,8 @@ public class AlerteManager {
 
     // nom : "defaut" (sonnerie d'alarme du telephone), "sirene" ou "bip" (sons generes).
     // volume : de 0 a 1, ou -1 pour garder le volume d'alarme regle par l'utilisateur.
-    // Renvoie le numero de l'alerte, ou 0 si Android a refuse.
+    // Renvoie le numero de l'alerte (> 0), ou un code d'erreur negatif :
+    // -1 aucune sonnerie d'alarme par defaut, -2 Android a refuse de la lire, -3 son genere non initialise.
     public static synchronized int demarrerSon(Context ctx, String nom, int dureeSec, double volume, boolean autonome) {
         try {
             final Context c = ctx.getApplicationContext();
@@ -1690,23 +1697,24 @@ public class AlerteManager {
             Alerte a = new Alerte();
             a.id = prochainId++;
             a.autonome = autonome;
-            boolean ok = "defaut".equals(nom) ? lireSonnerie(c, a) : lireTonalite(a, nom);
-            if (!ok) {
+            int etat = "defaut".equals(nom) ? lireSonnerie(c, a) : lireTonalite(a, nom);
+            if (etat != 0) {
                 apresChangement(c);
-                return 0;
+                return etat;
             }
             enregistrer(c, a, dureeSec * 1000L);
             return a.id;
         } catch (Exception e) {
-            return 0;
+            return -2;
         }
     }
 
-    private static boolean lireSonnerie(Context c, Alerte a) {
+    // 0 = ok, sinon code d'erreur negatif (voir demarrerSon).
+    private static int lireSonnerie(Context c, Alerte a) {
         Uri uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
         if (uri == null) uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
         if (uri == null) uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
-        if (uri == null) return false;
+        if (uri == null) return -1;
         MediaPlayer mp = new MediaPlayer();
         try {
             mp.setAudioAttributes(attributsAlarme());
@@ -1716,33 +1724,41 @@ public class AlerteManager {
             mp.start();
         } catch (Exception e) {
             try { mp.release(); } catch (Exception ignore) { }
-            return false;
+            return -2;
         }
         a.lecteur = mp;
-        return true;
+        return 0;
     }
 
-    private static boolean lireTonalite(Alerte a, String nom) {
+    private static int lireTonalite(Alerte a, String nom) {
         short[] pcm = genererPcm(nom);
-        if (pcm == null) return false;
+        if (pcm == null) return -2;
         AudioTrack t = null;
         try {
             // Constructeur "STREAM_ALARM" : fonctionne sur toutes les versions d'Android.
             t = new AudioTrack(AudioManager.STREAM_ALARM, TAUX, AudioFormat.CHANNEL_OUT_MONO,
                 AudioFormat.ENCODING_PCM_16BIT, pcm.length * 2, AudioTrack.MODE_STATIC);
-            if (t.getState() != AudioTrack.STATE_INITIALIZED) {
+            // En mode STATIC, l'etat juste apres la construction est STATE_NO_STATIC_DATA (et non
+            // STATE_INITIALIZED) : il ne devient INITIALIZED qu'APRES l'ecriture des donnees.
+            // Seul STATE_UNINITIALIZED signale un vrai echec de creation.
+            if (t.getState() == AudioTrack.STATE_UNINITIALIZED) {
                 t.release();
-                return false;
+                return -3;
             }
-            t.write(pcm, 0, pcm.length);
+            int ecrits = t.write(pcm, 0, pcm.length);
+            if (ecrits != pcm.length || t.getState() != AudioTrack.STATE_INITIALIZED) {
+                t.release();
+                return -3;
+            }
+            // Boucle : si Android refuse les points de boucle, le son jouera une seule fois (non fatal).
             t.setLoopPoints(0, pcm.length, -1);
             t.play();
         } catch (Exception e) {
             try { if (t != null) t.release(); } catch (Exception ignore) { }
-            return false;
+            return -2;
         }
         a.piste = t;
-        return true;
+        return 0;
     }
 
     // Sons generes sans aucun fichier : un buffer court rejoue en boucle.
@@ -1778,15 +1794,27 @@ public class AlerteManager {
 
     // ---------------------------------------------------------- vibration
 
+    // Le telephone a-t-il un moteur de vibration ?
+    public static boolean vibreurDispo(Context ctx) {
+        try {
+            Vibrator vib = (Vibrator) ctx.getApplicationContext().getSystemService(Context.VIBRATOR_SERVICE);
+            return vib != null && vib.hasVibrator();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     // motif : durees en ms qui alternent pause, vibration, pause... (comme Android).
+    // Renvoie le numero de l'alerte (> 0), ou un code d'erreur negatif :
+    // -1 pas de moteur de vibration, -2 Android a refuse (permission VIBRATE absente...), -3 motif invalide.
     public static synchronized int demarrerVibration(Context ctx, long[] motif, boolean autonome) {
         try {
             final Context c = ctx.getApplicationContext();
             Vibrator vib = (Vibrator) c.getSystemService(Context.VIBRATOR_SERVICE);
-            if (vib == null || !vib.hasVibrator()) return 0;
+            if (vib == null || !vib.hasVibrator()) return -1;
             long total = 0;
             for (int i = 0; i < motif.length; i++) total += motif[i];
-            if (total < 1 || total > DUREE_MAX_SEC * 1000L) return 0;
+            if (total < 1 || total > DUREE_MAX_SEC * 1000L) return -3;
             // Un seul moteur de vibration : la nouvelle remplace l'ancienne.
             List<Alerte> anciennes = new ArrayList<Alerte>();
             for (int i = 0; i < ALERTES.size(); i++) if (ALERTES.get(i).vibration) anciennes.add(ALERTES.get(i));
@@ -1808,7 +1836,7 @@ public class AlerteManager {
             enregistrer(c, a, total + 300L);
             return a.id;
         } catch (Exception e) {
-            return 0;
+            return -2;
         }
     }
 
@@ -1964,7 +1992,7 @@ public class AlerteManager {
          .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
          .setOngoing(true)
          .setCategory(Notification.CATEGORY_ALARM)
-         .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Arr\u00eater", piArret);
+         .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Arr\\u00eater", piArret);
         Intent ouvrir = c.getPackageManager().getLaunchIntentForPackage(c.getPackageName());
         if (ouvrir != null) {
             b.setContentIntent(PendingIntent.getActivity(c, 2, ouvrir,
