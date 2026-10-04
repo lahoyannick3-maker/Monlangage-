@@ -323,12 +323,16 @@ public class MonLangageBridge {
         } catch (Exception e) { return "[]"; }
     }
 
-    private void runOnUiThread {
-        if (activity != null) activity.runOnUiThread(action);
-        else new android.os.Handler(android.os.Looper.getMainLooper()).post(action);
+    private void runOnUiThread(Runnable action) {
+    if (activity != null) {
+        activity.runOnUiThread(action);
+    } else {
+        new android.os.Handler(
+            android.os.Looper.getMainLooper()
+        ).post(action);
     }
-
-    private boolean ouvrirActiviteOuNotification(Intent intent, String titre) {
+}
+   private boolean ouvrirActiviteOuNotification(Intent intent, String titre) {
         // Cas 1 : bridge directement rattache a MainActivity.
         if (activity != null) {
             activity.runOnUiThread(() -> {
