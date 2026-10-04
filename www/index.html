@@ -620,6 +620,8 @@ let outputDiv = document.getElementById("output");
 let couleurConsole = null;
 // Sons du jeu (son/note) : etat du moteur audio. Declare ici, tres tot, car reinitialiserTouches() les utilise.
 let audioCtx = null, audioMaitre = null, voixSon = [], prochainIdSon = 1;
+// Alertes natives (alerte.*) : mode des PROCHAINES alertes, "autonome" (defaut) ou "script". Remis a "autonome" a chaque script.
+let alerteModeCourant = "autonome";
 let codeArea = document.getElementById("code");
 let codeHighlight = document.getElementById("codeHighlight");
 let numeros = document.getElementById("numeros");
@@ -1206,7 +1208,7 @@ function empilerTouche(nom) {
   fileTouches.push(nom);
   if (fileTouches.length > FILE_TOUCHES_MAX) fileTouches.shift();
 }
-function reinitialiserTouches() { fileTouches.length = 0; toucheActive = false; politiqueClavier = "auto"; desactiverSaisieTouche(); effacerBoutons(); document.body.classList.remove("scriptJeu"); couleurConsole = null; arreterSonsJeu(typeof demandeArret !== "undefined" && demandeArret === true); fileDoigts.length = 0; doigtIdActif = null; }
+function reinitialiserTouches() { fileTouches.length = 0; toucheActive = false; politiqueClavier = "auto"; desactiverSaisieTouche(); effacerBoutons(); document.body.classList.remove("scriptJeu"); couleurConsole = null; alerteModeCourant = "autonome"; alerteFinScript(); arreterSonsJeu(typeof demandeArret !== "undefined" && demandeArret === true); fileDoigts.length = 0; doigtIdActif = null; }
 
 // ----- Saisie invisible de touche() : ouvre le clavier du systeme, comme entr(), sans bloquer -----
 // Sur un telephone sans clavier physique, aucune frappe n'arrive tant qu'aucun champ n'a le focus :
@@ -1361,6 +1363,10 @@ function arreterVoixSon(id) {
 }
 // Les SONS s'arretent toujours avec le script. La VIBRATION, elle, n'est coupee que sur arret force
 // (bouton d'arret d'urgence) : sinon un vibre(150) place en derniere ligne serait annule avant d'etre senti.
+// Fin (ou debut) de script : coupe les alertes natives en mode "script" ; les autonomes continuent.
+function alerteFinScript() {
+  try { if (window.MonLangage && typeof window.MonLangage.alerteArreterLiees === "function") window.MonLangage.alerteArreterLiees(); } catch (_) {}
+}
 function arreterSonsJeu(coupeAussiVibration) {
   for (let v of voixSon.slice()) arreterVoixSon(v.id);
   if (coupeAussiVibration) { try { if (navigator.vibrate) navigator.vibrate(0); } catch (e) {} }
@@ -5635,6 +5641,26 @@ let aideCommandes = [
       "Retire tous les boutons affiches par bouton(...). Sans effet s'il n'y en a pas. Ne prend aucun argument.",
       "Les boutons disparaissent aussi tout seuls a la fin du script."
     ], exemple: "bouton(|OK|, |ok|, 1, 1)\nattendre(2)\nbouton.efface()" },
+  { noms: ["alerte.mode"], categorie: "Console", syntaxe: "alerte.mode(|autonome|)   ou   alerte.mode(|script|)", description: [
+      "Choisit comment vivent les PROCHAINES alertes (alerte.son, alerte.vibre) du script. Sans cet appel, le mode est |autonome|. Il revient a |autonome| a chaque nouveau script.",
+      "|autonome| : l'alerte continue apres la fin du script, pendant toute sa duree, comme une alarme. Une notification s'affiche avec un bouton Arreter. Pratique pour un script planifie d'une seule ligne.",
+      "|script| : l'alerte vit avec le script. Elle s'arrete quand le script se termine, ou avant avec alerte.arrete() ou sa duree. Pas de notification. Tout se code a la main : garde le script en vie avec attendre(...) ou une boucle."
+    ], exemple: "alerte.mode(|script|)\na ~ alerte.son(|sirene|, 60)\nattendre(5)\nalerte.arrete(a)" },
+  { noms: ["alerte.son"], categorie: "Console", syntaxe: "alerte.son(nom, duree)   ou   alerte.son(nom, duree, volume)", description: [
+      "Fait sonner une alerte et renvoie son numero (a garder dans une variable pour la couper avec alerte.arrete(numero)). Ne bloque pas le script.",
+      "Contrairement a son(), c'est une alerte NATIVE : elle passe par le canal audio ALARME d'Android, comme l'application Horloge. Elle sonne meme si le telephone est en silencieux ou en vibreur, et marche aussi en arriere-plan (FOND, scripts planifies).",
+      "nom : |defaut| (le son d'alarme choisi dans les reglages du telephone), |sirene| ou |bip| (sons generes). duree : en secondes, au plus 300 (arrondie a la seconde superieure). volume (facultatif) : de 0 a 1, regle le volume d'alarme le temps de l'alerte puis le remet comme avant ; sans lui, c'est le volume d'alarme que tu as regle.",
+      "Limites : un volume d'alarme a zero rend l'alerte muette (donne un volume), et le mode Ne pas deranger peut la bloquer si l'exception des alarmes y est desactivee. Disponible uniquement dans l'app installee. Voir alerte.mode pour ce qui se passe a la fin du script."
+    ], exemple: "alerte.son(|defaut|, 30)\n\na ~ alerte.son(|sirene|, 10, 1)\nattendre(3)\nalerte.arrete(a)" },
+  { noms: ["alerte.vibre"], categorie: "Console", syntaxe: "alerte.vibre(ms)   ou   alerte.vibre(liste(pause, vibre, pause, ...))", description: [
+      "Fait vibrer le telephone et renvoie le numero de l'alerte. Comme alerte.son, la vibration est declaree \"alarme\" : elle marche meme en silencieux. Un seul vibreur : une nouvelle vibration remplace la precedente.",
+      "Avec un nombre : vibre pendant ms millisecondes. Avec une liste : durees en millisecondes qui alternent pause, vibration, pause... (2 a 50 valeurs, chacune au plus 60000, 300 secondes au total ; la 1re valeur est une PAUSE, 0 pour vibrer tout de suite). Elle doit contenir au moins une vibration.",
+      "Erreur si le telephone n'a pas de vibreur ou si Android refuse. Voir alerte.mode pour ce qui se passe a la fin du script."
+    ], exemple: "alerte.vibre(1000)\nalerte.vibre(liste(0, 500, 200, 500))" },
+  { noms: ["alerte.arrete"], categorie: "Console", syntaxe: "alerte.arrete()   ou   alerte.arrete(numero)", description: [
+      "Sans argument, coupe toutes les alertes en cours (son et vibration, autonomes comprises). Avec un numero renvoye par alerte.son() ou alerte.vibre(), coupe seulement celle-la. Un numero inconnu ou deja termine est ignore sans erreur.",
+      "Le bouton Arreter de la notification et le bouton Arret d'urgence de la console coupent aussi toutes les alertes."
+    ], exemple: "a ~ alerte.son(|defaut|, 60)\nattendre(10)\nalerte.arrete(a)" },
   { noms: ["son"], categorie: "Console", syntaxe: "son(effet)   ou   son(effet, volume)", description: [
       "Joue un effet sonore integre et renvoie son numero (a garder dans une variable si tu veux le couper avec son.arrete(numero)). Ne bloque jamais le script : il continue tout de suite, et plusieurs sons peuvent se jouer en meme temps.",
       "effet : bip, clic, pop, piece, saut, tir, explosion, perdu ou gagne (sons fabriques par le code, sans fichier). volume (facultatif) : de 0 a 1, 1 par defaut.",
@@ -5649,7 +5675,7 @@ let aideCommandes = [
       "Sans argument, coupe tous les sons du jeu. Avec un numero (renvoye par son() ou note()), coupe seulement ce son. Un numero inconnu ou deja termine est ignore sans erreur. Les sons s'arretent de toute facon a la fin du script."
     ], exemple: "s ~ note(300, 10)\nattendre(1)\nson.arrete(s)" },
   { noms: ["vibre"], categorie: "Console", syntaxe: "vibre(ms)   ou   vibre(liste(pause, vibre, pause, ...))", description: [
-      "Fait vibrer le telephone pendant ms millisecondes (0 a 5000), ou selon un motif : une liste de durees qui alternent pause, vibration, pause... (20 valeurs au maximum, 10 secondes au total). vibre(0) arrete la vibration. Ne bloque pas le script.",
+      "Fait vibrer le telephone pendant ms millisecondes (0 a 5000), ou selon un motif : une liste de durees qui alternent pause, vibration, pause... (2 a 20 valeurs, 10 secondes au total ; la 1re valeur est une PAUSE, 0 pour vibrer tout de suite). vibre(0) arrete la vibration. Ne bloque pas le script.",
       "Renvoie VRAI si le telephone accepte la vibration, FAUX sinon (pas de vibreur, permission VIBRATE absente de l'APK, ou ecran jamais touche) : essaie affi(vibre(200)) pour savoir.",
       "Pour le JEU : elle suit les reglages du telephone. Contrairement aux sons, elle n'est PAS coupee a la fin du script (un vibre(150) en derniere ligne est senti en entier) ; seul l'arret d'urgence la coupe. Indisponible en arriere-plan (FOND). Pour une alerte fiable meme en silencieux, utilise alerte.vibre."
     ], exemple: "vibre(80)\nvibre(liste(0, 200, 100, 200))" },
@@ -8420,6 +8446,87 @@ function enregistrerFonctionsBase() {
         return undefined;
     };
 
+    // ----- Alertes natives : alerte.mode / alerte.son / alerte.vibre / alerte.arrete -----
+    // Contrairement a son()/vibre() (WebAudio dans l'app, qui suivent les reglages du telephone),
+    // les alertes sont NATIVES : canal audio "alarme" d'Android, elles sonnent et vibrent meme en
+    // silencieux (comme l'application Horloge) et marchent aussi en arriere-plan (FOND, scripts planifies).
+    const ALERTE_SONS = ["defaut", "sirene", "bip"];
+    const ALERTE_DUREE_MAX = 300;
+    function pontAlerte(nom) {
+        if (!(window.MonLangage && typeof window.MonLangage.alerteSon === "function")) {
+            throw new ErreurIndisponibleHorsApp(nom + " : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        return window.MonLangage;
+    }
+    // Une alerte autonome affiche une notification avec un bouton "Arreter" : Android 13+ demande l'accord
+    // (sans bloquer le script ; l'alerte joue de toute facon).
+    function demanderNotificationsAlerte(pont) {
+        try {
+            if (typeof pont.permissionNotificationsAccordee === "function" && !pont.permissionNotificationsAccordee() &&
+                typeof pont.demanderPermissionNotifications === "function") pont.demanderPermissionNotifications();
+        } catch (_) {}
+    }
+    fonctionsBase["alerte.mode"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("alerte.mode(|autonome|) ou alerte.mode(|script|) attend 1 argument");
+        let m = await evalExpr(args[0], ctxExpr);
+        let mode = typeof m === "string" ? m.trim().toLowerCase() : "";
+        if (mode !== "autonome" && mode !== "script") throw new Error("alerte.mode() : mode inconnu. Modes : autonome (l'alerte continue apres la fin du script, avec une notification Arreter), script (l'alerte s'arrete avec le script)");
+        alerteModeCourant = mode;
+        return undefined;
+    };
+    // alerte.son(nom, duree[, volume]) : renvoie le numero de l'alerte (a garder pour alerte.arrete(numero)).
+    fonctionsBase["alerte.son"] = fonctionsExpression["alerte.son"] = async function(args, ctxExpr) {
+        if (args.length < 2 || args.length > 3) throw new Error("alerte.son(nom, duree) ou alerte.son(nom, duree, volume) attend 2 ou 3 arguments");
+        let nom = await evalExpr(args[0], ctxExpr), duree = await evalExpr(args[1], ctxExpr);
+        let vol = args.length === 3 ? await evalExpr(args[2], ctxExpr) : -1;
+        let n = typeof nom === "string" ? nom.trim().toLowerCase() : "";
+        if (!ALERTE_SONS.includes(n)) throw new Error("alerte.son() : son inconnu. Sons : " + ALERTE_SONS.join(", ") + " (defaut = le son d'alarme du telephone)");
+        if (typeof duree !== "number" || !isFinite(duree) || duree <= 0 || duree > ALERTE_DUREE_MAX) throw new Error("alerte.son() : la duree doit etre un nombre de secondes superieur a 0 et au plus " + ALERTE_DUREE_MAX);
+        if (args.length === 3 && (typeof vol !== "number" || !isFinite(vol) || vol < 0 || vol > 1)) throw new Error("alerte.son() : le volume doit etre un nombre entre 0 et 1");
+        let pont = pontAlerte("alerte.son(...)");
+        let autonome = alerteModeCourant === "autonome";
+        if (autonome) demanderNotificationsAlerte(pont);
+        let id = pont.alerteSon(n, Math.max(1, Math.ceil(duree)), vol, autonome);
+        if (!id) throw new Error("alerte.son() : Android a refuse de jouer le son");
+        return id;
+    };
+    // alerte.vibre(ms) ou alerte.vibre(liste(pause, vibre, pause, ...)) : renvoie le numero de l'alerte.
+    fonctionsBase["alerte.vibre"] = fonctionsExpression["alerte.vibre"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("alerte.vibre(ms) ou alerte.vibre(liste(...)) attend 1 argument");
+        let v = await evalExpr(args[0], ctxExpr);
+        let motif;
+        if (typeof v === "number") motif = [0, v]; // une duree seule : vibre tout de suite
+        else if (v && v.__type === "liste") motif = v.elements.slice();
+        else throw new Error("alerte.vibre() : donne une duree en millisecondes ou une liste(pause, vibre, pause, ...)");
+        if (motif.length < 2 || motif.length > 50) throw new Error("alerte.vibre() : un motif contient 2 a 50 valeurs (pause, vibre, pause, ...)");
+        let total = 0;
+        for (let x of motif) {
+            if (typeof x !== "number" || !isFinite(x) || x < 0 || x > 60000) throw new Error("alerte.vibre() : chaque duree doit etre un nombre de millisecondes entre 0 et 60000");
+            total += x;
+        }
+        let vibre = 0; for (let i = 1; i < motif.length; i += 2) vibre += motif[i];
+        if (vibre <= 0) throw new Error("alerte.vibre() : le motif doit contenir au moins une vibration (les valeurs en 2e, 4e... position)");
+        if (total > ALERTE_DUREE_MAX * 1000) throw new Error("alerte.vibre() : le motif dure au plus " + ALERTE_DUREE_MAX + " secondes au total");
+        let pont = pontAlerte("alerte.vibre(...)");
+        let autonome = alerteModeCourant === "autonome";
+        if (autonome) demanderNotificationsAlerte(pont);
+        let id = pont.alerteVibre(JSON.stringify(motif.map(x => Math.round(x))), autonome);
+        if (!id) throw new Error("alerte.vibre() : pas de vibreur sur cet appareil, ou Android a refuse");
+        return id;
+    };
+    // alerte.arrete([numero]) : coupe cette alerte, ou toutes sans argument.
+    fonctionsBase["alerte.arrete"] = async function(args, ctxExpr) {
+        if (args.length > 1) throw new Error("alerte.arrete() ou alerte.arrete(numero) attend 0 ou 1 argument");
+        let pont = pontAlerte("alerte.arrete()");
+        let id = 0;
+        if (args.length === 1 && args[0].trim() !== "") {
+            id = await evalExpr(args[0], ctxExpr);
+            if (typeof id !== "number" || !isFinite(id) || id <= 0) throw new Error("alerte.arrete() : le numero doit etre celui renvoye par alerte.son() ou alerte.vibre()");
+        }
+        pont.alerteArreter(Math.round(id));
+        return undefined;
+    };
+
     // ----- Sons du jeu -----
     function volumeSon(v, nom) {
         if (typeof v !== "number" || !isFinite(v) || v < 0 || v > 1) throw new Error(nom + " : le volume doit etre un nombre entre 0 et 1");
@@ -8476,13 +8583,24 @@ function enregistrerFonctionsBase() {
         if (typeof v === "number") motif = [v];
         else if (v && v.__type === "liste") motif = v.elements.slice();
         else throw new Error("vibre() : donne une duree en millisecondes ou une liste(pause, vibre, pause, ...)");
-        if (motif.length < 1 || motif.length > 20) throw new Error("vibre() : le motif contient 1 a 20 valeurs");
+        if (motif.length > 20 || (v && v.__type === "liste" && motif.length < 2)) throw new Error("vibre() : un motif contient 2 a 20 valeurs (pause, vibre, pause, ...)");
         for (let x of motif) if (typeof x !== "number" || !isFinite(x) || x < 0 || x > 5000) throw new Error("vibre() : chaque duree doit etre un nombre de millisecondes entre 0 et 5000");
         if (motif.reduce((a, b) => a + b, 0) > 10000) throw new Error("vibre() : le motif dure au plus 10 secondes au total (10000 ms)");
         // Renvoie VRAI si le telephone accepte la vibration, FAUX sinon (pas de vibreur, permission VIBRATE absente
         // de l'APK, ou page jamais touchee) : affi(vibre(200)) permet de diagnostiquer.
+        // navigator.vibrate attend vibre, pause, vibre... alors que le langage donne pause, vibre, pause... (comme
+        // alerte.vibre) : une liste commence par sa pause. Pause nulle : on la retire. Pause > 0 : on attend.
         let ok = false;
-        try { if (navigator.vibrate) ok = !!navigator.vibrate(motif.length === 1 && motif[0] === 0 ? 0 : motif); } catch (e) { ok = false; }
+        try {
+            if (navigator.vibrate) {
+                if (typeof v === "number") ok = !!navigator.vibrate(v === 0 ? 0 : [v]);
+                else {
+                    let pause = motif[0], reste = motif.slice(1);
+                    if (pause <= 0) ok = !!navigator.vibrate(reste);
+                    else { ok = true; setTimeout(() => { try { navigator.vibrate(reste); } catch (_) {} }, pause); }
+                }
+            }
+        } catch (e) { ok = false; }
         return ok;
     };
 
@@ -8667,6 +8785,20 @@ function enregistrerFonctionsBase() {
         bl: "#f0f6fc"   // blanc
     };
 
+    fonctionsBase["feuille"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("feuille(n) attend un numero de feuille a partir de 1");
+        let n = Number(await evalExpr(args[0], ctxExpr));
+        if (!Number.isInteger(n) || n < 1 || n > 100) throw new Error("feuille(n) : le numero doit etre un entier entre 1 et 100");
+        activerFeuilleGraphique(n);
+    };
+    fonctionsBase["trac.diviser"] = async function(args, ctxExpr) {
+        if (args.length !== 3) throw new Error("trac.diviser(lignes,colonnes,position) attend trois entiers");
+        let v = [];
+        for (let a of args) v.push(Number(await evalExpr(a, ctxExpr)));
+        if (!v.every(Number.isInteger) || v[0] < 1 || v[1] < 1 || v[2] < 1 || v[2] > v[0] * v[1] || v[0] * v[1] > 64) throw new Error("trac.diviser : dimensions ou position invalides");
+        activerZoneGraphique(v[0], v[1], v[2]);
+    };
+
     fonctionsBase["trac"] = async function(args, ctxExpr) {
         if (args.length < 1) throw new Error("trac(...) attend au moins un vecteur : trac(y)  ou  trac(x, y)");
 
@@ -8727,7 +8859,45 @@ function enregistrerFonctionsBase() {
         for (let v of xs) verifierNombre(v, "trac");
         for (let v of ys) verifierNombre(v, "trac");
 
-        dessinerCourbe(xs, ys, { couleur, type, titre, xlab, ylab, grille: false });
+        // La zone active est la source d'autorité; ne jamais réutiliser par erreur
+        // le dernier graphique d'une autre feuille ou d'une autre zone.
+        if (zoneGraphiqueActive) dernierGraphique = zoneGraphiqueActive.graphique;
+        let optionsCourbe = { couleur, type, titre, xlab, ylab, grille: dernierGraphique ? !!dernierGraphique.options.grille : false };
+        let courbe = { xs: xs, ys: ys, options: optionsCourbe };
+        if (dernierGraphique && dernierGraphique.canvas && dernierGraphique.canvas.isConnected) {
+            let courbes = Array.isArray(dernierGraphique.courbes) ? dernierGraphique.courbes.slice() : [{ xs: dernierGraphique.xs, ys: dernierGraphique.ys, options: dernierGraphique.options }];
+            courbes.push(courbe);
+            let optionsGroupe = Object.assign({}, optionsCourbe, { courbes: courbes });
+            dessinerCourbe(xs, ys, optionsGroupe, dernierGraphique.canvas);
+        } else {
+            dessinerCourbe(xs, ys, Object.assign({}, optionsCourbe, { courbes: [courbe] }));
+        }
+    };
+
+    // trac.multi(x, y1, y2, ...) : trace plusieurs vecteurs Y sur un meme repere.
+    // Les options nommees sont communes; les couleurs sont attribuees automatiquement
+    // lorsque couleur n'est pas precisée. Le rendu reutilise trac() et son canvas.
+    fonctionsBase["trac.multi"] = async function(args, ctxExpr) {
+        if (args.length < 3) throw new Error("trac.multi(...) attend x et au moins deux vecteurs y : trac.multi(x, y1, y2, ...)");
+        let optionsConnues = ["couleur", "type", "titre", "xlab", "ylab"];
+        let positionnels = [], nommes = {};
+        for (let a of args) {
+            let m = a.trim().match(/^(\w+)\s*~\s*(.*)$/);
+            if (m && optionsConnues.includes(m[1])) nommes[m[1]] = m[2];
+            else positionnels.push(a);
+        }
+        if (positionnels.length < 3) throw new Error("trac.multi(...) attend x et au moins deux vecteurs y");
+        let palette = ["b", "r", "v", "m", "c", "j", "bl", "n"];
+        let couleurFournie = Object.prototype.hasOwnProperty.call(nommes, "couleur");
+        for (let i = 1; i < positionnels.length; i++) {
+            let argsTrac = [positionnels[0], positionnels[i]];
+            for (let cle of Object.keys(nommes)) {
+                if (cle === "couleur" && !couleurFournie) continue;
+                argsTrac.push(cle + "~" + nommes[cle]);
+            }
+            if (!couleurFournie) argsTrac.push("couleur~|" + palette[(i - 1) % palette.length] + "|");
+            await fonctionsBase["trac"](argsTrac, ctxExpr);
+        }
     };
 
     // grille(...) : active ou desactive la grille sur le DERNIER graphique trace avec
@@ -8739,10 +8909,36 @@ function enregistrerFonctionsBase() {
         let actif = true;
         if (args.length >= 1 && args[0].trim() !== "") actif = estVrai(await evalExpr(args[0], ctxExpr));
         dernierGraphique.options.grille = actif;
-        dessinerCourbe(dernierGraphique.xs, dernierGraphique.ys, dernierGraphique.options, dernierGraphique.canvas);
+        let courbes = Array.isArray(dernierGraphique.courbes) ? dernierGraphique.courbes : [{ xs: dernierGraphique.xs, ys: dernierGraphique.ys, options: dernierGraphique.options }];
+        for (let c of courbes) c.options.grille = actif;
+        dessinerCourbe(dernierGraphique.xs, dernierGraphique.ys, Object.assign({}, dernierGraphique.options, { courbes: courbes }), dernierGraphique.canvas);
     };
 
-    // Pour ajouter une future fonction native :
+        // Efface le graphique actif sans remettre a zero l'etat d'utilisation de sa zone.
+    fonctionsBase["trac.effa"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("trac.effa() ne prend aucun argument");
+        if (zoneGraphiqueActive) {
+            zoneGraphiqueActive.element.innerHTML = "";
+            zoneGraphiqueActive.graphique = null;
+        } else if (dernierGraphique && dernierGraphique.canvas && dernierGraphique.canvas.parentElement) {
+            dernierGraphique.canvas.parentElement.remove();
+        }
+        dernierGraphique = null;
+    };
+
+    // Efface tous les graphiques de la feuille active en conservant ses zones et leur historique.
+    fonctionsBase["feuille.effa"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("feuille.effa() ne prend aucun argument");
+        if (!feuilleGraphiqueActive) throw new Error("feuille.effa() : aucune feuille active");
+        for (let zone of feuilleGraphiqueActive.zones.values()) {
+            zone.element.innerHTML = "";
+            zone.graphique = null;
+        }
+        dernierGraphique = null;
+        zoneGraphiqueActive = null;
+    };
+
+// Pour ajouter une future fonction native :
     // - fonctionsBase["nom"] = async (args, ctxExpr) => { ... };  -> utilisable en instruction + base.nom(...)
     // - ajouter aussi fonctionsExpression["nom"] = fonctionsBase["nom"]; si elle doit
     //   pouvoir etre utilisee a l'interieur d'une expression (ex: x ~ nom(...)).
@@ -9035,6 +9231,10 @@ function printInvite() {
 
 function clearConsole() {
   outputDiv.innerHTML = "";
+  dernierGraphique = null;
+  feuillesGraphiques.clear();
+  feuilleGraphiqueActive = null;
+  zoneGraphiqueActive = null;
 }
 
 /* ===================== GRAPHIQUE (trac) ===================== */
@@ -9048,6 +9248,86 @@ function formaterNombreAxe(v) {
 // Memorise le dernier graphique trace (xs, ys, options, canvas) pour que la commande
 // grille(...) puisse le redessiner avec la grille activee, comme xgrid() en Scilab.
 let dernierGraphique = null;
+// Gestion additive des feuilles : le rendu Canvas existant reste le moteur de dessin.
+let feuillesGraphiques = new Map();
+let feuilleGraphiqueActive = null;
+let zoneGraphiqueActive = null;
+function verifierFeuilleGraphiqueComplete(feuille) {
+  if (!feuille || feuille.lignes * feuille.colonnes <= 1) return true;
+  let manquantes = [];
+  for (let position = 1; position <= feuille.lignes * feuille.colonnes; position++) {
+    let cle = feuille.lignes + "x" + feuille.colonnes + ":" + position;
+    let zone = feuille.zones.get(cle);
+    // L'utilisation est historique : effacer un tracé ne rend pas la zone inutilisée.
+    if (!zone || zone.utilisee !== true) manquantes.push(position);
+  }
+  if (manquantes.length) {
+    throw new Error("feuille(" + feuille.numero + ") : impossible de quitter cette feuille avant d'avoir utilisé toutes ses zones. Zones manquantes : " + manquantes.join(", "));
+  }
+  return true;
+}
+function activerFeuilleGraphique(numero) {
+  // Changer de feuille sauvegarde le contexte courant dans sa zone avant d'activer
+  // l'autre. Une feuille existante peut être revisitée sans recréer ses graphiques.
+  if (feuilleGraphiqueActive && feuilleGraphiqueActive.numero !== numero) {
+    verifierFeuilleGraphiqueComplete(feuilleGraphiqueActive);
+    if (zoneGraphiqueActive) zoneGraphiqueActive.graphique = dernierGraphique;
+  }
+  let feuille = feuillesGraphiques.get(numero);
+  if (!feuille) {
+    let racine = document.createElement("section");
+    racine.className = "resultatConsole mlg-feuille-graphique";
+    racine.style.margin = "10px 0";
+    racine.style.padding = "8px";
+    racine.style.border = "1px solid #30363d";
+    racine.style.borderRadius = "8px";
+    let entete = document.createElement("div");
+    entete.textContent = "Feuille " + numero;
+    entete.style.fontWeight = "bold";
+    entete.style.color = "#8b949e";
+    entete.style.marginBottom = "6px";
+    racine.appendChild(entete);
+    outputDiv.appendChild(racine);
+    feuille = { numero, racine, zones: new Map(), lignes: 1, colonnes: 1 };
+    feuillesGraphiques.set(numero, feuille);
+  }
+  feuilleGraphiqueActive = feuille;
+  let cle = "1x1:1";
+  if (!feuille.zones.has(cle)) {
+    let zone = document.createElement("div");
+    zone.style.minWidth = "0";
+    feuille.racine.appendChild(zone);
+    feuille.zones.set(cle, { element: zone, graphique: null, utilisee: false, lignes: 1, colonnes: 1, position: 1 });
+  }
+  zoneGraphiqueActive = feuille.zones.get(cle);
+  dernierGraphique = zoneGraphiqueActive.graphique;
+}
+function activerZoneGraphique(lignes, colonnes, position) {
+  if (!feuilleGraphiqueActive) activerFeuilleGraphique(1);
+  let feuille = feuilleGraphiqueActive;
+  if (feuille.lignes !== lignes || feuille.colonnes !== colonnes) {
+    if (feuille.zones.size > 1 || Array.from(feuille.zones.values()).some(z => z.utilisee)) {
+      throw new Error("trac.diviser : la grille de cette feuille est deja commencee avec d'autres dimensions");
+    }
+    feuille.lignes = lignes; feuille.colonnes = colonnes;
+    let base = feuille.zones.get("1x1:1");
+    if (base && !base.utilisee) { base.element.remove(); feuille.zones.delete("1x1:1"); }
+    feuille.racine.style.display = "grid";
+    feuille.racine.style.gridTemplateColumns = "repeat(" + colonnes + ", minmax(0, 1fr))";
+    feuille.racine.style.gap = "8px";
+  }
+  let cle = lignes + "x" + colonnes + ":" + position;
+  if (!feuille.zones.has(cle)) {
+    let element = document.createElement("div");
+    element.style.minWidth = "0";
+    element.style.gridColumn = String((position - 1) % colonnes + 1);
+    element.style.gridRow = String(Math.floor((position - 1) / colonnes) + 1);
+    feuille.racine.appendChild(element);
+    feuille.zones.set(cle, { element, graphique: null, utilisee: false, lignes, colonnes, position });
+  }
+  zoneGraphiqueActive = feuille.zones.get(cle);
+  dernierGraphique = zoneGraphiqueActive.graphique;
+}
 
 // Dessine une courbe (xs, ys) dans un <canvas> ajoute a la console.
 // options : { couleur, type: "lignes"|"points", titre, xlab, ylab, grille }
@@ -9101,7 +9381,8 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
     canvas._ratio = ratio;
     conteneur.appendChild(canvas);
 
-    outputDiv.appendChild(conteneur);
+    let cibleGraphique = zoneGraphiqueActive ? zoneGraphiqueActive.element : outputDiv;
+    cibleGraphique.appendChild(conteneur);
     outputDiv.scrollTop = outputDiv.scrollHeight;
   }
 
@@ -9119,9 +9400,16 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
   // Infini ferait exploser toute l'echelle et rendrait le graphique vide), et on coupera
   // la ligne a cet endroit au moment du trace, comme le font les autres langages de trace
   // (matplotlib, R, Scilab) qui laissent un "trou" au niveau de l'asymptote.
+  let courbes = Array.isArray(options.courbes) && options.courbes.length
+    ? options.courbes
+    : [{ xs: xs, ys: ys, options: options }];
   let xsFinis = [], ysFinis = [];
-  for (let i = 0; i < xs.length; i++) {
-    if (Number.isFinite(xs[i]) && Number.isFinite(ys[i])) { xsFinis.push(xs[i]); ysFinis.push(ys[i]); }
+  for (let courbe of courbes) {
+    for (let i = 0; i < courbe.xs.length; i++) {
+      if (Number.isFinite(courbe.xs[i]) && Number.isFinite(courbe.ys[i])) {
+        xsFinis.push(courbe.xs[i]); ysFinis.push(courbe.ys[i]);
+      }
+    }
   }
   if (xsFinis.length === 0) throw new Error("trac(...) : aucune valeur finie a tracer (toutes les valeurs sont infinies ou indefinies)");
 
@@ -9170,26 +9458,33 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
   ctx.strokeStyle = "#30363d";
   ctx.strokeRect(marge.gauche, marge.haut, largeurTrace, hauteurTrace);
 
-  // Courbe
-  ctx.strokeStyle = couleur;
-  ctx.fillStyle = couleur;
-  ctx.lineWidth = 2;
-  if (type === "points") {
-    for (let i = 0; i < xs.length; i++) {
-      if (!Number.isFinite(xs[i]) || !Number.isFinite(ys[i])) continue;
+  // Dessine toutes les courbes sur le même repère. Chaque courbe conserve
+  // ses propres options de couleur et de type.
+  for (let courbe of courbes) {
+    let cx = courbe.xs, cy = courbe.ys;
+    let opt = courbe.options || {};
+    let couleurCourbe = opt.couleur || couleur;
+    let typeCourbe = (opt.type || type).toLowerCase();
+    ctx.strokeStyle = couleurCourbe;
+    ctx.fillStyle = couleurCourbe;
+    ctx.lineWidth = 2;
+    if (typeCourbe === "points") {
+      for (let i = 0; i < cx.length; i++) {
+        if (!Number.isFinite(cx[i]) || !Number.isFinite(cy[i])) continue;
+        ctx.beginPath();
+        ctx.arc(px(cx[i]), py(cy[i]), 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else {
       ctx.beginPath();
-      ctx.arc(px(xs[i]), py(ys[i]), 2.5, 0, Math.PI * 2);
-      ctx.fill();
+      let enCours = false;
+      for (let i = 0; i < cx.length; i++) {
+        if (!Number.isFinite(cx[i]) || !Number.isFinite(cy[i])) { enCours = false; continue; }
+        let X = px(cx[i]), Y = py(cy[i]);
+        if (!enCours) { ctx.moveTo(X, Y); enCours = true; } else { ctx.lineTo(X, Y); }
+      }
+      ctx.stroke();
     }
-  } else {
-    ctx.beginPath();
-    let enCours = false;
-    for (let i = 0; i < xs.length; i++) {
-      if (!Number.isFinite(xs[i]) || !Number.isFinite(ys[i])) { enCours = false; continue; }
-      let X = px(xs[i]), Y = py(ys[i]);
-      if (!enCours) { ctx.moveTo(X, Y); enCours = true; } else { ctx.lineTo(X, Y); }
-    }
-    ctx.stroke();
   }
 
   // Labels des axes
@@ -9204,7 +9499,22 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
     ctx.restore();
   }
 
-  dernierGraphique = { canvas: canvas, xs: xs, ys: ys, options: options };
+  // Conserve la forme historique (canvas/xs/ys/options) pour grille(),
+  // et ajoute une collection extensible de courbes pour les évolutions futures.
+  // Chaque trac() actuel possède encore son propre canvas : aucun changement
+  // de comportement visuel n'est introduit à cette étape.
+  let collectionCourbes = Array.isArray(options.courbes) && options.courbes.length
+    ? options.courbes.map(c => ({ xs: c.xs, ys: c.ys, options: Object.assign({}, c.options || {}) }))
+    : [{ xs: xs, ys: ys, options: Object.assign({}, options) }];
+  let derniere = collectionCourbes[collectionCourbes.length - 1];
+  dernierGraphique = {
+    canvas: canvas,
+    xs: derniere.xs,
+    ys: derniere.ys,
+    options: Object.assign({}, derniere.options, { grille: grille }),
+    courbes: collectionCourbes
+  };
+  if (zoneGraphiqueActive) { zoneGraphiqueActive.graphique = dernierGraphique; zoneGraphiqueActive.utilisee = true; }
 }
 
 /* ===================== DECOUPAGE DES ELEMENTS DE affi(...) ===================== */
@@ -11581,6 +11891,8 @@ btnArretUrgence.addEventListener("click", () => {
   // "=== EXECUTION ARRETEE ===" et recreera l'invite une fois l'interruption
   // effectivement traitee. L'afficher aussi ici produirait deux invites a la suite.
   const executionLocaleEnCours = executionEnCours && !executionViaService;
+  // L'arret d'urgence coupe aussi toutes les alertes natives, meme autonomes.
+  try { if (window.MonLangage && typeof window.MonLangage.alerteArreter === "function") window.MonLangage.alerteArreter(0); } catch (_) {}
   arreterScriptEnCours();
   if (!executionLocaleEnCours && ecranConsole.classList.contains("actif")) {
     print("=== EXECUTION ARRETEE ===", "erreur");
