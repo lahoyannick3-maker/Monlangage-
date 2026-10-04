@@ -1206,7 +1206,7 @@ function empilerTouche(nom) {
   fileTouches.push(nom);
   if (fileTouches.length > FILE_TOUCHES_MAX) fileTouches.shift();
 }
-function reinitialiserTouches() { fileTouches.length = 0; toucheActive = false; politiqueClavier = "auto"; desactiverSaisieTouche(); effacerBoutons(); document.body.classList.remove("scriptJeu"); couleurConsole = null; arreterSonsJeu(); fileDoigts.length = 0; doigtIdActif = null; }
+function reinitialiserTouches() { fileTouches.length = 0; toucheActive = false; politiqueClavier = "auto"; desactiverSaisieTouche(); effacerBoutons(); document.body.classList.remove("scriptJeu"); couleurConsole = null; arreterSonsJeu(typeof demandeArret !== "undefined" && demandeArret === true); fileDoigts.length = 0; doigtIdActif = null; }
 
 // ----- Saisie invisible de touche() : ouvre le clavier du systeme, comme entr(), sans bloquer -----
 // Sur un telephone sans clavier physique, aucune frappe n'arrive tant qu'aucun champ n'a le focus :
@@ -1359,9 +1359,11 @@ function arreterVoixSon(id) {
   voixSon = voixSon.filter(x => x.id !== id); // plus compte dans les 16 voix des maintenant
   setTimeout(() => { try { v.gv.disconnect(); } catch (e) {} }, 80);
 }
-function arreterSonsJeu() {
+// Les SONS s'arretent toujours avec le script. La VIBRATION, elle, n'est coupee que sur arret force
+// (bouton d'arret d'urgence) : sinon un vibre(150) place en derniere ligne serait annule avant d'etre senti.
+function arreterSonsJeu(coupeAussiVibration) {
   for (let v of voixSon.slice()) arreterVoixSon(v.id);
-  try { if (navigator.vibrate) navigator.vibrate(0); } catch (e) {}
+  if (coupeAussiVibration) { try { if (navigator.vibrate) navigator.vibrate(0); } catch (e) {} }
 }
 function jouerSegmentsSon(segments, volume, nomFonction) {
   let ctx = contexteAudio(nomFonction);
@@ -5561,6 +5563,10 @@ let aideCommandes = [
       "Collection -> conver.*.nombr : seulement si la collection contient EXACTEMENT 1 element numerique, erreur sinon.",
       "Entre collections : conver.vecteu.matric (colonne) / conver.matric.vecteu (aplatit tous les elements) ; conver.vecteu.liste / conver.liste.vecteu (element par element) ; conver.liste.matric (chaque vecteur de la liste devient une ligne -- tous doivent avoir la meme longueur) / conver.matric.liste (l'inverse : chaque ligne devient un vecteur de la liste)."
     ], exemple: "conver.texte.nombr(|3.5|)   ->   3.5\nconver.nombr.texte(42)       ->   |42|\nconver.nombr.booleen(0)      ->   FAUX\nconver.matric.vecteu(matrice(1:4, nlig~2, ncol~2))   ->   c(1,2,3,4)\nconver.vecteu.matric(c(1,2,3))   ->   matrice 3x1\nconver.liste.matric(liste(c(1,2), c(3,4)))   ->   matrice 2x2" },
+  { noms: ["est.numero"], categorie: "Base", syntaxe: "est.numero(texte)", description: [
+      "VRAI si la valeur est un TEXTE fait uniquement de chiffres, avec un + facultatif au debut (un numero de telephone, par exemple). FAUX pour tout le reste : un nombre, un texte avec des lettres, des espaces ou un tiret, un texte vide.",
+      "Ne pas confondre avec est.nombr(...) : est.nombr regarde le TYPE (5 est un nombre, |5| est du texte), est.numero regarde le CONTENU d'un texte. est.numero(5) est donc FAUX, est.numero(|5|) est VRAI."
+    ], exemple: "est.numero(|0612345678|)   ->   VRAI\nest.numero(|+212612345678|)   ->   VRAI\nest.numero(|INWI|)   ->   FAUX\nest.numero(5)   ->   FAUX" },
   { noms: ["est.nombr", "est.text", "est.vecteu", "est.matric", "est.enti", "est.reel", "est.liste"], categorie: "Base", syntaxe: "est.nombr(var) / est.text(var) / est.vecteu(var) / est.matric(var) / est.enti(var) / est.reel(var) / est.liste(var)", description: [
       "Verifie le type de var, et renvoie VRAI ou FAUX.",
       "est.nombr(var) : VRAI si var est un nombre normal OU un grand entier (large ; voir est.enti/est.reel pour distinguer precisement).",
@@ -5643,8 +5649,9 @@ let aideCommandes = [
       "Sans argument, coupe tous les sons du jeu. Avec un numero (renvoye par son() ou note()), coupe seulement ce son. Un numero inconnu ou deja termine est ignore sans erreur. Les sons s'arretent de toute facon a la fin du script."
     ], exemple: "s ~ note(300, 10)\nattendre(1)\nson.arrete(s)" },
   { noms: ["vibre"], categorie: "Console", syntaxe: "vibre(ms)   ou   vibre(liste(pause, vibre, pause, ...))", description: [
-      "Fait vibrer le telephone pendant ms millisecondes (0 a 5000), ou selon un motif : une liste de durees qui alternent pause, vibration, pause... (20 valeurs au maximum). vibre(0) arrete la vibration. Ne bloque pas le script.",
-      "Pour le JEU : elle suit les reglages du telephone et s'arrete avec le script. Certains appareils n'ont pas de vibreur : l'appel est alors simplement ignore. Indisponible en arriere-plan (FOND). Pour une alerte fiable meme en silencieux, utilise alerte.vibre."
+      "Fait vibrer le telephone pendant ms millisecondes (0 a 5000), ou selon un motif : une liste de durees qui alternent pause, vibration, pause... (20 valeurs au maximum, 10 secondes au total). vibre(0) arrete la vibration. Ne bloque pas le script.",
+      "Renvoie VRAI si le telephone accepte la vibration, FAUX sinon (pas de vibreur, permission VIBRATE absente de l'APK, ou ecran jamais touche) : essaie affi(vibre(200)) pour savoir.",
+      "Pour le JEU : elle suit les reglages du telephone. Contrairement aux sons, elle n'est PAS coupee a la fin du script (un vibre(150) en derniere ligne est senti en entier) ; seul l'arret d'urgence la coupe. Indisponible en arriere-plan (FOND). Pour une alerte fiable meme en silencieux, utilise alerte.vibre."
     ], exemple: "vibre(80)\nvibre(liste(0, 200, 100, 200))" },
   { noms: ["couleur"], categorie: "Console", syntaxe: "couleur(nom)   ou   couleur()", description: [
       "Change la couleur du texte des prochains affi(...), jusqu'au prochain couleur(...). nom : rouge, vert, bleu, jaune, orange, violet, rose, cyan, blanc, noir, gris, marron, ou |#rrggbb| (les memes que dans la zone de dessin).",
@@ -6606,17 +6613,68 @@ function enregistrerFonctionsBase() {
         return saisie;
     };
 
-    // ecrire.cle(cle, valeur) ou ecrire.cle(cle, val1, val2, ...) : sauvegarde silencieuse et
-    // immediate dans localStorage (reste dans l'app, aucune interaction utilisateur).
-    // N'importe quelle valeur de monlangage peut etre sauvegardee (nombre, texte, booleen,
-    // vecteur, matrice, liste, instance de classe) car toutes se representent en JS comme
-    // des donnees simples (les instances sont de simples {__classe:..., attributs...}, sans
-    // methodes attachees).
-    // Avec UNE seule valeur : comportement inchange, lire.cle(cle) renvoie cette valeur telle
-    // quelle (type conserve).
-    // Avec PLUSIEURS valeurs : stockees ensemble comme une liste() (pas un vecteur), pour
-    // ne pas forcer un type unique sur des valeurs de natures differentes -- lire.cle(cle)
-    // renvoie alors une liste(), accessible par indice (l[1], l[2]...).
+    // Stockage commun des cles MLG. Dans l'application Android, les cles sont
+    // ecrites dans SharedPreferences natifs afin que l'editeur et la WebView headless
+    // du service FOND voient les memes donnees. Dans un navigateur, repli localStorage.
+    // Les anciennes cles localStorage sont migrees vers le stockage natif a leur lecture
+    // ou lors de voir.cle(), sans supprimer les donnees si la migration echoue.
+    function bridgeClesDisponible() {
+        return !!(window.MonLangage &&
+            typeof window.MonLangage.cleEcrire === "function" &&
+            typeof window.MonLangage.cleLire === "function" &&
+            typeof window.MonLangage.cleExiste === "function" &&
+            typeof window.MonLangage.cleSupprimer === "function" &&
+            typeof window.MonLangage.cleListerJson === "function");
+    }
+    function lireBrutCle(cle) {
+        const nom = "monlangage:" + cle;
+        if (bridgeClesDisponible()) {
+            if (window.MonLangage.cleExiste(cle)) return window.MonLangage.cleLire(cle);
+            const ancien = localStorage.getItem(nom);
+            if (ancien !== null) {
+                if (!window.MonLangage.cleEcrire(cle, ancien)) throw new Error("ecriture native refusee");
+                localStorage.removeItem(nom);
+                return ancien;
+            }
+            return null;
+        }
+        return localStorage.getItem(nom);
+    }
+    function ecrireBrutCle(cle, texte) {
+        if (bridgeClesDisponible()) {
+            if (!window.MonLangage.cleEcrire(cle, texte)) throw new Error("ecriture native refusee");
+        } else {
+            localStorage.setItem("monlangage:" + cle, texte);
+        }
+    }
+    function listerNomsCles() {
+        const noms = new Set();
+        if (bridgeClesDisponible()) {
+            try {
+                const natifs = JSON.parse(window.MonLangage.cleListerJson() || "[]");
+                if (Array.isArray(natifs)) natifs.forEach(n => { if (typeof n === "string") noms.add(n); });
+            } catch (_) { throw new Error("liste native des cles illisible"); }
+        }
+        const anciennes = [];
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k && k.indexOf("monlangage:") === 0) anciennes.push(k.slice("monlangage:".length));
+        }
+        anciennes.forEach(n => {
+            const brut = localStorage.getItem("monlangage:" + n);
+            if (bridgeClesDisponible()) {
+                if (!window.MonLangage.cleExiste(n) && brut !== null) {
+                    if (!window.MonLangage.cleEcrire(n, brut)) throw new Error("migration native impossible pour la cle '" + n + "'");
+                }
+                localStorage.removeItem("monlangage:" + n);
+            }
+            noms.add(n);
+        });
+        return Array.from(noms);
+    }
+
+    // ecrire.cle(cle, valeur) ou ecrire.cle(cle, val1, val2, ...) : sauvegarde silencieuse.
+    // Une valeur conserve son type; plusieurs valeurs sont regroupees dans une liste().
     fonctionsBase["ecrire.cle"] = fonctionsExpression["ecrire.cle"] = async function(args, ctxExpr) {
         if (args.length < 2) throw new Error("ecrire.cle(cle, valeur, ...) attend au moins 2 arguments");
         let cle = await evalExpr(args[0], ctxExpr);
@@ -6627,18 +6685,17 @@ function enregistrerFonctionsBase() {
         let texte;
         try { texte = JSON.stringify(valeur); }
         catch (e) { throw new Error("ecrire.cle(...) : cette valeur ne peut pas etre sauvegardee"); }
-        try { localStorage.setItem("monlangage:" + cle, texte); }
+        try { ecrireBrutCle(cle, texte); }
         catch (e) { throw new Error("ecrire.cle(...) : sauvegarde impossible (" + e.message + ")"); }
         return true;
     };
 
-    // lire.cle(cle) : recupere une valeur sauvegardee avec ecrire.cle(...). Renvoie pasdefini si
-    // la cle n'existe pas.
+    // lire.cle(cle) : recupere la valeur sauvegardee; renvoie pasdefini si absente.
     fonctionsBase["lire.cle"] = fonctionsExpression["lire.cle"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("lire.cle(cle) attend 1 argument");
         let cle = await evalExpr(args[0], ctxExpr);
         if (typeof cle !== 'string') throw new ErreurTypeInvalide("lire.cle(cle) : cle doit etre du texte");
-        let brut = localStorage.getItem("monlangage:" + cle);
+        let brut = lireBrutCle(cle);
         if (brut === null) return undefined;
         try { return JSON.parse(brut); }
         catch (e) { throw new Error("lire.cle(...) : la sauvegarde pour '" + cle + "' est corrompue"); }
@@ -6793,7 +6850,7 @@ function enregistrerFonctionsBase() {
         if (args.length < 2) throw new Error("ajout.cle(cle, valeur, ...) attend au moins 2 arguments");
         let cle = await evalExpr(args[0], ctxExpr);
         if (typeof cle !== 'string') throw new ErreurTypeInvalide("ajout.cle(cle, valeur, ...) : cle doit etre du texte");
-        let brut = localStorage.getItem("monlangage:" + cle);
+        let brut = lireBrutCle(cle);
         if (brut === null) throw new ErreurCleIntrouvable("ajout.cle(...) : la cle '" + cle + "' n'existe pas encore (utilise ecrire.cle(...) pour la creer)");
         let existant;
         try { existant = JSON.parse(brut); }
@@ -6806,7 +6863,7 @@ function enregistrerFonctionsBase() {
         let texte;
         try { texte = JSON.stringify(fusion); }
         catch (e) { throw new Error("ajout.cle(...) : cette valeur ne peut pas etre sauvegardee"); }
-        try { localStorage.setItem("monlangage:" + cle, texte); }
+        try { ecrireBrutCle(cle, texte); }
         catch (e) { throw new Error("ajout.cle(...) : sauvegarde impossible (" + e.message + ")"); }
         return true;
     };
@@ -6918,14 +6975,7 @@ function enregistrerFonctionsBase() {
     // d'un coup). Renvoie un vecteur de texte, vide si aucune cle n'est sauvegardee.
     fonctionsBase["voir.cle"] = fonctionsExpression["voir.cle"] = async function(args, ctxExpr) {
         if (args.length !== 0) throw new Error("voir.cle() n'attend aucun argument");
-        let noms = [];
-        for (let i = 0; i < localStorage.length; i++) {
-            let clePrefixee = localStorage.key(i);
-            if (clePrefixee && clePrefixee.indexOf("monlangage:") === 0) {
-                noms.push(clePrefixee.slice("monlangage:".length));
-            }
-        }
-        return noms;
+        return listerNomsCles();
     };
 
     // supri.cle(cle) : supprime UNE cle precise sauvegardee avec ecrire.cle(...), sans toucher
@@ -6935,10 +6985,13 @@ function enregistrerFonctionsBase() {
         if (args.length !== 1) throw new Error("supri.cle(cle) attend 1 argument");
         let cle = await evalExpr(args[0], ctxExpr);
         if (typeof cle !== 'string') throw new ErreurTypeInvalide("supri.cle(cle) : cle doit etre du texte");
-        if (localStorage.getItem("monlangage:" + cle) === null) {
-            throw new ErreurCleIntrouvable("supri.cle(...) : la cle '" + cle + "' n'existe pas");
+        let brut = lireBrutCle(cle);
+        if (brut === null) throw new ErreurCleIntrouvable("supri.cle(...) : la cle '" + cle + "' n'existe pas");
+        if (bridgeClesDisponible()) {
+            if (!window.MonLangage.cleSupprimer(cle)) throw new Error("supri.cle(...) : suppression native impossible");
+        } else {
+            localStorage.removeItem("monlangage:" + cle);
         }
-        localStorage.removeItem("monlangage:" + cle);
         return true;
     };
 
@@ -8113,6 +8166,13 @@ function enregistrerFonctionsBase() {
     // est.enti(var) : VRAI uniquement pour un GRAND ENTIER (issu de entier(...)), FAUX pour un
     // nombre normal meme si c'est une valeur entiere (ex: est.enti(5) est FAUX, 5 est un nombre
     // normal ; est.enti(entier(5)) est VRAI). Complement precis de est.nombr(...) ci-dessus.
+    // est.numero(texte) : VRAI si c'est un TEXTE fait uniquement de chiffres, avec un + facultatif au debut
+    // (un numero de telephone, par exemple). Ne regarde pas le type "nombre" : voir est.nombr(...).
+    fonctionsBase["est.numero"] = fonctionsExpression["est.numero"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("est.numero(...) attend exactement 1 argument");
+        let v = await evalExpr(args[0], ctxExpr);
+        return typeof v === 'string' && /^\+?[0-9]+$/.test(v);
+    };
     fonctionsBase["est.enti"] = fonctionsExpression["est.enti"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("est.enti(...) attend exactement 1 argument");
         return typeof (await evalExpr(args[0], ctxExpr)) === 'bigint';
@@ -8408,7 +8468,7 @@ function enregistrerFonctionsBase() {
         return undefined;
     };
     // vibre(ms) ou vibre(liste(pause, vibre, pause, ...)) : vibration du jeu (suit les reglages du telephone). vibre(0) l'arrete.
-    fonctionsBase["vibre"] = async function(args, ctxExpr) {
+    fonctionsBase["vibre"] = fonctionsExpression["vibre"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("vibre(ms) ou vibre(liste(...)) attend 1 argument");
         verifierRunPourSon("vibre()");
         let v = await evalExpr(args[0], ctxExpr);
@@ -8418,8 +8478,12 @@ function enregistrerFonctionsBase() {
         else throw new Error("vibre() : donne une duree en millisecondes ou une liste(pause, vibre, pause, ...)");
         if (motif.length < 1 || motif.length > 20) throw new Error("vibre() : le motif contient 1 a 20 valeurs");
         for (let x of motif) if (typeof x !== "number" || !isFinite(x) || x < 0 || x > 5000) throw new Error("vibre() : chaque duree doit etre un nombre de millisecondes entre 0 et 5000");
-        try { if (navigator.vibrate) navigator.vibrate(motif.length === 1 && motif[0] === 0 ? 0 : motif); } catch (e) {}
-        return undefined;
+        if (motif.reduce((a, b) => a + b, 0) > 10000) throw new Error("vibre() : le motif dure au plus 10 secondes au total (10000 ms)");
+        // Renvoie VRAI si le telephone accepte la vibration, FAUX sinon (pas de vibreur, permission VIBRATE absente
+        // de l'APK, ou page jamais touchee) : affi(vibre(200)) permet de diagnostiquer.
+        let ok = false;
+        try { if (navigator.vibrate) ok = !!navigator.vibrate(motif.length === 1 && motif[0] === 0 ? 0 : motif); } catch (e) { ok = false; }
+        return ok;
     };
 
     // ----- Zone de dessin -----
