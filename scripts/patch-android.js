@@ -184,6 +184,28 @@ if (!manifest.includes('.MonLangageService')) {
   console.log('[patch-android] AndroidManifest.xml : service MonLangageService declare.');
 }
 
+// ---- Alertes natives (alerte.son / alerte.vibre) : AlerteManager, AlerteService, AlerteStopReceiver ----
+// FOREGROUND_SERVICE_MEDIA_PLAYBACK : Android 14 l'exige pour un service premier-plan de type
+// "mediaPlayback" (AlerteService, qui garde le processus en vie pendant une alerte autonome).
+const permissionAlerteMedia =
+`    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+`;
+if (!manifest.includes('FOREGROUND_SERVICE_MEDIA_PLAYBACK')) {
+  manifest = manifest.replace('<application', permissionAlerteMedia + '\n    <application');
+  console.log('[patch-android] AndroidManifest.xml : permission FOREGROUND_SERVICE_MEDIA_PLAYBACK ajoutee.');
+}
+const composantsAlerte =
+`        <service
+            android:name=".AlerteService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+        <receiver android:name=".AlerteStopReceiver" android:exported="false" />
+    </application>`;
+if (!manifest.includes('.AlerteService')) {
+  manifest = manifest.replace('</application>', composantsAlerte);
+  console.log('[patch-android] AndroidManifest.xml : AlerteService et AlerteStopReceiver declares.');
+}
+
 // FileProvider : necessaire pour partager.fichier() -- Android interdit de partager un
 // chemin de fichier direct (file://) avec une autre application depuis Android 7 ; il faut
 // passer par un FileProvider qui genere une URI temporaire (content://) avec permission de
@@ -1083,6 +1105,38 @@ public class MonLangageBridge {
             return f.delete();
         }
 
+        // ---------------- Alertes natives : alerte.son / alerte.vibre / alerte.arrete ----------------
+        // Delegue a AlerteManager (etat statique : une alerte "autonome" survit au script).
+        // Renvoient le numero de l'alerte, ou 0 si Android a refuse (pas de vibreur, son indisponible...).
+        @JavascriptInterface
+        public int alerteSon(String nom, int dureeSecondes, double volume, boolean autonome) {
+            return AlerteManager.demarrerSon(context, nom, dureeSecondes, volume, autonome);
+        }
+
+        @JavascriptInterface
+        public int alerteVibre(String motifJson, boolean autonome) {
+            try {
+                JSONArray tableau = new JSONArray(motifJson);
+                long[] motif = new long[tableau.length()];
+                for (int i = 0; i < motif.length; i++) motif[i] = tableau.getLong(i);
+                return AlerteManager.demarrerVibration(context, motif, autonome);
+            } catch (Exception e) {
+                return 0;
+            }
+        }
+
+        // id <= 0 : coupe toutes les alertes.
+        @JavascriptInterface
+        public void alerteArreter(int id) {
+            AlerteManager.arreter(context, id);
+        }
+
+        // Fin de script : coupe les alertes en mode "script" (les autonomes continuent).
+        @JavascriptInterface
+        public void alerteArreterLiees() {
+            AlerteManager.arreterLiees(context);
+        }
+
 
 }
 `;
@@ -1549,6 +1603,461 @@ fs.writeFileSync(path.join(mainActivityDir, 'AlarmScheduler.java'), alarmSchedul
 fs.writeFileSync(path.join(mainActivityDir, 'AlarmReceiver.java'), alarmReceiverContent);
 fs.writeFileSync(path.join(mainActivityDir, 'BootReceiver.java'), bootReceiverContent);
 console.log('[patch-android] AlarmScheduler.java / AlarmReceiver.java / BootReceiver.java ecrits.');
+
+/* ---------- AlerteManager.java / AlerteStopReceiver.java / AlerteService.java : alertes natives ---------- */
+const alerteManagerContent = `package ${appId};
+
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Context;
+import android.content.Intent;
+import android.media.AudioAttributes;
+import android.media.AudioFormat;
+import android.media.AudioManager;
+import android.media.AudioTrack;
+import android.media.MediaPlayer;
+import android.media.RingtoneManager;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.PowerManager;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import java.util.ArrayList;
+import java.util.List;
+
+// Alertes natives alerte.son(...) / alerte.vibre(...) de MonLangage.
+// Elles passent par le canal AUDIO "alarme" d'Android et par des vibrations declarees "alarme" :
+// comme l'application Horloge, elles sonnent et vibrent meme si le telephone est en silencieux
+// ou en vibreur. Seuls un volume d'alarme a zero ou le mode "Ne pas deranger" (si l'exception
+// des alarmes y est desactivee) peuvent les etouffer : l'application ne peut pas les contourner.
+//
+// Etat statique unique, independant de la WebView : une alerte "autonome" continue donc apres la
+// fin du script, avec une notification portant un bouton "Arreter". Une alerte "script" est
+// coupee a la fin du script (arreterLiees). Duree maximale de securite : 300 secondes par appel.
+public class AlerteManager {
+    public static final int NOTIF_ID = 74201;
+    private static final String CANAL_ID = "monlangage_alerte";
+    private static final int DUREE_MAX_SEC = 300;
+    private static final int ALERTES_SONS_MAX = 8;
+    private static final int TAUX = 22050;
+
+    private static final Handler HANDLER = new Handler(Looper.getMainLooper());
+    private static final List<Alerte> ALERTES = new ArrayList<Alerte>();
+    private static int prochainId = 1;
+    private static PowerManager.WakeLock verrou = null;
+    private static boolean volumeModifie = false;
+    private static int volumeAvant = 0;
+    private static boolean serviceDemarre = false;
+
+    private static class Alerte {
+        int id;
+        boolean autonome;
+        boolean vibration;
+        MediaPlayer lecteur;
+        AudioTrack piste;
+        Vibrator vibreur;
+        Runnable fin;
+    }
+
+    private static AudioAttributes attributsAlarme() {
+        return new AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ALARM)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build();
+    }
+
+    // ---------------------------------------------------------------- son
+
+    // nom : "defaut" (sonnerie d'alarme du telephone), "sirene" ou "bip" (sons generes).
+    // volume : de 0 a 1, ou -1 pour garder le volume d'alarme regle par l'utilisateur.
+    // Renvoie le numero de l'alerte, ou 0 si Android a refuse.
+    public static synchronized int demarrerSon(Context ctx, String nom, int dureeSec, double volume, boolean autonome) {
+        try {
+            final Context c = ctx.getApplicationContext();
+            if (dureeSec < 1) dureeSec = 1;
+            if (dureeSec > DUREE_MAX_SEC) dureeSec = DUREE_MAX_SEC;
+            while (compterSons() >= ALERTES_SONS_MAX) {
+                Alerte vieille = plusAncienSon();
+                if (vieille == null) break;
+                liberer(vieille);
+                ALERTES.remove(vieille);
+            }
+            if (volume >= 0.0) appliquerVolume(c, volume);
+            Alerte a = new Alerte();
+            a.id = prochainId++;
+            a.autonome = autonome;
+            boolean ok = "defaut".equals(nom) ? lireSonnerie(c, a) : lireTonalite(a, nom);
+            if (!ok) {
+                apresChangement(c);
+                return 0;
+            }
+            enregistrer(c, a, dureeSec * 1000L);
+            return a.id;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private static boolean lireSonnerie(Context c, Alerte a) {
+        Uri uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+        if (uri == null) uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
+        if (uri == null) uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+        if (uri == null) return false;
+        MediaPlayer mp = new MediaPlayer();
+        try {
+            mp.setAudioAttributes(attributsAlarme());
+            mp.setDataSource(c, uri);
+            mp.setLooping(true);
+            mp.prepare();
+            mp.start();
+        } catch (Exception e) {
+            try { mp.release(); } catch (Exception ignore) { }
+            return false;
+        }
+        a.lecteur = mp;
+        return true;
+    }
+
+    private static boolean lireTonalite(Alerte a, String nom) {
+        short[] pcm = genererPcm(nom);
+        if (pcm == null) return false;
+        AudioTrack t = null;
+        try {
+            // Constructeur "STREAM_ALARM" : fonctionne sur toutes les versions d'Android.
+            t = new AudioTrack(AudioManager.STREAM_ALARM, TAUX, AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT, pcm.length * 2, AudioTrack.MODE_STATIC);
+            if (t.getState() != AudioTrack.STATE_INITIALIZED) {
+                t.release();
+                return false;
+            }
+            t.write(pcm, 0, pcm.length);
+            t.setLoopPoints(0, pcm.length, -1);
+            t.play();
+        } catch (Exception e) {
+            try { if (t != null) t.release(); } catch (Exception ignore) { }
+            return false;
+        }
+        a.piste = t;
+        return true;
+    }
+
+    // Sons generes sans aucun fichier : un buffer court rejoue en boucle.
+    private static short[] genererPcm(String nom) {
+        if ("sirene".equals(nom)) {
+            int n = TAUX * 2;
+            short[] s = new short[n];
+            double phase = 0.0;
+            for (int i = 0; i < n; i++) {
+                double t = (double) i / n;
+                double tri = t < 0.5 ? t * 2.0 : 2.0 - t * 2.0;
+                double f = 600.0 + 600.0 * tri;
+                phase += 2.0 * Math.PI * f / TAUX;
+                s[i] = (short) (Math.sin(phase) * 26000.0);
+            }
+            return s;
+        }
+        if ("bip".equals(nom)) {
+            int n = TAUX;
+            short[] s = new short[n];
+            int lon = (int) (TAUX * 0.12);
+            int[] debuts = new int[] { 0, (int) (TAUX * 0.24) };
+            for (int d = 0; d < debuts.length; d++) {
+                for (int i = 0; i < lon; i++) {
+                    double env = Math.min(1.0, Math.min(i, lon - 1 - i) / (TAUX * 0.005));
+                    s[debuts[d] + i] = (short) (Math.sin(2.0 * Math.PI * 1000.0 * i / TAUX) * 26000.0 * env);
+                }
+            }
+            return s;
+        }
+        return null;
+    }
+
+    // ---------------------------------------------------------- vibration
+
+    // motif : durees en ms qui alternent pause, vibration, pause... (comme Android).
+    public static synchronized int demarrerVibration(Context ctx, long[] motif, boolean autonome) {
+        try {
+            final Context c = ctx.getApplicationContext();
+            Vibrator vib = (Vibrator) c.getSystemService(Context.VIBRATOR_SERVICE);
+            if (vib == null || !vib.hasVibrator()) return 0;
+            long total = 0;
+            for (int i = 0; i < motif.length; i++) total += motif[i];
+            if (total < 1 || total > DUREE_MAX_SEC * 1000L) return 0;
+            // Un seul moteur de vibration : la nouvelle remplace l'ancienne.
+            List<Alerte> anciennes = new ArrayList<Alerte>();
+            for (int i = 0; i < ALERTES.size(); i++) if (ALERTES.get(i).vibration) anciennes.add(ALERTES.get(i));
+            for (int i = 0; i < anciennes.size(); i++) {
+                liberer(anciennes.get(i));
+                ALERTES.remove(anciennes.get(i));
+            }
+            AudioAttributes attrs = attributsAlarme();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vib.vibrate(VibrationEffect.createWaveform(motif, -1), attrs);
+            } else {
+                vib.vibrate(motif, -1, attrs);
+            }
+            Alerte a = new Alerte();
+            a.id = prochainId++;
+            a.autonome = autonome;
+            a.vibration = true;
+            a.vibreur = vib;
+            enregistrer(c, a, total + 300L);
+            return a.id;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    // --------------------------------------------------------------- arret
+
+    // id <= 0 : coupe toutes les alertes ; sinon seulement celle-la (un numero inconnu est ignore).
+    public static synchronized void arreter(Context ctx, int id) {
+        Context c = ctx.getApplicationContext();
+        List<Alerte> aCouper = new ArrayList<Alerte>();
+        for (int i = 0; i < ALERTES.size(); i++) {
+            Alerte a = ALERTES.get(i);
+            if (id <= 0 || a.id == id) aCouper.add(a);
+        }
+        for (int i = 0; i < aCouper.size(); i++) {
+            liberer(aCouper.get(i));
+            ALERTES.remove(aCouper.get(i));
+        }
+        apresChangement(c);
+    }
+
+    // Fin de script : coupe les alertes en mode "script" ; les autonomes continuent.
+    public static synchronized void arreterLiees(Context ctx) {
+        Context c = ctx.getApplicationContext();
+        List<Alerte> aCouper = new ArrayList<Alerte>();
+        for (int i = 0; i < ALERTES.size(); i++) if (!ALERTES.get(i).autonome) aCouper.add(ALERTES.get(i));
+        for (int i = 0; i < aCouper.size(); i++) {
+            liberer(aCouper.get(i));
+            ALERTES.remove(aCouper.get(i));
+        }
+        apresChangement(c);
+    }
+
+    // ------------------------------------------------------------- interne
+
+    private static int compterSons() {
+        int n = 0;
+        for (int i = 0; i < ALERTES.size(); i++) if (!ALERTES.get(i).vibration) n++;
+        return n;
+    }
+
+    private static Alerte plusAncienSon() {
+        for (int i = 0; i < ALERTES.size(); i++) if (!ALERTES.get(i).vibration) return ALERTES.get(i);
+        return null;
+    }
+
+    private static void enregistrer(final Context c, Alerte a, long dureeMs) {
+        final int id = a.id;
+        a.fin = new Runnable() {
+            public void run() { arreter(c, id); }
+        };
+        ALERTES.add(a);
+        HANDLER.postDelayed(a.fin, dureeMs);
+        preparerEnvironnement(c);
+    }
+
+    private static void liberer(Alerte a) {
+        if (a.fin != null) HANDLER.removeCallbacks(a.fin);
+        if (a.lecteur != null) {
+            try { a.lecteur.stop(); } catch (Exception ignore) { }
+            try { a.lecteur.release(); } catch (Exception ignore) { }
+            a.lecteur = null;
+        }
+        if (a.piste != null) {
+            try { a.piste.stop(); } catch (Exception ignore) { }
+            try { a.piste.release(); } catch (Exception ignore) { }
+            a.piste = null;
+        }
+        if (a.vibration && a.vibreur != null) {
+            try { a.vibreur.cancel(); } catch (Exception ignore) { }
+            a.vibreur = null;
+        }
+    }
+
+    private static boolean ilYAutonome() {
+        for (int i = 0; i < ALERTES.size(); i++) if (ALERTES.get(i).autonome) return true;
+        return false;
+    }
+
+    // Verrou CPU (l'ecran peut etre eteint), notification "Arreter" et service premier-plan
+    // pour les alertes autonomes.
+    private static void preparerEnvironnement(Context c) {
+        try {
+            if (verrou == null || !verrou.isHeld()) {
+                PowerManager pm = (PowerManager) c.getSystemService(Context.POWER_SERVICE);
+                if (pm != null) {
+                    verrou = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "monlangage:alerte");
+                    verrou.acquire(DUREE_MAX_SEC * 1000L + 10000L);
+                }
+            }
+        } catch (Exception ignore) { }
+        if (ilYAutonome()) publierNotification(c);
+    }
+
+    // Appele apres chaque arret : remet le volume, relache le verrou, retire la notification.
+    private static void apresChangement(Context c) {
+        if (ALERTES.isEmpty()) {
+            restaurerVolume(c);
+            try {
+                if (verrou != null && verrou.isHeld()) verrou.release();
+            } catch (Exception ignore) { }
+            verrou = null;
+        }
+        if (!ilYAutonome()) retirerNotification(c);
+    }
+
+    private static void appliquerVolume(Context c, double v) {
+        try {
+            AudioManager am = (AudioManager) c.getSystemService(Context.AUDIO_SERVICE);
+            if (am == null) return;
+            if (!volumeModifie) {
+                volumeAvant = am.getStreamVolume(AudioManager.STREAM_ALARM);
+                volumeModifie = true;
+            }
+            int max = am.getStreamMaxVolume(AudioManager.STREAM_ALARM);
+            int niveau = (int) Math.round(v * max);
+            if (niveau < 1 && v > 0.0) niveau = 1;
+            am.setStreamVolume(AudioManager.STREAM_ALARM, niveau, 0);
+        } catch (Exception ignore) { }
+    }
+
+    private static void restaurerVolume(Context c) {
+        if (!volumeModifie) return;
+        volumeModifie = false;
+        try {
+            AudioManager am = (AudioManager) c.getSystemService(Context.AUDIO_SERVICE);
+            if (am != null) am.setStreamVolume(AudioManager.STREAM_ALARM, volumeAvant, 0);
+        } catch (Exception ignore) { }
+    }
+
+    private static void creerCanal(Context c) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) {
+                NotificationChannel canal = new NotificationChannel(CANAL_ID, "Alertes MonLangage", NotificationManager.IMPORTANCE_HIGH);
+                canal.setSound(null, null);
+                canal.enableVibration(false);
+                nm.createNotificationChannel(canal);
+            }
+        }
+    }
+
+    // Notification persistante avec le bouton "Arreter" (aussi utilisee comme notification du service).
+    public static Notification notificationService(Context c) {
+        creerCanal(c);
+        Intent arret = new Intent(c, AlerteStopReceiver.class);
+        PendingIntent piArret = PendingIntent.getBroadcast(c, 1, arret,
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        Notification.Builder b = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            ? new Notification.Builder(c, CANAL_ID)
+            : new Notification.Builder(c);
+        b.setContentTitle("Alerte MonLangage")
+         .setContentText("Une alerte est en cours")
+         .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+         .setOngoing(true)
+         .setCategory(Notification.CATEGORY_ALARM)
+         .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Arr\u00eater", piArret);
+        Intent ouvrir = c.getPackageManager().getLaunchIntentForPackage(c.getPackageName());
+        if (ouvrir != null) {
+            b.setContentIntent(PendingIntent.getActivity(c, 2, ouvrir,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE));
+        }
+        return b.build();
+    }
+
+    private static void publierNotification(Context c) {
+        try {
+            NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) nm.notify(NOTIF_ID, notificationService(c));
+        } catch (Exception ignore) { }
+        if (!serviceDemarre) {
+            // Service premier-plan : garde le processus en vie pendant l'alerte. Si Android refuse de le
+            // demarrer (app en arriere-plan), l'alerte joue quand meme, avec sa notification.
+            try {
+                Intent i = new Intent(c, AlerteService.class);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) c.startForegroundService(i);
+                else c.startService(i);
+                serviceDemarre = true;
+            } catch (Exception ignore) { }
+        }
+    }
+
+    private static void retirerNotification(Context c) {
+        try {
+            if (serviceDemarre) {
+                c.stopService(new Intent(c, AlerteService.class));
+                serviceDemarre = false;
+            }
+        } catch (Exception ignore) { }
+        try {
+            NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) nm.cancel(NOTIF_ID);
+        } catch (Exception ignore) { }
+    }
+}
+`;
+
+const alerteStopReceiverContent = `package ${appId};
+
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+
+// Bouton "Arreter" de la notification d'une alerte autonome : coupe toutes les alertes.
+public class AlerteStopReceiver extends BroadcastReceiver {
+    @Override
+    public void onReceive(Context context, Intent intent) {
+        AlerteManager.arreter(context, 0);
+    }
+}
+`;
+
+const alerteServiceContent = `package ${appId};
+
+import android.app.Notification;
+import android.app.Service;
+import android.content.Intent;
+import android.content.pm.ServiceInfo;
+import android.os.Build;
+import android.os.IBinder;
+
+// Service premier-plan (type lecture multimedia) qui garde le processus en vie pendant une alerte
+// autonome ; sa notification est celle de l'alerte, avec le bouton "Arreter".
+public class AlerteService extends Service {
+    @Override
+    public IBinder onBind(Intent intent) {
+        return null;
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        try {
+            Notification n = AlerteManager.notificationService(this);
+            if (Build.VERSION.SDK_INT >= 29) {
+                startForeground(AlerteManager.NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+            } else {
+                startForeground(AlerteManager.NOTIF_ID, n);
+            }
+        } catch (Exception e) {
+            stopSelf();
+        }
+        return START_NOT_STICKY;
+    }
+}
+`;
+
+fs.writeFileSync(path.join(mainActivityDir, 'AlerteManager.java'), alerteManagerContent);
+fs.writeFileSync(path.join(mainActivityDir, 'AlerteStopReceiver.java'), alerteStopReceiverContent);
+fs.writeFileSync(path.join(mainActivityDir, 'AlerteService.java'), alerteServiceContent);
+console.log('[patch-android] AlerteManager.java / AlerteStopReceiver.java / AlerteService.java ecrits.');
 
 /* ---------- MonLangageService.java : execution en arriere-plan ---------- */
 // Service premier-plan qui heberge sa PROPRE WebView, creee par code et jamais
