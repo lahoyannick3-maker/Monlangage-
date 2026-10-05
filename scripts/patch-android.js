@@ -995,8 +995,8 @@ public class MonLangageBridge {
 
         // ===================== Publication de paquets (depot GitHub) =====================
         // Le jeton GitHub est range dans les preferences PRIVEES de l'app (jamais visible, jamais
-        // renvoye au JS : aucune methode ne le lit). Seules deux requetes sont possibles, GET et
-        // PUT, uniquement vers api.github.com et uniquement sous le depot des paquets.
+        // renvoye au JS : aucune methode ne le lit). Seules trois requetes sont possibles (GET, PUT,
+        // DELETE), uniquement vers api.github.com et uniquement sous le depot des paquets.
         private static final String DEPOT_PREFS = "monlangage_depot_v1";
         private static final String DEPOT_CLE_JETON = "jeton";
         private static final String DEPOT_API_BASE = "/repos/lahoyannick3-maker/Paquets_Monlangage-";
@@ -1028,30 +1028,55 @@ public class MonLangageBridge {
             } catch (Exception e) { return false; }
         }
 
-        private String depotReponse(int code, String corps) {
+        // Reponse reseau uniforme : {"code":<HTTP, 0 si pas de reponse>,"texte":"<corps>","erreur":"<type>"}.
+        // erreur : "" (aucune), "hors_ligne", "delai", "ssl", "protocole", "refuse", "autre".
+        private String reponseReseau(int code, String texte, String erreur) {
             try {
                 JSONObject o = new JSONObject();
                 o.put("code", code);
-                o.put("corps", corps == null ? "" : corps);
+                o.put("texte", texte == null ? "" : texte);
+                o.put("erreur", erreur == null ? "" : erreur);
                 return o.toString();
             } catch (Exception e) {
-                return "{\\"code\\":0,\\"corps\\":\\"\\"}";
+                return "{\\"code\\":0,\\"texte\\":\\"\\",\\"erreur\\":\\"autre\\"}";
             }
         }
 
-        // Renvoie {"code":<HTTP, 0 si echec reseau/refus local>,"corps":"<texte de la reponse>"}.
-        @JavascriptInterface
-        public String depotRequete(String methode, String cheminApi, String corpsJson) {
+        private String classerErreurReseau(Exception e) {
+            if (e instanceof java.net.UnknownHostException
+                    || e instanceof java.net.ConnectException
+                    || e instanceof java.net.NoRouteToHostException) return "hors_ligne";
+            if (e instanceof java.net.SocketTimeoutException) return "delai";
+            if (e instanceof javax.net.ssl.SSLException) return "ssl";
+            if (e instanceof java.net.ProtocolException) return "protocole";
+            return "autre";
+        }
+
+        private String lireFlux(java.io.InputStream flux) throws java.io.IOException {
+            if (flux == null) return "";
+            java.io.ByteArrayOutputStream tampon = new java.io.ByteArrayOutputStream();
+            byte[] morceau = new byte[8192];
+            int n;
+            while ((n = flux.read(morceau)) > 0) tampon.write(morceau, 0, n);
+            flux.close();
+            return new String(tampon.toByteArray(), StandardCharsets.UTF_8);
+        }
+
+        // Requete vers l'API GitHub (bloquante). Utilisee par depotRequete (repli) et par la version
+        // asynchrone reseauLancerDepot.
+        private String depotRequeteSync(String methode, String cheminApi, String corpsJson) {
             HttpURLConnection connexion = null;
             try {
-                if (!"GET".equals(methode) && !"PUT".equals(methode)) return depotReponse(0, "Methode non autorisee");
+                if (!"GET".equals(methode) && !"PUT".equals(methode) && !"DELETE".equals(methode)) {
+                    return reponseReseau(0, "Methode non autorisee", "refuse");
+                }
                 if (cheminApi == null || cheminApi.contains("..")
                         || !(cheminApi.equals(DEPOT_API_BASE) || cheminApi.startsWith(DEPOT_API_BASE + "/"))) {
-                    return depotReponse(0, "Chemin non autorise");
+                    return reponseReseau(0, "Chemin non autorise", "refuse");
                 }
                 String jeton = context.getSharedPreferences(DEPOT_PREFS, Context.MODE_PRIVATE)
                     .getString(DEPOT_CLE_JETON, null);
-                if (jeton == null) return depotReponse(0, "Aucun jeton enregistre");
+                if (jeton == null) return reponseReseau(0, "Aucun jeton enregistre", "refuse");
                 URL url = new URL("https://api.github.com" + cheminApi);
                 connexion = (HttpURLConnection) url.openConnection();
                 connexion.setRequestMethod(methode);
@@ -1061,8 +1086,8 @@ public class MonLangageBridge {
                 connexion.setRequestProperty("Accept", "application/vnd.github+json");
                 connexion.setRequestProperty("X-GitHub-Api-Version", "2022-11-28");
                 connexion.setRequestProperty("User-Agent", "MonLangage");
-                if ("PUT".equals(methode)) {
-                    byte[] corps = (corpsJson == null ? "{}" : corpsJson).getBytes(StandardCharsets.UTF_8);
+                if (!"GET".equals(methode)) {
+                    byte[] corps = (corpsJson == null || corpsJson.isEmpty() ? "{}" : corpsJson).getBytes(StandardCharsets.UTF_8);
                     connexion.setDoOutput(true);
                     connexion.setRequestProperty("Content-Type", "application/json; charset=utf-8");
                     connexion.setFixedLengthStreamingMode(corps.length);
@@ -1071,22 +1096,80 @@ public class MonLangageBridge {
                     }
                 }
                 int code = connexion.getResponseCode();
-                java.io.InputStream flux = code >= 400 ? connexion.getErrorStream() : connexion.getInputStream();
-                String texte = "";
-                if (flux != null) {
-                    java.io.ByteArrayOutputStream tampon = new java.io.ByteArrayOutputStream();
-                    byte[] morceau = new byte[8192];
-                    int n;
-                    while ((n = flux.read(morceau)) > 0) tampon.write(morceau, 0, n);
-                    flux.close();
-                    texte = new String(tampon.toByteArray(), StandardCharsets.UTF_8);
-                }
-                return depotReponse(code, texte);
+                String texte = lireFlux(code >= 400 ? connexion.getErrorStream() : connexion.getInputStream());
+                return reponseReseau(code, texte, "");
             } catch (Exception e) {
-                return depotReponse(0, "Reseau : " + e.getClass().getSimpleName());
+                return reponseReseau(0, e.getClass().getSimpleName(), classerErreurReseau(e));
             } finally {
                 if (connexion != null) connexion.disconnect();
             }
+        }
+
+        // Telechargement d'un texte https (bloquant), avec le detail de l'echec (voir reponseReseau).
+        private String telechargerDetailSync(String urlTexte) {
+            HttpURLConnection connexion = null;
+            try {
+                URL url = new URL(urlTexte);
+                if (!"https".equals(url.getProtocol())) return reponseReseau(0, "https obligatoire", "refuse");
+                connexion = (HttpURLConnection) url.openConnection();
+                connexion.setRequestMethod("GET");
+                connexion.setConnectTimeout(15000);
+                connexion.setReadTimeout(15000);
+                connexion.setInstanceFollowRedirects(true);
+                int code = connexion.getResponseCode();
+                String texte = code == 200 ? lireFlux(connexion.getInputStream()) : "";
+                return reponseReseau(code, texte, "");
+            } catch (Exception e) {
+                return reponseReseau(0, e.getClass().getSimpleName(), classerErreurReseau(e));
+            } finally {
+                if (connexion != null) connexion.disconnect();
+            }
+        }
+
+        @JavascriptInterface
+        public String depotRequete(String methode, String cheminApi, String corpsJson) {
+            return depotRequeteSync(methode, cheminApi, corpsJson);
+        }
+
+        // ---- Version ASYNCHRONE : le JS lance une requete (reponse immediate : un numero) puis
+        // interroge reseauResultat(numero) toutes les ~40 ms. Pendant l'attente l'ecran reste vivant
+        // (messages « en cours » visibles, bouton Stop utilisable) au lieu de geler sur un appel
+        // bloquant. reseauResultat renvoie null tant que la reponse n'est pas arrivee.
+        private static final java.util.concurrent.ExecutorService RESEAU_POOL =
+            java.util.concurrent.Executors.newFixedThreadPool(2);
+        private static final java.util.concurrent.ConcurrentHashMap<Integer, String> RESEAU_RESULTATS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+        private static final java.util.Set<Integer> RESEAU_ABANDONNES =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+        private static final AtomicInteger RESEAU_COMPTEUR = new AtomicInteger(0);
+
+        private void reseauStocker(int id, String resultat) {
+            if (RESEAU_ABANDONNES.remove(id)) return;
+            RESEAU_RESULTATS.put(id, resultat);
+        }
+
+        @JavascriptInterface
+        public int reseauLancerTelechargement(final String urlTexte) {
+            final int id = RESEAU_COMPTEUR.incrementAndGet();
+            RESEAU_POOL.execute(() -> reseauStocker(id, telechargerDetailSync(urlTexte)));
+            return id;
+        }
+
+        @JavascriptInterface
+        public int reseauLancerDepot(final String methode, final String cheminApi, final String corpsJson) {
+            final int id = RESEAU_COMPTEUR.incrementAndGet();
+            RESEAU_POOL.execute(() -> reseauStocker(id, depotRequeteSync(methode, cheminApi, corpsJson)));
+            return id;
+        }
+
+        @JavascriptInterface
+        public String reseauResultat(int id) {
+            return RESEAU_RESULTATS.remove(id);
+        }
+
+        @JavascriptInterface
+        public void reseauAbandonner(int id) {
+            if (RESEAU_RESULTATS.remove(id) == null) RESEAU_ABANDONNES.add(id);
         }
 
         // ===================== Stockage des paquets installes (prive a l'app) =====================
