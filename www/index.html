@@ -5127,60 +5127,187 @@ async function preRegistrerImports(tokens, dossierBase = null) {
 
 // A REMPLACER par l'URL brute reelle du depot GitHub des paquets (branche principale).
 const DEPOT_PAQUETS_URL = "https://raw.githubusercontent.com/lahoyannick3-maker/Paquets_Monlangage-/main/";
+const DEPOT_API_BASE = "/repos/lahoyannick3-maker/Paquets_Monlangage-";
+
+// ---------- Reseau du gestionnaire : appels asynchrones, messages « en cours », erreurs claires ----------
+// Les appels reseau du pont Java sont lances en arriere-plan (reseauLancer...) puis interroges toutes
+// les 40 ms : l'ecran reste vivant, les messages « en cours » s'affichent et Stop fonctionne. Sur un
+// ancien pont sans ces methodes, repli sur les appels bloquants (sans message d'attente fiable).
+function _dormir(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// Ligne grise « en cours », affichee tout de suite (l'ecran a le temps de se redessiner).
+async function _progres(texte) {
+  printValeur(texte);
+  if (outputDiv.lastChild && outputDiv.lastChild.style) outputDiv.lastChild.style.color = "#8b949e";
+  await _dormir(30);
+}
+
+async function _attendreReseau(id) {
+  let pont = window.MonLangage;
+  let debut = Date.now();
+  for (;;) {
+    if (demandeArret) {
+      try { pont.reseauAbandonner(id); } catch (e) { }
+      throw new ExecutionInterrompue();
+    }
+    let brut = pont.reseauResultat(id);
+    if (typeof brut === "string") {
+      try { return JSON.parse(brut); } catch (e) { return { code: 0, texte: "", erreur: "autre" }; }
+    }
+    if (Date.now() - debut > 120000) {
+      try { pont.reseauAbandonner(id); } catch (e) { }
+      return { code: 0, texte: "", erreur: "delai" };
+    }
+    await _dormir(40);
+  }
+}
+
+// r = { code, texte, erreur } venant du pont. quoi = « la lecture de index.json » ; brut = telechargement
+// direct du depot (raw.githubusercontent), sans jeton.
+function _erreurReseau(r, quoi, brut) {
+  let e;
+  let detail = "";
+  try { detail = String(JSON.parse(r.texte).message || ""); } catch (x) { detail = ""; }
+  if (r.code === 0) {
+    if (r.erreur === "hors_ligne") e = new Error("Pas de connexion internet : impossible de joindre GitHub pendant " + quoi + ". Verifie le Wi-Fi ou les donnees mobiles, puis relance la commande.");
+    else if (r.erreur === "delai") e = new Error("Connexion trop lente : GitHub n'a pas repondu a temps pendant " + quoi + ". Reessaie dans un moment.");
+    else if (r.erreur === "ssl") e = new Error("Connexion securisee refusee pendant " + quoi + " : verifie la date et l'heure du telephone.");
+    else if (r.erreur === "protocole") e = new Error("Ce telephone refuse l'envoi de cette requete a GitHub pendant " + quoi + " (" + (r.texte || "protocole") + ")");
+    else e = new Error("Echec de la connexion a GitHub pendant " + quoi + (r.texte ? " (" + r.texte + ")" : "") + ".");
+    e.reseau = true;
+    return e;
+  }
+  if (r.code === 401) return new Error("Jeton refuse ou expire pendant " + quoi + " : refais connexion.depot(nouveau_jeton).");
+  if (r.code === 429 || (r.code === 403 && /rate limit/i.test(detail))) return new Error("GitHub limite le nombre de requetes pendant " + quoi + " : attends quelques minutes puis relance la commande.");
+  if (r.code === 403) return new Error("Droit refuse pendant " + quoi + " : le jeton doit avoir la permission Contents en lecture/ecriture sur le depot" + (detail ? " (" + detail + ")" : "") + ".");
+  if (r.code === 404) {
+    return new Error(brut
+      ? "Introuvable sur le depot pendant " + quoi + " : le fichier n'existe pas (paquet incomplet, renomme ou supprime)."
+      : "Introuvable pendant " + quoi + " : le fichier n'existe pas, ou le jeton n'a pas acces au depot Paquets_Monlangage-.");
+  }
+  if (r.code === 409) return new Error("Conflit pendant " + quoi + " : le depot a change entre-temps, relance la commande.");
+  if (r.code >= 500) return new Error("GitHub est indisponible (erreur " + r.code + ") pendant " + quoi + " : reessaie plus tard.");
+  return new Error("Erreur " + r.code + " pendant " + quoi + (detail ? " : " + detail : "") + ".");
+}
+
+function _texteErreurPaquet(e) {
+  if (e instanceof ExecutionInterrompue) return "Erreur : commande arretee (verifie le resultat avec paquet.dispo() ou liste.paquet()).";
+  return "Erreur : " + (e && e.message ? e.message : String(e));
+}
+
+async function _reseauTelecharger(url) {
+  let pont = window.MonLangage;
+  if (typeof pont.reseauLancerTelechargement === "function") {
+    return await _attendreReseau(pont.reseauLancerTelechargement(url));
+  }
+  let t = pont.telechargerTexte(url);
+  return (typeof t === "string") ? { code: 200, texte: t, erreur: "" } : { code: 0, texte: "", erreur: "autre" };
+}
 
 function _verifierReseauPaquets() {
-  if (!(window.MonLangage && typeof window.MonLangage.telechargerTexte === "function")) {
+  let p = window.MonLangage;
+  if (!(p && (typeof p.reseauLancerTelechargement === "function" || typeof p.telechargerTexte === "function"))) {
     throw new Error("Gestionnaire de paquets : disponible uniquement dans l'app installee (rebuild requis)");
   }
 }
 
 async function _telechargerJSONPaquet(urlRelative) {
-  let texte = window.MonLangage.telechargerTexte(DEPOT_PAQUETS_URL + urlRelative);
-  if (texte === null) throw new Error("Impossible de telecharger '" + urlRelative + "' (verifie la connexion, ou que le fichier existe dans le depot)");
+  let r = await _reseauTelecharger(DEPOT_PAQUETS_URL + urlRelative);
+  if (r.code !== 200) throw _erreurReseau(r, "le telechargement de " + urlRelative, true);
   try {
-    return JSON.parse(texte);
+    return JSON.parse(r.texte);
   } catch (e) {
-    throw new Error("'" + urlRelative + "' n'est pas un JSON valide");
+    throw new Error("Fichier corrompu sur le depot : " + urlRelative + " n'est pas un JSON valide. Previens l'auteur du paquet (ou republie-le avec publier.paquet).");
   }
+}
+
+// Etat d'un paquet INSTALLE : manifeste lisible, champs presents, tous les modules presents sur le telephone.
+function _diagnostiquerPaquetInstalle(nom) {
+  let p = window.MonLangage;
+  let t = p.paquetLireFichier(nom + "/paquet.json");
+  if (typeof t !== "string") return { manifest: null, problemes: ["paquet.json manquant ou illisible"] };
+  let m;
+  try { m = JSON.parse(t); } catch (e) { return { manifest: null, problemes: ["paquet.json corrompu (JSON invalide)"] }; }
+  if (!m || typeof m !== "object" || Array.isArray(m)) return { manifest: null, problemes: ["paquet.json corrompu (ce n'est pas un objet JSON)"] };
+  let pb = [];
+  if (typeof m.version !== "string") pb.push("version absente de paquet.json");
+  if (!Array.isArray(m.modules)) {
+    pb.push("liste des modules absente de paquet.json");
+  } else {
+    for (let mod of m.modules) {
+      if (typeof mod !== "string" || !p.paquetExisteFichier(nom + "/modules/" + mod + ".mlg")) pb.push("module \"" + mod + "\" manquant sur le telephone");
+    }
+  }
+  return { manifest: m, problemes: pb };
+}
+
+function _nomsPaquetsInstalles() {
+  let noms;
+  try { noms = JSON.parse(window.MonLangage.paquetListerDossier("")); } catch (e) { return []; }
+  if (!Array.isArray(noms)) return [];
+  return noms.map(n => typeof n === "string" ? n : (n && n.nom)).filter(n => typeof n === "string");
 }
 
 async function installerPaquet(nom) {
   _verifierReseauPaquets();
   if (!/^[a-zA-Z_][\w-]*$/.test(nom)) throw new Error("Nom de paquet invalide : \"" + nom + "\"");
 
+  await _progres("Connexion au depot...");
   let index = await _telechargerJSONPaquet("index.json");
-  let entree = Array.isArray(index.paquets) ? index.paquets.find(p => p.nom === nom) : null;
-  if (!entree) throw new Error("Paquet \"" + nom + "\" introuvable dans le depot");
+  if (!index || !Array.isArray(index.paquets)) throw new Error("Fichier corrompu sur le depot : index.json n'a pas de liste de paquets.");
+  let entree = index.paquets.find(p => p && p.nom === nom);
+  if (!entree) throw new Error("Paquet \"" + nom + "\" introuvable dans le depot (paquet.dispo() liste les paquets disponibles).");
+  if (typeof entree.chemin !== "string" || !/^[\w-]+(\/[\w-]+)*$/.test(entree.chemin)) {
+    throw new Error("Fichier corrompu sur le depot : index.json donne un chemin invalide pour \"" + nom + "\".");
+  }
 
+  await _progres("Lecture de " + nom + "/paquet.json...");
   let manifest = await _telechargerJSONPaquet(entree.chemin + "/paquet.json");
   if (manifest.type !== "mlg") {
     throw new Error("Paquet \"" + nom + "\" refuse : type \"" + manifest.type + "\" non autorise (seuls les paquets \"mlg\" peuvent etre installes depuis un depot externe)");
   }
-  if (!Array.isArray(manifest.modules)) throw new Error("paquet.json de \"" + nom + "\" : champ \"modules\" manquant ou invalide");
-
-  let modulesInstalles = [];
+  if (!Array.isArray(manifest.modules)) throw new Error("Paquet corrompu sur le depot : paquet.json de \"" + nom + "\" n'a pas de liste de modules valide.");
   for (let nomModule of manifest.modules) {
-    if (!/^[a-zA-Z_][\w-]*$/.test(nomModule)) throw new Error("Nom de module invalide dans \"" + nom + "\" : \"" + nomModule + "\"");
-    let texteModule = window.MonLangage.telechargerTexte(DEPOT_PAQUETS_URL + entree.chemin + "/modules/" + nomModule + ".mlg");
-    if (texteModule === null) throw new Error("Impossible de telecharger le module \"" + nomModule + "\" du paquet \"" + nom + "\"");
-    let okEcriture = window.MonLangage.paquetEcrireFichier(nom + "/modules/" + nomModule + ".mlg", texteModule);
-    if (!okEcriture) throw new Error("Impossible d'enregistrer le module \"" + nomModule + "\" (stockage)");
-    modulesInstalles.push(nomModule);
+    if (typeof nomModule !== "string" || !/^[a-zA-Z_][\w-]*$/.test(nomModule)) throw new Error("Paquet corrompu sur le depot : nom de module invalide dans \"" + nom + "\" : " + JSON.stringify(nomModule));
   }
 
-  let okManifest = window.MonLangage.paquetEcrireFichier(nom + "/paquet.json", JSON.stringify(manifest));
-  if (!okManifest) throw new Error("Impossible d'enregistrer paquet.json pour \"" + nom + "\"");
+  // Tout telecharger AVANT d'ecrire quoi que ce soit : un module absent ou une coupure internet
+  // ne laissent jamais un paquet a moitie installe (ni n'abiment une version deja installee).
+  let modulesTelecharges = [];
+  let total = manifest.modules.length;
+  for (let i = 0; i < total; i++) {
+    let nomModule = manifest.modules[i];
+    await _progres("Telechargement du module " + nomModule + " (" + (i + 1) + "/" + total + ")...");
+    let r = await _reseauTelecharger(DEPOT_PAQUETS_URL + entree.chemin + "/modules/" + nomModule + ".mlg");
+    if (r.code === 404) throw new Error("Paquet corrompu sur le depot : le module \"" + nomModule + "\" est liste dans paquet.json mais absent du depot. Rien n'a ete installe. Previens l'auteur du paquet.");
+    if (r.code !== 200) throw _erreurReseau(r, "le telechargement du module " + nomModule, true);
+    modulesTelecharges.push({ nom: nomModule, texte: r.texte });
+  }
+
+  await _progres("Enregistrement sur le telephone...");
+  let pont = window.MonLangage;
+  if (pont.paquetExisteFichier(nom + "/paquet.json")) pont.paquetSupprimerDossier(nom);   // mise a jour : pas de vieux modules oublies
+  let modulesInstalles = [];
+  let echec = null;
+  for (let mod of modulesTelecharges) {
+    if (!pont.paquetEcrireFichier(nom + "/modules/" + mod.nom + ".mlg", mod.texte)) { echec = "Impossible d'enregistrer le module \"" + mod.nom + "\" (stockage du telephone)"; break; }
+    modulesInstalles.push(mod.nom);
+  }
+  if (!echec && !pont.paquetEcrireFichier(nom + "/paquet.json", JSON.stringify(manifest))) echec = "Impossible d'enregistrer paquet.json pour \"" + nom + "\" (stockage du telephone)";
+  if (echec) {
+    try { pont.paquetSupprimerDossier(nom); } catch (e) { }
+    throw new Error(echec + ". Rien n'est reste d'installe a moitie.");
+  }
 
   return "Paquet \"" + nom + "\" (v" + (manifest.version || "?") + ") installe -- " + modulesInstalles.length + " module(s) : " + modulesInstalles.join(", ");
 }
 
 async function desinstallerPaquet(nom) {
-  if (!(window.MonLangage && typeof window.MonLangage.paquetExisteFichier === "function")) {
+  if (!(window.MonLangage && typeof window.MonLangage.paquetListerDossier === "function")) {
     throw new Error("Gestionnaire de paquets : disponible uniquement dans l'app installee (rebuild requis)");
   }
-  if (!window.MonLangage.paquetExisteFichier(nom + "/paquet.json")) {
-    throw new Error("Le paquet \"" + nom + "\" n'est pas installe");
-  }
+  // Un paquet corrompu (paquet.json absent ou illisible) doit rester desinstallable.
+  if (!_nomsPaquetsInstalles().includes(nom)) throw new Error("Le paquet \"" + nom + "\" n'est pas installe");
   let ok = window.MonLangage.paquetSupprimerDossier(nom);
   if (!ok) throw new Error("Echec de la suppression du paquet \"" + nom + "\"");
   return "Paquet \"" + nom + "\" desinstalle";
@@ -5190,18 +5317,15 @@ async function listerPaquets() {
   if (!(window.MonLangage && typeof window.MonLangage.paquetListerDossier === "function")) {
     throw new Error("Gestionnaire de paquets : disponible uniquement dans l'app installee (rebuild requis)");
   }
-  let noms;
-  try { noms = JSON.parse(window.MonLangage.paquetListerDossier("")); } catch (e) { noms = []; }
-  if (!Array.isArray(noms) || noms.length === 0) return ["Aucun paquet installe"];
+  let noms = _nomsPaquetsInstalles();
+  if (noms.length === 0) return ["Aucun paquet installe"];
   let lignes = [];
   for (let nom of noms) {
-    let texteManifest = window.MonLangage.paquetLireFichier(nom + "/paquet.json");
-    if (texteManifest === null) { lignes.push(nom + " (paquet.json illisible)"); continue; }
-    try {
-      let m = JSON.parse(texteManifest);
-      lignes.push(nom + " v" + (m.version || "?") + " -- " + (m.description || ""));
-    } catch (e) {
-      lignes.push(nom + " (paquet.json corrompu)");
+    let d = _diagnostiquerPaquetInstalle(nom);
+    if (d.problemes.length > 0) {
+      lignes.push("Erreur : paquet \"" + nom + "\" corrompu -- " + d.problemes.join(" ; ") + ". Repare-le avec desinstall.paquet(" + nom + ") puis install.paquet(" + nom + ").");
+    } else {
+      lignes.push(nom + " v" + (d.manifest.version || "?") + " -- " + (d.manifest.description || ""));
     }
   }
   return lignes;
@@ -5211,50 +5335,56 @@ async function infoPaquet(nom) {
   if (!(window.MonLangage && typeof window.MonLangage.paquetLireFichier === "function")) {
     throw new Error("Gestionnaire de paquets : disponible uniquement dans l'app installee (rebuild requis)");
   }
-  let texteManifest = window.MonLangage.paquetLireFichier(nom + "/paquet.json");
-  if (texteManifest === null) throw new Error("Le paquet \"" + nom + "\" n'est pas installe");
-  let m;
-  try { m = JSON.parse(texteManifest); } catch (e) { throw new Error("paquet.json de \"" + nom + "\" est corrompu"); }
-  return [
+  if (!_nomsPaquetsInstalles().includes(nom)) throw new Error("Le paquet \"" + nom + "\" n'est pas installe");
+  let d = _diagnostiquerPaquetInstalle(nom);
+  let avertissement = d.problemes.length > 0
+    ? ["Erreur : paquet \"" + nom + "\" corrompu -- " + d.problemes.join(" ; ") + ". Repare-le avec desinstall.paquet(" + nom + ") puis install.paquet(" + nom + ")."]
+    : [];
+  let m = d.manifest;
+  if (!m) return avertissement;
+  return avertissement.concat([
     "Nom : " + m.nom,
     "Version : " + (m.version || "?"),
     "Description : " + (m.description || "(aucune)"),
     "Type : " + (m.type || "?"),
     "Modules : " + (Array.isArray(m.modules) ? m.modules.join(", ") : "(aucun)")
-  ];
+  ]);
 }
 
 // paquet.dispo() : paquets disponibles sur le depot (index.json + paquet.json de chacun), avec
 // un repere pour ceux deja installes. Lecture seule : n'ecrit rien sur le telephone.
 async function paquetsDisponibles() {
   _verifierReseauPaquets();
+  await _progres("Connexion au depot...");
   let index = await _telechargerJSONPaquet("index.json");
-  if (!Array.isArray(index.paquets) || index.paquets.length === 0) return ["Aucun paquet disponible dans le depot"];
+  if (!index || !Array.isArray(index.paquets)) throw new Error("Fichier corrompu sur le depot : index.json n'a pas de liste de paquets.");
+  if (index.paquets.length === 0) return ["Aucun paquet disponible dans le depot"];
   let installes = {};
-  if (typeof window.MonLangage.paquetListerDossier === "function") {
-    let noms = [];
-    try { noms = JSON.parse(window.MonLangage.paquetListerDossier("")); } catch (e) { noms = []; }
-    for (let n of (Array.isArray(noms) ? noms : [])) {
-      let t = window.MonLangage.paquetLireFichier(n + "/paquet.json");
-      let v = "?";
-      if (typeof t === "string") { try { v = JSON.parse(t).version || "?"; } catch (e) { } }
-      installes[n] = v;
-    }
+  for (let nomLocal of _nomsPaquetsInstalles()) {
+    let t = window.MonLangage.paquetLireFichier(nomLocal + "/paquet.json");
+    let v = "?";
+    if (typeof t === "string") { try { v = JSON.parse(t).version || "?"; } catch (e) { } }
+    installes[nomLocal] = v;
   }
+  await _progres("Lecture de " + index.paquets.length + " paquet(s)...");
   let lignes = [index.paquets.length + " paquet(s) disponible(s) :"];
   for (let entree of index.paquets) {
     let nom = entree && entree.nom;
     if (typeof nom !== "string") continue;
-    let manifest = null;
-    try { manifest = await _telechargerJSONPaquet(entree.chemin + "/paquet.json"); } catch (e) { manifest = null; }
-    let version = (manifest && manifest.version) || entree.version || "?";
-    let ligne = nom + " v" + version;
-    if (manifest) {
-      ligne += " -- " + (manifest.description || "(aucune description)");
-      if (manifest.type !== "mlg") ligne += " [non installable : type \"" + manifest.type + "\"]";
-    } else {
-      ligne += " -- (paquet.json illisible)";
+    let manifest = null, erreurManifest = "";
+    try {
+      manifest = await _telechargerJSONPaquet(entree.chemin + "/paquet.json");
+    } catch (e) {
+      if (e.reseau || e instanceof ExecutionInterrompue) throw e;   // pas de connexion : inutile de continuer
+      erreurManifest = e.message;
     }
+    if (!manifest) {
+      lignes.push("Erreur : " + nom + " -- " + erreurManifest);
+      continue;
+    }
+    let version = manifest.version || entree.version || "?";
+    let ligne = nom + " v" + version + " -- " + (manifest.description || "(aucune description)");
+    if (manifest.type !== "mlg") ligne += " [non installable : type \"" + manifest.type + "\"]";
     if (Object.prototype.hasOwnProperty.call(installes, nom)) {
       ligne += installes[nom] === version ? " [installe]" : " [installe v" + installes[nom] + ", v" + version + " disponible]";
     }
@@ -5348,36 +5478,34 @@ async function fonctionsDansModule(cible) {
 }
 
 // ===================== Publication de paquets sur le depot =====================
-// connexion.depot(jeton) / deconnexion.depot() / publier.paquet(dossier) : comme install.paquet,
-// uniquement dans l'ecran 📦 (jamais dans fonctionsBase : un script .mlg ne peut pas publier).
-// Le jeton reste cote Java (preferences privees) : le JS ne peut ni le lire ni le renvoyer.
-const DEPOT_API_BASE = "/repos/lahoyannick3-maker/Paquets_Monlangage-";
+// connexion.depot(jeton) / deconnexion.depot() / publier.paquet(dossier) / retirer.module(...) /
+// retirer.paquet(...) : comme install.paquet, uniquement dans l'ecran 📦 (jamais dans fonctionsBase :
+// un script .mlg ne peut ni publier ni supprimer). Le jeton reste cote Java (preferences privees) :
+// le JS ne peut ni le lire ni le renvoyer.
 
 function _verifierPontPublication() {
   let p = window.MonLangage;
-  if (!(p && typeof p.depotRequete === "function" && typeof p.depotJetonExiste === "function" && typeof p.lireFichier === "function")) {
-    throw new Error("Publication de paquets : disponible uniquement dans l'app installee (rebuild requis)");
-  }
+  let ok = p && typeof p.depotJetonExiste === "function" && typeof p.lireFichier === "function"
+    && (typeof p.reseauLancerDepot === "function" || typeof p.depotRequete === "function");
+  if (!ok) throw new Error("Publication de paquets : disponible uniquement dans l'app installee (rebuild requis)");
 }
 
-function _depotRequete(methode, chemin, corps) {
-  let brut = window.MonLangage.depotRequete(methode, DEPOT_API_BASE + chemin, corps === undefined ? "" : JSON.stringify(corps));
+function _exigerJeton() {
+  if (!window.MonLangage.depotJetonExiste()) throw new Error("Aucun jeton enregistre : fais d'abord connexion.depot(jeton)");
+}
+
+async function _depotRequete(methode, chemin, corps) {
+  let pont = window.MonLangage;
+  let corpsTexte = corps === undefined ? "" : JSON.stringify(corps);
   let r;
-  try { r = JSON.parse(brut); } catch (e) { throw new Error("Reponse illisible du depot"); }
+  if (typeof pont.reseauLancerDepot === "function") {
+    r = await _attendreReseau(pont.reseauLancerDepot(methode, DEPOT_API_BASE + chemin, corpsTexte));
+  } else {
+    try { r = JSON.parse(pont.depotRequete(methode, DEPOT_API_BASE + chemin, corpsTexte)); } catch (e) { r = { code: 0, texte: "", erreur: "autre" }; }
+  }
   let json = null;
-  try { json = JSON.parse(r.corps); } catch (e) { json = null; }
-  return { code: r.code, json: json, texte: r.corps };
-}
-
-// Message clair selon le code HTTP (0 = pas de reseau ou refus local).
-function _erreurDepot(r, action) {
-  let detail = (r.json && typeof r.json.message === "string") ? r.json.message : "";
-  if (r.code === 0) return new Error("Echec reseau pendant " + action + " (" + (r.texte || "verifie la connexion") + ")");
-  if (r.code === 401) return new Error("Jeton refuse ou expire pendant " + action + " : refais connexion.depot(nouveau_jeton)");
-  if (r.code === 403) return new Error("Droit refuse pendant " + action + " : le jeton doit avoir la permission Contents en lecture/ecriture sur le depot (" + detail + ")");
-  if (r.code === 404) return new Error("Depot ou fichier introuvable pendant " + action + " : le jeton n'a peut-etre pas acces au depot Paquets_Monlangage-");
-  if (r.code === 409) return new Error("Conflit pendant " + action + " : le depot a change entre-temps, relance la commande");
-  return new Error("Erreur " + r.code + " pendant " + action + (detail ? " : " + detail : ""));
+  try { json = JSON.parse(r.texte); } catch (e) { json = null; }
+  return { code: r.code, json: json, texte: r.texte || "", erreur: r.erreur || "" };
 }
 
 function _versBase64(texte) {
@@ -5406,11 +5534,18 @@ async function connexionDepot(jetonBrut) {
   if (!window.MonLangage.depotJetonEcrire(jeton)) {
     throw new Error("Jeton invalide : lettres, chiffres, _ et - seulement (colle le jeton GitHub tel quel, sans espaces)");
   }
-  let r = _depotRequete("GET", "");
+  await _progres("Verification du jeton aupres de GitHub...");
+  let r;
+  try {
+    r = await _depotRequete("GET", "");
+  } catch (e) {
+    window.MonLangage.depotJetonEffacer();
+    throw e;
+  }
   if (r.code !== 200) {
     window.MonLangage.depotJetonEffacer();
-    let e = _erreurDepot(r, "la verification du jeton");
-    throw new Error(e.message + " -- aucun jeton n'est enregistre");
+    let e = _erreurReseau(r, "la verification du jeton");
+    throw new Error(e.message + " Aucun jeton n'est enregistre.");
   }
   let push = r.json && r.json.permissions && r.json.permissions.push === true;
   return [
@@ -5428,35 +5563,51 @@ async function deconnexionDepot() {
   return ["Jeton efface de ce telephone (pense a le revoquer aussi sur github.com si tu ne t'en sers plus)"];
 }
 
+// Lit index.json du depot : { index, sha } ; index = null si le depot n'en a pas encore.
+async function _lireIndexDepot() {
+  let r = await _depotRequete("GET", "/contents/index.json");
+  if (r.code === 404) return { index: null, sha: null };
+  if (r.code !== 200 || !r.json || typeof r.json.sha !== "string") throw _erreurReseau(r, "la lecture de index.json");
+  let index;
+  try { index = JSON.parse(_depuisBase64(r.json.content)); } catch (e) {
+    throw new Error("Fichier corrompu sur le depot : index.json est illisible (JSON invalide). Rien n'a ete modifie.");
+  }
+  if (!index || !Array.isArray(index.paquets)) {
+    throw new Error("Fichier corrompu sur le depot : index.json n'a pas de liste \"paquets\". Rien n'a ete modifie.");
+  }
+  return { index: index, sha: r.json.sha };
+}
+
 // Depose un fichier (cree ou met a jour). Renvoie "cree" / "mis a jour" / "inchange".
 async function _deposerFichierDepot(chemin, contenu, message) {
   if (contenu.length > 900000) throw new Error("Fichier trop gros pour l'API GitHub (900 Ko max) : " + chemin);
-  let r = _depotRequete("GET", "/contents/" + chemin);
+  let r = await _depotRequete("GET", "/contents/" + chemin);
   let sha = null;
   if (r.code === 200 && r.json && typeof r.json.sha === "string") {
     sha = r.json.sha;
     try { if (_depuisBase64(r.json.content) === contenu) return "inchange"; } catch (e) { }
   } else if (r.code !== 404) {
-    throw _erreurDepot(r, "la lecture de " + chemin);
+    throw _erreurReseau(r, "la lecture de " + chemin);
   }
   let corps = { message: message, content: _versBase64(contenu) };
   if (sha) corps.sha = sha;
-  let w = _depotRequete("PUT", "/contents/" + chemin, corps);
-  if (w.code !== 200 && w.code !== 201) throw _erreurDepot(w, "l'envoi de " + chemin);
+  let w = await _depotRequete("PUT", "/contents/" + chemin, corps);
+  if (w.code !== 200 && w.code !== 201) throw _erreurReseau(w, "l'envoi de " + chemin);
   return sha ? "mis a jour" : "cree";
 }
 
 async function publierPaquet(dossierBrut) {
   _verifierPontPublication();
+  _exigerJeton();
   let pont = window.MonLangage;
-  if (!pont.depotJetonExiste()) throw new Error("Aucun jeton enregistre : fais d'abord connexion.depot(jeton)");
   let dossier = _retirerBarres(dossierBrut).replace(/\/+$/, "");
   if (!dossier) throw new Error("publier.paquet(dossier) attend le dossier du paquet (ex: publier.paquet(|/storage/emulated/0/Download/outils|))");
 
+  await _progres("Lecture du dossier " + dossier + "...");
   let texteManifest = pont.lireFichier(dossier + "/paquet.json");
   if (typeof texteManifest !== "string") throw new Error("paquet.json introuvable dans \"" + dossier + "\"");
   let manifest;
-  try { manifest = JSON.parse(texteManifest); } catch (e) { throw new Error("paquet.json n'est pas un JSON valide"); }
+  try { manifest = JSON.parse(texteManifest); } catch (e) { throw new Error("paquet.json n'est pas un JSON valide (" + e.message + ")"); }
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) throw new Error("paquet.json doit etre un objet JSON");
   let nom = manifest.nom;
   if (typeof nom !== "string" || !/^[a-zA-Z_][\w-]*$/.test(nom)) throw new Error("paquet.json : champ \"nom\" manquant ou invalide");
@@ -5481,37 +5632,33 @@ async function publierPaquet(dossierBrut) {
   }
   fichiers.push({ chemin: racine + "/paquet.json", contenu: texteManifest });
 
-  // index.json du depot
-  let rIndex = _depotRequete("GET", "/contents/index.json");
-  let index = { paquets: [] };
-  let shaIndex = null;
-  if (rIndex.code === 200 && rIndex.json && typeof rIndex.json.sha === "string") {
-    shaIndex = rIndex.json.sha;
-    try { index = JSON.parse(_depuisBase64(rIndex.json.content)); } catch (e) { throw new Error("index.json du depot est illisible : publication annulee, rien n'a ete envoye"); }
-    if (!index || !Array.isArray(index.paquets)) throw new Error("index.json du depot n'a pas de liste \"paquets\" : publication annulee, rien n'a ete envoye");
-  } else if (rIndex.code !== 404) {
-    throw _erreurDepot(rIndex, "la lecture de index.json");
-  }
+  await _progres("Connexion au depot...");
+  let lu = await _lireIndexDepot();
+  let index = lu.index || { paquets: [] };
+  let shaIndex = lu.sha;
 
   let entree = index.paquets.find(e => e && e.nom === nom) || null;
   if (entree) {
-    if (entree.chemin !== racine) throw new Error("Le depot declare \"" + nom + "\" avec le chemin \"" + entree.chemin + "\" (attendu \"" + racine + "\") : corrige index.json a la main");
-    let rm = _depotRequete("GET", "/contents/" + racine + "/paquet.json");
+    if (entree.chemin !== racine) throw new Error("Le depot declare \"" + nom + "\" avec le chemin \"" + entree.chemin + "\" (attendu \"" + racine + "\") : corrige index.json a la main.");
+    let rm = await _depotRequete("GET", "/contents/" + racine + "/paquet.json");
     if (rm.code === 200 && rm.json) {
       let distant = null;
       try { distant = JSON.parse(_depuisBase64(rm.json.content)).version; } catch (e) { }
-      if (distant === version) throw new Error("Le paquet \"" + nom + "\" v" + version + " est deja publie : change le champ \"version\" de paquet.json pour publier une nouvelle version");
+      if (distant === version) throw new Error("Le paquet \"" + nom + "\" v" + version + " est deja publie : change le champ \"version\" de paquet.json pour publier une nouvelle version.");
     }
   }
 
   let lignes = [];
   let message = "Publier " + nom + " v" + version;
-  for (let f of fichiers) {
+  for (let i = 0; i < fichiers.length; i++) {
+    let f = fichiers[i];
+    await _progres("Envoi " + (i + 1) + "/" + fichiers.length + " : " + f.chemin + "...");
     let etat = await _deposerFichierDepot(f.chemin, f.contenu, message);
     lignes.push("  " + f.chemin + " -- " + etat);
   }
 
   // index.json en DERNIER : il ne reference jamais un paquet dont les fichiers ne sont pas tous la.
+  await _progres("Mise a jour de index.json...");
   if (entree) {
     if (Object.prototype.hasOwnProperty.call(entree, "version")) entree.version = version;
   } else {
@@ -5519,13 +5666,191 @@ async function publierPaquet(dossierBrut) {
   }
   let corpsIndex = { message: message + " (index)", content: _versBase64(JSON.stringify(index, null, 2) + "\n") };
   if (shaIndex) corpsIndex.sha = shaIndex;
-  let wi = _depotRequete("PUT", "/contents/index.json", corpsIndex);
-  if (wi.code !== 200 && wi.code !== 201) throw _erreurDepot(wi, "la mise a jour de index.json (les fichiers du paquet sont deja envoyes : relance la commande)");
+  let wi = await _depotRequete("PUT", "/contents/index.json", corpsIndex);
+  if (wi.code !== 200 && wi.code !== 201) throw _erreurReseau(wi, "la mise a jour de index.json (les fichiers du paquet sont deja envoyes : relance la commande)");
   lignes.push("  index.json -- " + (entree ? "mis a jour" : (shaIndex ? "paquet ajoute" : "cree")));
 
   return ["Paquet \"" + nom + "\" v" + version + " publie (" + fichiers.length + " fichier(s)) :"].concat(lignes, [
     "GitHub peut mettre quelques minutes a servir la nouvelle version a install.paquet(" + nom + ")."
   ]);
+}
+
+// ---------- Suppression sur le depot : retirer.module / retirer.paquet ----------
+// Sans le mot « confirme » en dernier argument, la commande ne fait que MONTRER ce qu'elle supprimerait.
+// L'historique GitHub garde les anciennes versions : une suppression reste recuperable sur github.com.
+
+function _racineValide(entree, nom) {
+  if (!entree || typeof entree.chemin !== "string" || !/^paquets\/[\w-]+$/.test(entree.chemin)) {
+    throw new Error("Fichier corrompu sur le depot : index.json donne un chemin invalide pour \"" + nom + "\" (corrige-le a la main). Rien n'a ete modifie.");
+  }
+  return entree.chemin;
+}
+
+function _incrementerPatch(v) {
+  let m = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(v));
+  return m ? m[1] + "." + m[2] + "." + (parseInt(m[3], 10) + 1) : null;
+}
+
+// Tous les fichiers d'un paquet sur le depot, sur 2 niveaux maximum (racine + modules/) :
+// [{ path, sha }], ou null si le dossier n'existe pas. Tout chemin hors de la racine est refuse.
+async function _listerFichiersDepot(racine) {
+  let r = await _depotRequete("GET", "/contents/" + racine);
+  if (r.code === 404) return null;
+  if (r.code !== 200 || !Array.isArray(r.json)) throw _erreurReseau(r, "la lecture du dossier " + racine);
+  let fichiers = [];
+  for (let e of r.json) {
+    if (!e || typeof e.path !== "string" || e.path.indexOf(racine + "/") !== 0) throw new Error("Reponse inattendue du depot pour " + racine + " : suppression annulee.");
+    if (e.type === "file") {
+      fichiers.push({ path: e.path, sha: e.sha });
+    } else if (e.type === "dir") {
+      let r2 = await _depotRequete("GET", "/contents/" + e.path);
+      if (r2.code !== 200 || !Array.isArray(r2.json)) throw _erreurReseau(r2, "la lecture du dossier " + e.path);
+      for (let f of r2.json) {
+        if (!f || f.type !== "file" || typeof f.path !== "string" || f.path.indexOf(racine + "/") !== 0) {
+          throw new Error("Sous-dossier inattendu dans " + e.path + " : suppression annulee, rien n'a ete modifie.");
+        }
+        fichiers.push({ path: f.path, sha: f.sha });
+      }
+    }
+  }
+  return fichiers;
+}
+
+async function _supprimerFichierDepot(chemin, sha, message) {
+  let d = await _depotRequete("DELETE", "/contents/" + chemin, { message: message, sha: sha });
+  if (d.code !== 200) throw _erreurReseau(d, "la suppression de " + chemin);
+}
+
+async function retirerModule(nomPaquet, nomModule, confirme) {
+  _verifierPontPublication();
+  _exigerJeton();
+  if (!/^[a-zA-Z_][\w-]*$/.test(nomPaquet)) throw new Error("Nom de paquet invalide : \"" + nomPaquet + "\"");
+  if (!/^[a-zA-Z_][\w-]*$/.test(nomModule)) throw new Error("Nom de module invalide : \"" + nomModule + "\"");
+
+  await _progres("Connexion au depot...");
+  let lu = await _lireIndexDepot();
+  let entree = lu.index ? lu.index.paquets.find(e => e && e.nom === nomPaquet) : null;
+  if (!entree) throw new Error("Le paquet \"" + nomPaquet + "\" n'est pas dans index.json du depot (paquet.dispo() liste les paquets publies).");
+  let racine = _racineValide(entree, nomPaquet);
+
+  await _progres("Lecture de " + racine + "/paquet.json...");
+  let rm = await _depotRequete("GET", "/contents/" + racine + "/paquet.json");
+  if (rm.code === 404) throw new Error("Paquet corrompu sur le depot : paquet.json est absent de " + racine + ". Utilise retirer.paquet(" + nomPaquet + ") pour le supprimer entierement.");
+  if (rm.code !== 200 || !rm.json) throw _erreurReseau(rm, "la lecture de paquet.json");
+  let manifest;
+  try { manifest = JSON.parse(_depuisBase64(rm.json.content)); } catch (e) {
+    throw new Error("Paquet corrompu sur le depot : paquet.json de \"" + nomPaquet + "\" n'est pas un JSON valide. Utilise retirer.paquet(" + nomPaquet + ") puis republie-le.");
+  }
+  if (!manifest || !Array.isArray(manifest.modules)) throw new Error("Paquet corrompu sur le depot : paquet.json de \"" + nomPaquet + "\" n'a pas de liste de modules.");
+
+  let cheminFichier = racine + "/modules/" + nomModule + ".mlg";
+  let liste = manifest.modules.indexOf(nomModule) >= 0;
+  let rf = await _depotRequete("GET", "/contents/" + cheminFichier);
+  if (rf.code !== 200 && rf.code !== 404) throw _erreurReseau(rf, "la lecture de " + cheminFichier);
+  let fichierPresent = rf.code === 200 && rf.json && typeof rf.json.sha === "string";
+  if (!liste && !fichierPresent) throw new Error("Module \"" + nomModule + "\" introuvable dans le paquet \"" + nomPaquet + "\" (ni dans paquet.json, ni dans modules/).");
+  if (liste && manifest.modules.length === 1) throw new Error("\"" + nomModule + "\" est le dernier module du paquet \"" + nomPaquet + "\" : utilise retirer.paquet(" + nomPaquet + ") pour supprimer le paquet entier.");
+
+  let versionActuelle = String(manifest.version);
+  let nouvelleVersion = liste ? _incrementerPatch(versionActuelle) : null;
+
+  if (!confirme) {
+    let l = ["Retrait du module \"" + nomModule + "\" du paquet \"" + nomPaquet + "\" sur le depot :"];
+    if (liste) {
+      l.push("  - " + nomModule + " est retire de la liste des modules de paquet.json");
+      l.push(nouvelleVersion ? "  - version " + versionActuelle + " -> " + nouvelleVersion + " (pour que les mises a jour soient detectees)" : "  - version laissee a " + versionActuelle + " (format non numerique x.y.z : change-la toi-meme)");
+    } else {
+      l.push("  - " + nomModule + " n'est deja plus dans paquet.json : seul le fichier orphelin est supprime");
+    }
+    if (fichierPresent) l.push("  - le fichier " + cheminFichier + " est supprime");
+    l.push("Rien n'a ete modifie. Pour confirmer : retirer.module(" + nomPaquet + ", " + nomModule + ", confirme)");
+    return l;
+  }
+
+  let message = "Retirer le module " + nomModule + " de " + nomPaquet;
+  let sortie = [];
+  if (liste) {
+    manifest.modules = manifest.modules.filter(m => m !== nomModule);
+    if (nouvelleVersion) manifest.version = nouvelleVersion;
+    await _progres("Mise a jour de paquet.json...");
+    let w = await _depotRequete("PUT", "/contents/" + racine + "/paquet.json", { message: message, content: _versBase64(JSON.stringify(manifest, null, 2) + "\n"), sha: rm.json.sha });
+    if (w.code !== 200 && w.code !== 201) throw _erreurReseau(w, "la mise a jour de paquet.json (rien n'a ete supprime)");
+    sortie.push("paquet.json mis a jour (" + nomModule + " retire" + (nouvelleVersion ? ", version " + nouvelleVersion : "") + ")");
+    if (nouvelleVersion && Object.prototype.hasOwnProperty.call(entree, "version")) {
+      entree.version = nouvelleVersion;
+      let wi = await _depotRequete("PUT", "/contents/index.json", { message: message + " (index)", content: _versBase64(JSON.stringify(lu.index, null, 2) + "\n"), sha: lu.sha });
+      if (wi.code !== 200 && wi.code !== 201) sortie.push("Attention : index.json n'a pas pu etre mis a jour (" + _erreurReseau(wi, "la mise a jour de index.json").message + ")");
+      else sortie.push("index.json mis a jour");
+    }
+  }
+  if (fichierPresent) {
+    await _progres("Suppression de " + cheminFichier + "...");
+    try {
+      await _supprimerFichierDepot(cheminFichier, rf.json.sha, message);
+      sortie.push(cheminFichier + " supprime");
+    } catch (e) {
+      if (e instanceof ExecutionInterrompue) throw e;
+      sortie.push("Attention : " + e.message + " Le fichier reste sur le depot (sans etre liste dans paquet.json).");
+    }
+  }
+  sortie.push("Pense a retirer aussi le module de ton dossier local, sinon la prochaine publication le remettra.");
+  sortie.push("Les telephones qui ont deja installe le paquet gardent le module jusqu'a leur prochain install.paquet(" + nomPaquet + ").");
+  return ["Module \"" + nomModule + "\" retire du paquet \"" + nomPaquet + "\" :"].concat(sortie.map(x => "  " + x));
+}
+
+async function retirerPaquet(nomPaquet, confirme) {
+  _verifierPontPublication();
+  _exigerJeton();
+  if (!/^[a-zA-Z_][\w-]*$/.test(nomPaquet)) throw new Error("Nom de paquet invalide : \"" + nomPaquet + "\"");
+
+  await _progres("Connexion au depot...");
+  let lu = await _lireIndexDepot();
+  let entree = lu.index ? lu.index.paquets.find(e => e && e.nom === nomPaquet) : null;
+  if (!entree) throw new Error("Le paquet \"" + nomPaquet + "\" n'est pas dans index.json du depot (paquet.dispo() liste les paquets publies).");
+  let racine = _racineValide(entree, nomPaquet);
+
+  await _progres("Lecture du dossier " + racine + "...");
+  let fichiers = await _listerFichiersDepot(racine);
+  if (fichiers === null) fichiers = [];
+
+  if (!confirme) {
+    let l = ["Suppression du paquet \"" + nomPaquet + "\" du depot :", "  - son entree est retiree de index.json (paquet.dispo() ne le listera plus)"];
+    if (fichiers.length > 0) {
+      l.push("  - " + fichiers.length + " fichier(s) supprime(s) :");
+      for (let f of fichiers) l.push("      " + f.path);
+    } else {
+      l.push("  - aucun fichier trouve dans " + racine + " (seule l'entree d'index est retiree)");
+    }
+    l.push("Rien n'a ete modifie. Pour confirmer : retirer.paquet(" + nomPaquet + ", confirme)");
+    return l;
+  }
+
+  let message = "Retirer le paquet " + nomPaquet;
+  // index.json d'abord : plus personne ne voit un paquet dont les fichiers disparaissent.
+  await _progres("Mise a jour de index.json...");
+  lu.index.paquets = lu.index.paquets.filter(e => e !== entree);
+  let wi = await _depotRequete("PUT", "/contents/index.json", { message: message + " (index)", content: _versBase64(JSON.stringify(lu.index, null, 2) + "\n"), sha: lu.sha });
+  if (wi.code !== 200 && wi.code !== 201) throw _erreurReseau(wi, "la mise a jour de index.json (rien n'a ete supprime)");
+
+  let echecs = [];
+  for (let i = 0; i < fichiers.length; i++) {
+    let f = fichiers[i];
+    await _progres("Suppression " + (i + 1) + "/" + fichiers.length + " : " + f.path + "...");
+    try {
+      await _supprimerFichierDepot(f.path, f.sha, message);
+    } catch (e) {
+      if (e instanceof ExecutionInterrompue) throw e;
+      echecs.push(f.path + " (" + e.message + ")");
+      if (e.reseau) break;   // plus de connexion : inutile d'insister
+    }
+  }
+  let l = ["Paquet \"" + nomPaquet + "\" retire du depot (" + (fichiers.length - echecs.length) + "/" + fichiers.length + " fichier(s) supprime(s))."];
+  if (echecs.length > 0) {
+    l.push("Erreur : fichiers restes sur le depot (le paquet n'est plus liste dans index.json) :");
+    for (let x of echecs) l.push("  " + x);
+  }
+  l.push("Les telephones qui l'ont installe le gardent jusqu'a desinstall.paquet(" + nomPaquet + ").");
+  return l;
 }
 
 // Analyse et execute une ligne du "Gestionnaire de paquets" -- PAS le langage MLG, une mini-
@@ -5534,30 +5859,48 @@ async function executerCommandePaquet(ligne) {
   ligne = ligne.trim();
   if (/^paquet\.dispo\(/.test(ligne)) {
     if (!/^paquet\.dispo\(\s*\)$/.test(ligne)) return ["paquet.dispo() ne prend aucun argument"];
-    try { return await paquetsDisponibles(); } catch (e) { return ["Erreur : " + e.message]; }
+    try { return await paquetsDisponibles(); } catch (e) { return [_texteErreurPaquet(e)]; }
   }
   if (/^fonction\.dan\.module\(/.test(ligne)) {
     let mf = ligne.match(/^fonction\.dan\.module\(\s*(.+?)\s*\)$/);
     if (!mf) return ["fonction.dan.module(module) attend un nom de module (ex: copier) ou un chemin |...|"];
-    try { return await fonctionsDansModule(mf[1]); } catch (e) { return ["Erreur : " + e.message]; }
+    try { return await fonctionsDansModule(mf[1]); } catch (e) { return [_texteErreurPaquet(e)]; }
   }
   if (/^connexion\.depot\(/.test(ligne)) {
     let mc = ligne.match(/^connexion\.depot\(\s*(.+?)\s*\)$/);
     if (!mc) return ["connexion.depot(jeton) attend le jeton GitHub"];
-    try { return await connexionDepot(mc[1]); } catch (e) { return ["Erreur : " + e.message]; }
+    try { return await connexionDepot(mc[1]); } catch (e) { return [_texteErreurPaquet(e)]; }
   }
   if (/^deconnexion\.depot\(/.test(ligne)) {
     if (!/^deconnexion\.depot\(\s*\)$/.test(ligne)) return ["deconnexion.depot() ne prend aucun argument"];
-    try { return await deconnexionDepot(); } catch (e) { return ["Erreur : " + e.message]; }
+    try { return await deconnexionDepot(); } catch (e) { return [_texteErreurPaquet(e)]; }
+  }
+  if (/^retirer\.module\(/.test(ligne)) {
+    let mr = ligne.match(/^retirer\.module\(\s*(.+?)\s*\)$/);
+    let args = mr ? mr[1].split(",").map(a => _retirerBarres(a)) : [];
+    let confirme = args.length === 3 && args[2] === "confirme";
+    if (!mr || !(args.length === 2 || confirme) || args[0] === "" || args[1] === "") {
+      return ["retirer.module(paquet, module) montre ce qui serait supprime ; retirer.module(paquet, module, confirme) le supprime du depot"];
+    }
+    try { return await retirerModule(args[0], args[1], confirme); } catch (e) { return [_texteErreurPaquet(e)]; }
+  }
+  if (/^retirer\.paquet\(/.test(ligne)) {
+    let mr = ligne.match(/^retirer\.paquet\(\s*(.+?)\s*\)$/);
+    let args = mr ? mr[1].split(",").map(a => _retirerBarres(a)) : [];
+    let confirme = args.length === 2 && args[1] === "confirme";
+    if (!mr || !(args.length === 1 || confirme) || args[0] === "") {
+      return ["retirer.paquet(nom) montre ce qui serait supprime ; retirer.paquet(nom, confirme) le supprime du depot"];
+    }
+    try { return await retirerPaquet(args[0], confirme); } catch (e) { return [_texteErreurPaquet(e)]; }
   }
   if (/^publier\.paquet\(/.test(ligne)) {
     let mp = ligne.match(/^publier\.paquet\(\s*(.+?)\s*\)$/);
     if (!mp) return ["publier.paquet(dossier) attend le dossier du paquet (contenant paquet.json et modules/)"];
-    try { return await publierPaquet(mp[1]); } catch (e) { return ["Erreur : " + e.message]; }
+    try { return await publierPaquet(mp[1]); } catch (e) { return [_texteErreurPaquet(e)]; }
   }
   let m = ligne.match(/^(install|desinstall|liste|info)\.paquet\(\s*([a-zA-Z_][\w-]*)?\s*\)$/);
   if (!m) {
-    return ["Commande inconnue : \"" + ligne + "\" -- attendu : install.paquet(nom), desinstall.paquet(nom), liste.paquet(), info.paquet(nom), paquet.dispo(), fonction.dan.module(module)"];
+    return ["Commande inconnue : \"" + ligne + "\" -- attendu : install.paquet(nom), desinstall.paquet(nom), liste.paquet(), info.paquet(nom), paquet.dispo(), fonction.dan.module(module), connexion.depot(jeton), deconnexion.depot(), publier.paquet(dossier), retirer.module(paquet, module), retirer.paquet(nom)"];
   }
   let commande = m[1], nom = m[2];
   try {
@@ -5575,7 +5918,7 @@ async function executerCommandePaquet(ligne) {
       return await infoPaquet(nom);
     }
   } catch (e) {
-    return ["Erreur : " + e.message];
+    return [_texteErreurPaquet(e)];
   }
 }
 
