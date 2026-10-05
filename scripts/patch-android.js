@@ -993,6 +993,102 @@ public class MonLangageBridge {
             }
         }
 
+        // ===================== Publication de paquets (depot GitHub) =====================
+        // Le jeton GitHub est range dans les preferences PRIVEES de l'app (jamais visible, jamais
+        // renvoye au JS : aucune methode ne le lit). Seules deux requetes sont possibles, GET et
+        // PUT, uniquement vers api.github.com et uniquement sous le depot des paquets.
+        private static final String DEPOT_PREFS = "monlangage_depot_v1";
+        private static final String DEPOT_CLE_JETON = "jeton";
+        private static final String DEPOT_API_BASE = "/repos/lahoyannick3-maker/Paquets_Monlangage-";
+
+        @JavascriptInterface
+        public boolean depotJetonEcrire(String jeton) {
+            if (jeton == null) return false;
+            String propre = jeton.trim();
+            if (propre.isEmpty() || propre.length() > 500 || !propre.matches("[A-Za-z0-9_-]+")) return false;
+            try {
+                return context.getSharedPreferences(DEPOT_PREFS, Context.MODE_PRIVATE)
+                    .edit().putString(DEPOT_CLE_JETON, propre).commit();
+            } catch (Exception e) { return false; }
+        }
+
+        @JavascriptInterface
+        public boolean depotJetonExiste() {
+            try {
+                return context.getSharedPreferences(DEPOT_PREFS, Context.MODE_PRIVATE)
+                    .getString(DEPOT_CLE_JETON, null) != null;
+            } catch (Exception e) { return false; }
+        }
+
+        @JavascriptInterface
+        public boolean depotJetonEffacer() {
+            try {
+                return context.getSharedPreferences(DEPOT_PREFS, Context.MODE_PRIVATE)
+                    .edit().remove(DEPOT_CLE_JETON).commit();
+            } catch (Exception e) { return false; }
+        }
+
+        private String depotReponse(int code, String corps) {
+            try {
+                JSONObject o = new JSONObject();
+                o.put("code", code);
+                o.put("corps", corps == null ? "" : corps);
+                return o.toString();
+            } catch (Exception e) {
+                return "{\\"code\\":0,\\"corps\\":\\"\\"}";
+            }
+        }
+
+        // Renvoie {"code":<HTTP, 0 si echec reseau/refus local>,"corps":"<texte de la reponse>"}.
+        @JavascriptInterface
+        public String depotRequete(String methode, String cheminApi, String corpsJson) {
+            HttpURLConnection connexion = null;
+            try {
+                if (!"GET".equals(methode) && !"PUT".equals(methode)) return depotReponse(0, "Methode non autorisee");
+                if (cheminApi == null || cheminApi.contains("..")
+                        || !(cheminApi.equals(DEPOT_API_BASE) || cheminApi.startsWith(DEPOT_API_BASE + "/"))) {
+                    return depotReponse(0, "Chemin non autorise");
+                }
+                String jeton = context.getSharedPreferences(DEPOT_PREFS, Context.MODE_PRIVATE)
+                    .getString(DEPOT_CLE_JETON, null);
+                if (jeton == null) return depotReponse(0, "Aucun jeton enregistre");
+                URL url = new URL("https://api.github.com" + cheminApi);
+                connexion = (HttpURLConnection) url.openConnection();
+                connexion.setRequestMethod(methode);
+                connexion.setConnectTimeout(15000);
+                connexion.setReadTimeout(30000);
+                connexion.setRequestProperty("Authorization", "Bearer " + jeton);
+                connexion.setRequestProperty("Accept", "application/vnd.github+json");
+                connexion.setRequestProperty("X-GitHub-Api-Version", "2022-11-28");
+                connexion.setRequestProperty("User-Agent", "MonLangage");
+                if ("PUT".equals(methode)) {
+                    byte[] corps = (corpsJson == null ? "{}" : corpsJson).getBytes(StandardCharsets.UTF_8);
+                    connexion.setDoOutput(true);
+                    connexion.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                    connexion.setFixedLengthStreamingMode(corps.length);
+                    try (java.io.OutputStream sortie = connexion.getOutputStream()) {
+                        sortie.write(corps);
+                    }
+                }
+                int code = connexion.getResponseCode();
+                java.io.InputStream flux = code >= 400 ? connexion.getErrorStream() : connexion.getInputStream();
+                String texte = "";
+                if (flux != null) {
+                    java.io.ByteArrayOutputStream tampon = new java.io.ByteArrayOutputStream();
+                    byte[] morceau = new byte[8192];
+                    int n;
+                    while ((n = flux.read(morceau)) > 0) tampon.write(morceau, 0, n);
+                    flux.close();
+                    texte = new String(tampon.toByteArray(), StandardCharsets.UTF_8);
+                }
+                return depotReponse(code, texte);
+            } catch (Exception e) {
+                return depotReponse(0, "Reseau : " + e.getClass().getSimpleName());
+            } finally {
+                if (connexion != null) connexion.disconnect();
+            }
+        }
+
         // ===================== Stockage des paquets installes (prive a l'app) =====================
         // Dossier dedie, dans le stockage PRIVE de l'app (context.getFilesDir() : jamais visible
         // sans root, jamais accessible via lireFichier/ecrireFichier ni un gestionnaire de
