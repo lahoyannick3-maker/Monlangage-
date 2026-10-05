@@ -5347,6 +5347,187 @@ async function fonctionsDansModule(cible) {
   return lignes;
 }
 
+// ===================== Publication de paquets sur le depot =====================
+// connexion.depot(jeton) / deconnexion.depot() / publier.paquet(dossier) : comme install.paquet,
+// uniquement dans l'ecran 📦 (jamais dans fonctionsBase : un script .mlg ne peut pas publier).
+// Le jeton reste cote Java (preferences privees) : le JS ne peut ni le lire ni le renvoyer.
+const DEPOT_API_BASE = "/repos/lahoyannick3-maker/Paquets_Monlangage-";
+
+function _verifierPontPublication() {
+  let p = window.MonLangage;
+  if (!(p && typeof p.depotRequete === "function" && typeof p.depotJetonExiste === "function" && typeof p.lireFichier === "function")) {
+    throw new Error("Publication de paquets : disponible uniquement dans l'app installee (rebuild requis)");
+  }
+}
+
+function _depotRequete(methode, chemin, corps) {
+  let brut = window.MonLangage.depotRequete(methode, DEPOT_API_BASE + chemin, corps === undefined ? "" : JSON.stringify(corps));
+  let r;
+  try { r = JSON.parse(brut); } catch (e) { throw new Error("Reponse illisible du depot"); }
+  let json = null;
+  try { json = JSON.parse(r.corps); } catch (e) { json = null; }
+  return { code: r.code, json: json, texte: r.corps };
+}
+
+// Message clair selon le code HTTP (0 = pas de reseau ou refus local).
+function _erreurDepot(r, action) {
+  let detail = (r.json && typeof r.json.message === "string") ? r.json.message : "";
+  if (r.code === 0) return new Error("Echec reseau pendant " + action + " (" + (r.texte || "verifie la connexion") + ")");
+  if (r.code === 401) return new Error("Jeton refuse ou expire pendant " + action + " : refais connexion.depot(nouveau_jeton)");
+  if (r.code === 403) return new Error("Droit refuse pendant " + action + " : le jeton doit avoir la permission Contents en lecture/ecriture sur le depot (" + detail + ")");
+  if (r.code === 404) return new Error("Depot ou fichier introuvable pendant " + action + " : le jeton n'a peut-etre pas acces au depot Paquets_Monlangage-");
+  if (r.code === 409) return new Error("Conflit pendant " + action + " : le depot a change entre-temps, relance la commande");
+  return new Error("Erreur " + r.code + " pendant " + action + (detail ? " : " + detail : ""));
+}
+
+function _versBase64(texte) {
+  let octets = new TextEncoder().encode(texte);
+  let bin = "";
+  for (let i = 0; i < octets.length; i += 0x8000) bin += String.fromCharCode.apply(null, octets.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+function _depuisBase64(b64) {
+  let bin = atob(String(b64).replace(/\s/g, ""));
+  let octets = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) octets[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(octets);
+}
+
+function _retirerBarres(arg) {
+  arg = String(arg).trim();
+  if (arg.length >= 2 && arg[0] === "|" && arg[arg.length - 1] === "|") arg = arg.slice(1, -1).trim();
+  return arg;
+}
+
+async function connexionDepot(jetonBrut) {
+  _verifierPontPublication();
+  let jeton = _retirerBarres(jetonBrut);
+  if (!window.MonLangage.depotJetonEcrire(jeton)) {
+    throw new Error("Jeton invalide : lettres, chiffres, _ et - seulement (colle le jeton GitHub tel quel, sans espaces)");
+  }
+  let r = _depotRequete("GET", "");
+  if (r.code !== 200) {
+    window.MonLangage.depotJetonEffacer();
+    let e = _erreurDepot(r, "la verification du jeton");
+    throw new Error(e.message + " -- aucun jeton n'est enregistre");
+  }
+  let push = r.json && r.json.permissions && r.json.permissions.push === true;
+  return [
+    "Jeton enregistre (stockage prive de l'app) : acces au depot " + (r.json && r.json.full_name ? r.json.full_name : "") + " confirme.",
+    push ? "Droit d'ecriture annonce par GitHub." : "Attention : GitHub n'annonce pas de droit d'ecriture pour ce jeton (Contents : Read and write requis).",
+    "Le droit d'ecriture reel n'est verifie qu'a la premiere publication.",
+    "Conseil : efface cet ecran de la console, la ligne tapee y reste visible."
+  ];
+}
+
+async function deconnexionDepot() {
+  _verifierPontPublication();
+  if (!window.MonLangage.depotJetonExiste()) return ["Aucun jeton n'etait enregistre"];
+  if (!window.MonLangage.depotJetonEffacer()) throw new Error("Impossible d'effacer le jeton");
+  return ["Jeton efface de ce telephone (pense a le revoquer aussi sur github.com si tu ne t'en sers plus)"];
+}
+
+// Depose un fichier (cree ou met a jour). Renvoie "cree" / "mis a jour" / "inchange".
+async function _deposerFichierDepot(chemin, contenu, message) {
+  if (contenu.length > 900000) throw new Error("Fichier trop gros pour l'API GitHub (900 Ko max) : " + chemin);
+  let r = _depotRequete("GET", "/contents/" + chemin);
+  let sha = null;
+  if (r.code === 200 && r.json && typeof r.json.sha === "string") {
+    sha = r.json.sha;
+    try { if (_depuisBase64(r.json.content) === contenu) return "inchange"; } catch (e) { }
+  } else if (r.code !== 404) {
+    throw _erreurDepot(r, "la lecture de " + chemin);
+  }
+  let corps = { message: message, content: _versBase64(contenu) };
+  if (sha) corps.sha = sha;
+  let w = _depotRequete("PUT", "/contents/" + chemin, corps);
+  if (w.code !== 200 && w.code !== 201) throw _erreurDepot(w, "l'envoi de " + chemin);
+  return sha ? "mis a jour" : "cree";
+}
+
+async function publierPaquet(dossierBrut) {
+  _verifierPontPublication();
+  let pont = window.MonLangage;
+  if (!pont.depotJetonExiste()) throw new Error("Aucun jeton enregistre : fais d'abord connexion.depot(jeton)");
+  let dossier = _retirerBarres(dossierBrut).replace(/\/+$/, "");
+  if (!dossier) throw new Error("publier.paquet(dossier) attend le dossier du paquet (ex: publier.paquet(|/storage/emulated/0/Download/outils|))");
+
+  let texteManifest = pont.lireFichier(dossier + "/paquet.json");
+  if (typeof texteManifest !== "string") throw new Error("paquet.json introuvable dans \"" + dossier + "\"");
+  let manifest;
+  try { manifest = JSON.parse(texteManifest); } catch (e) { throw new Error("paquet.json n'est pas un JSON valide"); }
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) throw new Error("paquet.json doit etre un objet JSON");
+  let nom = manifest.nom;
+  if (typeof nom !== "string" || !/^[a-zA-Z_][\w-]*$/.test(nom)) throw new Error("paquet.json : champ \"nom\" manquant ou invalide");
+  let version = manifest.version;
+  if (typeof version !== "string" || !/^[\w.+-]+$/.test(version)) throw new Error("paquet.json : champ \"version\" obligatoire (ex: \"1.0.0\")");
+  if (manifest.type !== "mlg") throw new Error("paquet.json : seul le type \"mlg\" peut etre publie");
+  if (!Array.isArray(manifest.modules) || manifest.modules.length === 0) throw new Error("paquet.json : champ \"modules\" manquant ou vide");
+  let vus = {};
+  for (let m of manifest.modules) {
+    if (typeof m !== "string" || !/^[a-zA-Z_][\w-]*$/.test(m)) throw new Error("paquet.json : nom de module invalide : " + JSON.stringify(m));
+    if (vus[m]) throw new Error("paquet.json : module en double : " + m);
+    vus[m] = true;
+  }
+
+  // Tout lire AVANT d'envoyer quoi que ce soit : un module manquant ne laisse pas un paquet a moitie publie.
+  let racine = "paquets/" + nom;
+  let fichiers = [];
+  for (let m of manifest.modules) {
+    let t = pont.lireFichier(dossier + "/modules/" + m + ".mlg");
+    if (typeof t !== "string") throw new Error("Module \"" + m + "\" introuvable : " + dossier + "/modules/" + m + ".mlg");
+    fichiers.push({ chemin: racine + "/modules/" + m + ".mlg", contenu: t });
+  }
+  fichiers.push({ chemin: racine + "/paquet.json", contenu: texteManifest });
+
+  // index.json du depot
+  let rIndex = _depotRequete("GET", "/contents/index.json");
+  let index = { paquets: [] };
+  let shaIndex = null;
+  if (rIndex.code === 200 && rIndex.json && typeof rIndex.json.sha === "string") {
+    shaIndex = rIndex.json.sha;
+    try { index = JSON.parse(_depuisBase64(rIndex.json.content)); } catch (e) { throw new Error("index.json du depot est illisible : publication annulee, rien n'a ete envoye"); }
+    if (!index || !Array.isArray(index.paquets)) throw new Error("index.json du depot n'a pas de liste \"paquets\" : publication annulee, rien n'a ete envoye");
+  } else if (rIndex.code !== 404) {
+    throw _erreurDepot(rIndex, "la lecture de index.json");
+  }
+
+  let entree = index.paquets.find(e => e && e.nom === nom) || null;
+  if (entree) {
+    if (entree.chemin !== racine) throw new Error("Le depot declare \"" + nom + "\" avec le chemin \"" + entree.chemin + "\" (attendu \"" + racine + "\") : corrige index.json a la main");
+    let rm = _depotRequete("GET", "/contents/" + racine + "/paquet.json");
+    if (rm.code === 200 && rm.json) {
+      let distant = null;
+      try { distant = JSON.parse(_depuisBase64(rm.json.content)).version; } catch (e) { }
+      if (distant === version) throw new Error("Le paquet \"" + nom + "\" v" + version + " est deja publie : change le champ \"version\" de paquet.json pour publier une nouvelle version");
+    }
+  }
+
+  let lignes = [];
+  let message = "Publier " + nom + " v" + version;
+  for (let f of fichiers) {
+    let etat = await _deposerFichierDepot(f.chemin, f.contenu, message);
+    lignes.push("  " + f.chemin + " -- " + etat);
+  }
+
+  // index.json en DERNIER : il ne reference jamais un paquet dont les fichiers ne sont pas tous la.
+  if (entree) {
+    if (Object.prototype.hasOwnProperty.call(entree, "version")) entree.version = version;
+  } else {
+    index.paquets.push({ nom: nom, chemin: racine, version: version });
+  }
+  let corpsIndex = { message: message + " (index)", content: _versBase64(JSON.stringify(index, null, 2) + "\n") };
+  if (shaIndex) corpsIndex.sha = shaIndex;
+  let wi = _depotRequete("PUT", "/contents/index.json", corpsIndex);
+  if (wi.code !== 200 && wi.code !== 201) throw _erreurDepot(wi, "la mise a jour de index.json (les fichiers du paquet sont deja envoyes : relance la commande)");
+  lignes.push("  index.json -- " + (entree ? "mis a jour" : (shaIndex ? "paquet ajoute" : "cree")));
+
+  return ["Paquet \"" + nom + "\" v" + version + " publie (" + fichiers.length + " fichier(s)) :"].concat(lignes, [
+    "GitHub peut mettre quelques minutes a servir la nouvelle version a install.paquet(" + nom + ")."
+  ]);
+}
+
 // Analyse et execute une ligne du "Gestionnaire de paquets" -- PAS le langage MLG, une mini-
 // syntaxe dediee limitee a 4 commandes fixes. Renvoie un tableau de lignes de texte a afficher.
 async function executerCommandePaquet(ligne) {
@@ -5359,6 +5540,20 @@ async function executerCommandePaquet(ligne) {
     let mf = ligne.match(/^fonction\.dan\.module\(\s*(.+?)\s*\)$/);
     if (!mf) return ["fonction.dan.module(module) attend un nom de module (ex: copier) ou un chemin |...|"];
     try { return await fonctionsDansModule(mf[1]); } catch (e) { return ["Erreur : " + e.message]; }
+  }
+  if (/^connexion\.depot\(/.test(ligne)) {
+    let mc = ligne.match(/^connexion\.depot\(\s*(.+?)\s*\)$/);
+    if (!mc) return ["connexion.depot(jeton) attend le jeton GitHub"];
+    try { return await connexionDepot(mc[1]); } catch (e) { return ["Erreur : " + e.message]; }
+  }
+  if (/^deconnexion\.depot\(/.test(ligne)) {
+    if (!/^deconnexion\.depot\(\s*\)$/.test(ligne)) return ["deconnexion.depot() ne prend aucun argument"];
+    try { return await deconnexionDepot(); } catch (e) { return ["Erreur : " + e.message]; }
+  }
+  if (/^publier\.paquet\(/.test(ligne)) {
+    let mp = ligne.match(/^publier\.paquet\(\s*(.+?)\s*\)$/);
+    if (!mp) return ["publier.paquet(dossier) attend le dossier du paquet (contenant paquet.json et modules/)"];
+    try { return await publierPaquet(mp[1]); } catch (e) { return ["Erreur : " + e.message]; }
   }
   let m = ligne.match(/^(install|desinstall|liste|info)\.paquet\(\s*([a-zA-Z_][\w-]*)?\s*\)$/);
   if (!m) {
@@ -6254,15 +6449,18 @@ let aideCommandes = [
       "trac(x, y) : trace le vecteur y en fonction du vecteur x (memes longueurs).",
       "trac(y) : trace le vecteur y en fonction de sa position (1, 2, 3...).",
       "Par defaut, la grille n'est pas affichee (comme en Scilab) : utilise grille() pour l'activer.",
-      "Options facultatives (a la suite, dans n'importe quel ordre) : couleur~|...|, type~|...|, titre~|...|, xlab~|...|, ylab~|...|.",
+      "Options facultatives (a la suite, dans n'importe quel ordre) : couleur~|...|, style~|...|, legende~|...|, titre~|...|, xlab~|...|, ylab~|...|.",
       "couleur (comme en Scilab, mais en francais) : r=rouge, v=vert, b=bleu (par defaut), n=noir, j=jaune, m=magenta, c=cyan, bl=blanc. On peut aussi mettre un nom comme dans zone() : |rouge|, |vert|, |bleu|, |jaune|, |orange|, |violet|, |rose|, |cyan|, |blanc|, |noir|, |gris|, |marron|, ou un code hexadecimal, ex: couleur~|#ff00aa|.",
-      "type : |-| pour un trait continu (par defaut), |o| pour des points."
-    ], exemple: "x ~ seq(-5,5,0.1)\ny ~ x*x\ntrac(x, y, couleur~|r|, type~|-|, titre~|Ma courbe|)" },
+      "style : que des symboles. Lignes : |-| trait continu (par defaut), |--| tirets, |:| pointilles. Marqueurs : |o| cercles, |.| petits points, |+| croix, |x| croix en diagonale, |*| etoile, |^| triangle, |#| carre. Un marqueur seul trace des points sans trait ; on peut combiner une ligne et un marqueur : |-o|, |--+|, |:^|. Toute autre valeur donne une erreur. (L'ancien nom de cette option, type~, donne une erreur qui indique d'utiliser style~.)",
+      "legende : le nom de la courbe. Des qu'une courbe a un nom, un petit cadre de legende apparait en haut a droite du graphique, avec une ligne par courbe nommee (echantillon du trait et du marqueur dans sa couleur, puis son nom). Les courbes sans nom n'y figurent pas. Exemple : trac(x, y, couleur~|r|, legende~|vitesse|). 12 noms au plus sont affiches (les autres sont comptes), chaque nom est limite a 30 caracteres."
+    ], exemple: "x ~ seq(-5,5,0.1)\ny ~ x*x\ntrac(x, y, couleur~|r|, style~|-|, titre~|Ma courbe|)" },
 
   { noms: ["trac.multi"], categorie: "Graphique", syntaxe: "trac.multi(x, y1, y2, ...)", description: [
       "Trace plusieurs vecteurs y en fonction du meme vecteur x, sur un seul repere (comme plot(x, y1, y2) en Scilab).",
-      "Sans option couleur, chaque courbe prend automatiquement une couleur differente. Les options facultatives couleur~|...|, type~|...|, titre~|...|, xlab~|...| et ylab~|...| sont communes a toutes les courbes (voir trac) ; avec couleur~|...|, toutes les courbes ont donc la meme couleur."
-    ], exemple: "x ~ seq(-3,3,0.1)\ntrac.multi(x, x, x*x, x*x*x)" },
+      "Sans option couleur, chaque courbe prend automatiquement une couleur differente. Les options facultatives couleur~, style~, legende~, titre~, xlab~ et ylab~ s'ecrivent comme pour trac. Avec un TEXTE (couleur~|r|), elles valent pour toutes les courbes : elles ont donc la meme couleur.",
+      "Pour choisir une valeur PAR COURBE, donne une LISTE a couleur~ et/ou a style~ : une valeur par courbe, dans l'ordre, ni plus ni moins (sinon erreur). Exemple : trac.multi(x, y1, y2, y3, couleur~liste(|r|, |vert|, |#ff8800|), style~liste(|-|, |--|, |o|)). titre~, xlab~ et ylab~ restent communs a toutes les courbes.",
+      "legende~ s'utilise aussi avec une liste, un nom par courbe : legende~liste(|vitesse|, |acceleration|, |position|). Avec trac.multi, elle n'accepte QUE une liste (un nom commun a toutes les courbes n'aurait pas de sens), et la liste doit avoir une valeur par courbe."
+    ], exemple: "x ~ seq(-3,3,0.5)\ntrac.multi(x, x, x*x, x*x*x, couleur~liste(|r|, |vert|, |#ff8800|), style~liste(|-|, |--|, |o|))" },
   { noms: ["trac.diviser"], categorie: "Graphique", syntaxe: "trac.diviser(lignes, colonnes, position)", description: [
       "Divise la feuille graphique en une grille de lignes x colonnes zones (64 au plus) et choisit la zone dans laquelle les prochains trac(...) dessinent, comme subplot() en Scilab. position va de 1 a lignes x colonnes, en lisant de gauche a droite puis de haut en bas.",
       "Une fois la grille commencee, elle garde ses dimensions : change de zone en rappelant trac.diviser avec les memes lignes et colonnes."
@@ -8818,14 +9016,24 @@ function enregistrerFonctionsBase() {
         activerZoneGraphique(v[0], v[1], v[2]);
     };
 
+    // Styles de courbe : UNIQUEMENT des symboles. Une ligne (-  continue, --  tirets, :  pointilles) et/ou un
+    // marqueur (o cercle, . petit point, + croix, x croix en diagonale, * etoile, ^ triangle, # carre).
+    // Un marqueur seul = points sans trait ; ligne + marqueur = trait avec marqueurs (ex. -o, --+).
+    function analyserStyleTrac(texte, nomFonction) {
+        let t = String(texte).trim();
+        let m = /^(--|-|:)?([o.+x*^#])?$/.exec(t);
+        if (!m || t === "") throw new Error(nomFonction + " : style inconnu |" + t + "|. Lignes : - (continue, par defaut), -- (tirets), : (pointilles). Marqueurs : o . + x * ^ # (on peut combiner une ligne et un marqueur : -o, --+ ...)");
+        return { ligne: m[1] || "", marqueur: m[2] || "", code: t };
+    }
     fonctionsBase["trac"] = async function(args, ctxExpr) {
         if (args.length < 1) throw new Error("trac(...) attend au moins un vecteur : trac(y)  ou  trac(x, y)");
 
         // Separe les arguments positionnels des options nommees (cle~valeur)
-        let clesOptions = ["couleur", "type", "titre", "xlab", "ylab"];
+        let clesOptions = ["couleur", "style", "legende", "titre", "xlab", "ylab"];
         let positionnels = [], nommes = {};
         for (let a of args) {
             let m = a.trim().match(/^(\w+)\s*~\s*(.*)$/);
+            if (m && m[1] === "type") throw new Error("trac(...) : l'option type~ s'appelle maintenant style~ : style~|-| (trait continu) ou style~|o| (points)");
             if (m && clesOptions.includes(m[1])) nommes[m[1]] = m[2];
             else positionnels.push(a);
         }
@@ -8837,11 +9045,14 @@ function enregistrerFonctionsBase() {
             let s = nommes[cle].trim();
             if (/^\|[\s\S]*\|$/.test(s)) return s.slice(1, -1);
             verifierTexteLitteralFerme(s);
-            return String(await evalExpr(s, ctxExpr));
+            let v = await evalExpr(s, ctxExpr);
+            if (v && v.__type === "liste") throw new Error("trac(...) : " + cle + "~ attend un texte ; une liste (une valeur par courbe) ne marche qu'avec trac.multi(...)");
+            return String(v);
         }
 
         let couleur = await texteOption("couleur", "b");
-        let type = await texteOption("type", "-");
+        let style = await texteOption("style", "-");
+        let legende = await texteOption("legende", ""); // nom de la courbe dans la legende ("" = pas dans la legende)
         let titre = await texteOption("titre", "");
         let xlab = await texteOption("xlab", "");
         let ylab = await texteOption("ylab", "");
@@ -8854,9 +9065,9 @@ function enregistrerFonctionsBase() {
         // sans couleur. Les lettres (r, v, b...) et les noms CSS anglais (red...) marchent toujours.
         else if (Object.prototype.hasOwnProperty.call(ZONE_COULEURS, coCode)) couleur = ZONE_COULEURS[coCode];
 
-        // style/type : "-" (trait, par defaut) ou "o" (points), comme les styles plot() de Scilab
-        let tyCode = type.trim().toLowerCase();
-        type = (tyCode === "o" || tyCode === "points" || tyCode === "point") ? "points" : "lignes";
+        // style : que des symboles (voir analyserStyleTrac). "type" = ancien champ interne, conserve pour grille().
+        let infoStyle = analyserStyleTrac(style, "trac(...)");
+        let type = (infoStyle.marqueur && !infoStyle.ligne) ? "points" : "lignes";
 
         // Comme en Scilab : les points (x, y) doivent deja etre calcules avant l'appel.
         // trac(x, y)  -> trace y en fonction de x
@@ -8885,7 +9096,7 @@ function enregistrerFonctionsBase() {
         // La zone active est la source d'autorité; ne jamais réutiliser par erreur
         // le dernier graphique d'une autre feuille ou d'une autre zone.
         if (zoneGraphiqueActive) dernierGraphique = zoneGraphiqueActive.graphique;
-        let optionsCourbe = { couleur, type, titre, xlab, ylab, grille: dernierGraphique ? !!dernierGraphique.options.grille : false };
+        let optionsCourbe = { couleur, type, style: infoStyle.code, legende, titre, xlab, ylab, grille: dernierGraphique ? !!dernierGraphique.options.grille : false };
         let courbe = { xs: xs, ys: ys, options: optionsCourbe };
         if (dernierGraphique && dernierGraphique.canvas && dernierGraphique.canvas.isConnected) {
             let courbes = Array.isArray(dernierGraphique.courbes) ? dernierGraphique.courbes.slice() : [{ xs: dernierGraphique.xs, ys: dernierGraphique.ys, options: dernierGraphique.options }];
@@ -8902,23 +9113,48 @@ function enregistrerFonctionsBase() {
     // lorsque couleur n'est pas precisée. Le rendu reutilise trac() et son canvas.
     fonctionsBase["trac.multi"] = async function(args, ctxExpr) {
         if (args.length < 3) throw new Error("trac.multi(...) attend x et au moins deux vecteurs y : trac.multi(x, y1, y2, ...)");
-        let optionsConnues = ["couleur", "type", "titre", "xlab", "ylab"];
+        let optionsConnues = ["couleur", "style", "legende", "titre", "xlab", "ylab"];
         let positionnels = [], nommes = {};
         for (let a of args) {
             let m = a.trim().match(/^(\w+)\s*~\s*(.*)$/);
+            if (m && m[1] === "type") throw new Error("trac.multi(...) : l'option type~ s'appelle maintenant style~ : style~|-| (trait continu) ou style~|o| (points)");
             if (m && optionsConnues.includes(m[1])) nommes[m[1]] = m[2];
             else positionnels.push(a);
         }
         if (positionnels.length < 3) throw new Error("trac.multi(...) attend x et au moins deux vecteurs y");
         let palette = ["b", "r", "v", "m", "c", "j", "bl", "n"];
-        let couleurFournie = Object.prototype.hasOwnProperty.call(nommes, "couleur");
+        let nbCourbes = positionnels.length - 1;
+        // couleur~ et style~ : un TEXTE (|r|) vaut pour toutes les courbes ; une LISTE (liste(|r|, |vert|, ...)) donne
+        // une valeur par courbe, dans l'ordre, et doit en avoir exactement une par courbe.
+        async function optionParCourbe(cle) {
+            if (!Object.prototype.hasOwnProperty.call(nommes, cle)) return null;
+            let src = nommes[cle].trim();
+            if (/^\|[\s\S]*\|$/.test(src)) return { global: src.slice(1, -1) };
+            verifierTexteLitteralFerme(src);
+            let v = await evalExpr(src, ctxExpr);
+            if (v && v.__type === "liste") {
+                if (v.elements.length !== nbCourbes) throw new Error("trac.multi(...) : " + cle + "~liste(...) doit contenir " + nbCourbes + " valeurs, une par courbe (il y en a " + v.elements.length + ")");
+                for (let e of v.elements) {
+                    if (typeof e !== "string" || e.includes("|")) throw new Error("trac.multi(...) : chaque valeur de " + cle + "~liste(...) doit etre un texte, comme " + (cle === "couleur" ? "|r| ou |vert|" : cle === "legende" ? "|vitesse|" : "|-| ou |--o|"));
+                }
+                return { liste: v.elements };
+            }
+            return { global: String(v) };
+        }
+        let optCouleur = await optionParCourbe("couleur");
+        let optStyle = await optionParCourbe("style");
+        let optLegende = await optionParCourbe("legende");
+        if (optLegende && !optLegende.liste) throw new Error("trac.multi(...) : legende~ attend une liste avec un nom par courbe : legende~liste(|nom1|, |nom2|, ...)");
         for (let i = 1; i < positionnels.length; i++) {
             let argsTrac = [positionnels[0], positionnels[i]];
             for (let cle of Object.keys(nommes)) {
-                if (cle === "couleur" && !couleurFournie) continue;
+                if (cle === "couleur" || cle === "style" || cle === "legende") continue;
                 argsTrac.push(cle + "~" + nommes[cle]);
             }
-            if (!couleurFournie) argsTrac.push("couleur~|" + palette[(i - 1) % palette.length] + "|");
+            let couleurI = !optCouleur ? palette[(i - 1) % palette.length] : (optCouleur.liste ? optCouleur.liste[i - 1] : optCouleur.global);
+            argsTrac.push("couleur~|" + couleurI + "|");
+            if (optStyle) argsTrac.push("style~|" + (optStyle.liste ? optStyle.liste[i - 1] : optStyle.global) + "|");
+            if (optLegende) argsTrac.push("legende~|" + optLegende.liste[i - 1] + "|");
             await fonctionsBase["trac"](argsTrac, ctxExpr);
         }
     };
@@ -9491,14 +9727,12 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
     ctx.strokeStyle = couleurCourbe;
     ctx.fillStyle = couleurCourbe;
     ctx.lineWidth = 2;
-    if (typeCourbe === "points") {
-      for (let i = 0; i < cx.length; i++) {
-        if (!Number.isFinite(cx[i]) || !Number.isFinite(cy[i])) continue;
-        ctx.beginPath();
-        ctx.arc(px(cx[i]), py(cy[i]), 2.5, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    } else {
+    // Style = ligne (-, --, :) et/ou marqueur (o . + x * ^ #). Sans champ style (anciens appels) : type lignes/points.
+    let styleBrut = opt.style || (typeCourbe === "points" ? "o" : "-");
+    let stm = /^(--|-|:)?([o.+x*^#])?$/.exec(styleBrut) || [null, "-", ""];
+    let ligneStyle = stm[1] || "", marqueurStyle = stm[2] || "";
+    if (ligneStyle) {
+      ctx.setLineDash(ligneStyle === "--" ? [8, 5] : ligneStyle === ":" ? [2, 4] : []);
       ctx.beginPath();
       let enCours = false;
       for (let i = 0; i < cx.length; i++) {
@@ -9507,6 +9741,78 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
         if (!enCours) { ctx.moveTo(X, Y); enCours = true; } else { ctx.lineTo(X, Y); }
       }
       ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    if (marqueurStyle) {
+      ctx.lineWidth = 1.5;
+      for (let i = 0; i < cx.length; i++) {
+        if (!Number.isFinite(cx[i]) || !Number.isFinite(cy[i])) continue;
+        let X = px(cx[i]), Y = py(cy[i]);
+        if (marqueurStyle === "o" || marqueurStyle === ".") {
+          ctx.beginPath(); ctx.arc(X, Y, marqueurStyle === "o" ? 2.5 : 1.2, 0, Math.PI * 2); ctx.fill();
+        } else if (marqueurStyle === "#") {
+          ctx.fillRect(X - 2.5, Y - 2.5, 5, 5);
+        } else if (marqueurStyle === "^") {
+          ctx.beginPath(); ctx.moveTo(X, Y - 3.5); ctx.lineTo(X + 3.2, Y + 2.5); ctx.lineTo(X - 3.2, Y + 2.5); ctx.closePath(); ctx.fill();
+        } else {
+          ctx.beginPath();
+          if (marqueurStyle === "+" || marqueurStyle === "*") { ctx.moveTo(X - 3.5, Y); ctx.lineTo(X + 3.5, Y); ctx.moveTo(X, Y - 3.5); ctx.lineTo(X, Y + 3.5); }
+          if (marqueurStyle === "x" || marqueurStyle === "*") { ctx.moveTo(X - 3, Y - 3); ctx.lineTo(X + 3, Y + 3); ctx.moveTo(X - 3, Y + 3); ctx.lineTo(X + 3, Y - 3); }
+          ctx.stroke();
+        }
+      }
+    }
+  }
+
+  // Legende : un petit cadre en haut a droite du repere, une ligne par courbe NOMMEE (option legende~),
+  // avec un echantillon du trait et/ou du marqueur dans la couleur de la courbe.
+  {
+    let nommees = courbes.filter(c => c.options && c.options.legende);
+    if (nommees.length) {
+      const MAX_LEGENDE = 12;
+      let affichees = nommees.slice(0, MAX_LEGENDE);
+      let reste = nommees.length - affichees.length;
+      let noms = affichees.map(c => { let n = String(c.options.legende); return n.length > 30 ? n.slice(0, 29) + "\u2026" : n; });
+      if (reste > 0) noms.push("+" + reste + " autre" + (reste > 1 ? "s" : ""));
+      ctx.font = "11px monospace";
+      let largeurTexte = 0;
+      for (let n of noms) largeurTexte = Math.max(largeurTexte, ctx.measureText(n).width);
+      const pad = 6, haut = 15, echantillon = 22;
+      let boiteL = pad + echantillon + 6 + largeurTexte + pad, boiteH = pad + noms.length * haut - 2 + pad;
+      let bx = largeurCSS - marge.droite - boiteL - 6, by = marge.haut + 6;
+      if (bx < marge.gauche + 2) bx = marge.gauche + 2;
+      ctx.fillStyle = "rgba(1, 4, 9, 0.82)";
+      ctx.fillRect(bx, by, boiteL, boiteH);
+      ctx.strokeStyle = "#30363d"; ctx.lineWidth = 1; ctx.setLineDash([]);
+      ctx.strokeRect(bx + 0.5, by + 0.5, boiteL - 1, boiteH - 1);
+      ctx.textBaseline = "middle"; ctx.textAlign = "left";
+      for (let i = 0; i < noms.length; i++) {
+        let cy2 = by + pad + i * haut + (haut - 2) / 2;
+        if (i < affichees.length) {
+          let opt = affichees[i].options;
+          let col = opt.couleur || couleur;
+          let stm2 = /^(--|-|:)?([o.+x*^#])?$/.exec(opt.style || ((opt.type || type) === "points" ? "o" : "-")) || [null, "-", ""];
+          let sx = bx + pad, ex = sx + echantillon, mx = (sx + ex) / 2;
+          ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 2;
+          if (stm2[1]) { ctx.setLineDash(stm2[1] === "--" ? [5, 3] : stm2[1] === ":" ? [2, 3] : []); ctx.beginPath(); ctx.moveTo(sx, cy2); ctx.lineTo(ex, cy2); ctx.stroke(); ctx.setLineDash([]); }
+          let mq = stm2[2];
+          if (mq) {
+            ctx.lineWidth = 1.5;
+            if (mq === "o" || mq === ".") { ctx.beginPath(); ctx.arc(mx, cy2, mq === "o" ? 2.5 : 1.2, 0, Math.PI * 2); ctx.fill(); }
+            else if (mq === "#") ctx.fillRect(mx - 2.5, cy2 - 2.5, 5, 5);
+            else if (mq === "^") { ctx.beginPath(); ctx.moveTo(mx, cy2 - 3.5); ctx.lineTo(mx + 3.2, cy2 + 2.5); ctx.lineTo(mx - 3.2, cy2 + 2.5); ctx.closePath(); ctx.fill(); }
+            else {
+              ctx.beginPath();
+              if (mq === "+" || mq === "*") { ctx.moveTo(mx - 3.5, cy2); ctx.lineTo(mx + 3.5, cy2); ctx.moveTo(mx, cy2 - 3.5); ctx.lineTo(mx, cy2 + 3.5); }
+              if (mq === "x" || mq === "*") { ctx.moveTo(mx - 3, cy2 - 3); ctx.lineTo(mx + 3, cy2 + 3); ctx.moveTo(mx - 3, cy2 + 3); ctx.lineTo(mx + 3, cy2 - 3); }
+              ctx.stroke();
+            }
+          }
+        }
+        ctx.fillStyle = "#c9d1d9";
+        ctx.fillText(noms[i], bx + pad + echantillon + 6, cy2);
+      }
+      ctx.textBaseline = "alphabetic";
     }
   }
 
