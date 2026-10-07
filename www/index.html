@@ -6804,7 +6804,9 @@ let aideCommandes = [
       "trac(x, y) : trace le vecteur y en fonction du vecteur x (memes longueurs).",
       "trac(y) : trace le vecteur y en fonction de sa position (1, 2, 3...).",
       "Par defaut, la grille n'est pas affichee (comme en Scilab) : utilise grille() pour l'activer.",
-      "Options facultatives (a la suite, dans n'importe quel ordre) : couleur~|...|, style~|...|, legende~|...|, titre~|...|, xlab~|...|, ylab~|...|.",
+      "Options facultatives (a la suite, dans n'importe quel ordre) : couleur~|...|, style~|...|, legende~|...|, titre~|...|, xlab~|...|, ylab~|...|, epaisseur~nombre.",
+      "epaisseur : epaisseur du trait en points de dessin, de 0.5 a 20 (2 par defaut), ex: epaisseur~4. Elle agit sur le trait, pas sur la taille des marqueurs.",
+      "Aucune droite d'axe n'est tracee par defaut (comme en Python) : le repere a son cadre et ses graduations. Pour tracer les axes qui se croisent au milieu (en 0), utilise axes(), axe.horizontal() ou axe.vertical().",
       "couleur (comme en Scilab, mais en francais) : r=rouge, v=vert, b=bleu (par defaut), n=noir, j=jaune, m=magenta, c=cyan, bl=blanc. On peut aussi mettre un nom comme dans zone() : |rouge|, |vert|, |bleu|, |jaune|, |orange|, |violet|, |rose|, |cyan|, |blanc|, |noir|, |gris|, |marron|, ou un code hexadecimal, ex: couleur~|#ff00aa|.",
       "style : que des symboles. Lignes : |-| trait continu (par defaut), |--| tirets, |:| pointilles. Marqueurs : |o| cercles, |.| petits points, |+| croix, |x| croix en diagonale, |*| etoile, |^| triangle, |#| carre. Un marqueur seul trace des points sans trait ; on peut combiner une ligne et un marqueur : |-o|, |--+|, |:^|. Toute autre valeur donne une erreur. (L'ancien nom de cette option, type~, donne une erreur qui indique d'utiliser style~.)",
       "legende : le nom de la courbe. Des qu'une courbe a un nom, un petit cadre de legende apparait dans un coin du graphique ou aucune courbe ne passe (haut droit en priorite) ; si les quatre coins sont traverses, il se place au-dessus du graphique, qui se reduit d'autant : la legende ne cache jamais une courbe. Une ligne par courbe nommee (echantillon du trait et du marqueur dans sa couleur, puis son nom). Les courbes sans nom n'y figurent pas. Exemple : trac(x, y, couleur~|r|, legende~|vitesse|). 12 noms au plus sont affiches (les autres sont comptes), chaque nom est limite a 30 caracteres."
@@ -6812,10 +6814,27 @@ let aideCommandes = [
 
   { noms: ["trac.multi"], categorie: "Graphique", syntaxe: "trac.multi(x, y1, y2, ...)", description: [
       "Trace plusieurs vecteurs y en fonction du meme vecteur x, sur un seul repere (comme plot(x, y1, y2) en Scilab).",
-      "Sans option couleur, chaque courbe prend automatiquement une couleur differente. Les options facultatives couleur~, style~, legende~, titre~, xlab~ et ylab~ s'ecrivent comme pour trac. Avec un TEXTE (couleur~|r|), elles valent pour toutes les courbes : elles ont donc la meme couleur.",
-      "Pour choisir une valeur PAR COURBE, donne une LISTE a couleur~ et/ou a style~ : une valeur par courbe, dans l'ordre, ni plus ni moins (sinon erreur). Exemple : trac.multi(x, y1, y2, y3, couleur~liste(|r|, |vert|, |#ff8800|), style~liste(|-|, |--|, |o|)). titre~, xlab~ et ylab~ restent communs a toutes les courbes.",
+      "Sans option couleur, chaque courbe prend automatiquement une couleur differente. Les options facultatives couleur~, style~, legende~, epaisseur~, titre~, xlab~ et ylab~ s'ecrivent comme pour trac. Avec un TEXTE (couleur~|r|), elles valent pour toutes les courbes : elles ont donc la meme couleur.",
+      "Pour choisir une valeur PAR COURBE, donne une LISTE a couleur~, style~ et/ou epaisseur~ (epaisseur~liste(1, 3, 5)) : une valeur par courbe, dans l'ordre, ni plus ni moins (sinon erreur). Exemple : trac.multi(x, y1, y2, y3, couleur~liste(|r|, |vert|, |#ff8800|), style~liste(|-|, |--|, |o|)). titre~, xlab~ et ylab~ restent communs a toutes les courbes.",
       "legende~ s'utilise aussi avec une liste, un nom par courbe : legende~liste(|vitesse|, |acceleration|, |position|). Avec trac.multi, elle n'accepte QUE une liste (un nom commun a toutes les courbes n'aurait pas de sens), et la liste doit avoir une valeur par courbe."
     ], exemple: "x ~ seq(-3,3,0.5)\ntrac.multi(x, x, x*x, x*x*x, couleur~liste(|r|, |vert|, |#ff8800|), style~liste(|-|, |--|, |o|))" },
+  { noms: ["axes"], categorie: "Graphique", syntaxe: "axes()  ou  axes(couleur~, epaisseur~, style~)  ou  axes(FAUX)", description: [
+      "Trace les deux axes qui se croisent au milieu du graphique : l'axe horizontal (la droite qui passe par y=0) et l'axe vertical (la droite qui passe par x=0), sur le graphique de la zone active.",
+      "Par defaut AUCUN axe n'est trace (comme en Python) : le repere n'a que son cadre et ses graduations. C'est toi qui demandes les axes avec axes(), axe.horizontal() ou axe.vertical(). A utiliser apres trac(...), comme grille().",
+      "axes() donne un trait fin gris continu. Avec des options, les deux axes les partagent : axes(couleur~|noir|, epaisseur~2, style~|--|). Pour des axes differents, utilise axe.horizontal(...) et axe.vertical(...). axes(FAUX) retire les deux.",
+      "Si 0 n'est pas dans le repere visible (par exemple des y qui vont de 5 a 10), l'axe correspondant n'est pas visible. Les axes ressortent aussi dans trac.enregistre et feuille.enregistre."
+    ], exemple: "x ~ seq(-3,3,0.1)\ntrac(x, x*x*x)\naxes()" },
+  { noms: ["axe.horizontal"], categorie: "Graphique", syntaxe: "axe.horizontal()  ou  axe.horizontal(couleur~, epaisseur~, style~)  ou  axe.horizontal(FAUX)", description: [
+      "Personnalise l'axe horizontal (la droite qui passe par y=0, l'axe des x) du graphique de la zone active : tu le traces avec la couleur, l'epaisseur et le style que tu choisis. L'axe vertical n'est pas touche.",
+      "Options : couleur~|rouge| (memes noms que trac, ou |#ff8800|), epaisseur~nombre (de 0.5 a 20, 1 par defaut), style~|-| trait continu (par defaut), |--| tirets, |:| pointilles. axe.horizontal() sans option : trait fin gris continu.",
+      "Redefinir l'axe remplace l'ancien. axe.horizontal(FAUX) le retire. Aucun axe n'est trace tant que tu ne le demandes pas. A utiliser apres trac(...)."
+    ], exemple: "x ~ seq(-3,3,0.1)\ntrac(x, x*x*x)\naxe.horizontal(couleur~|rouge|, epaisseur~2, style~|--|)" },
+  { noms: ["axe.vertical"], categorie: "Graphique", syntaxe: "axe.vertical()  ou  axe.vertical(couleur~, epaisseur~, style~)  ou  axe.vertical(FAUX)", description: [
+      "Personnalise l'axe vertical (la droite qui passe par x=0, l'axe des y) du graphique de la zone active. Memes options et memes regles que axe.horizontal. L'axe horizontal n'est pas touche."
+    ], exemple: "x ~ seq(-3,3,0.1)\ntrac(x, x*x*x)\naxe.horizontal(couleur~|noir|)\naxe.vertical(couleur~|vert|, epaisseur~3, style~|:|)" },
+  { noms: ["axe.effa"], categorie: "Graphique", syntaxe: "axe.effa()", description: [
+      "Retire les deux axes (horizontal et vertical) du graphique de la zone active, comme axes(FAUX). Les courbes, la grille et les graduations ne changent pas."
+    ], exemple: "axes()\naxe.effa()" },
   { noms: ["trac.diviser"], categorie: "Graphique", syntaxe: "trac.diviser(lignes, colonnes, position)", description: [
       "Divise la feuille graphique en une grille de lignes x colonnes zones (64 au plus) et choisit la zone dans laquelle les prochains trac(...) dessinent, comme subplot() en Scilab. position va de 1 a lignes x colonnes, en lisant de gauche a droite puis de haut en bas.",
       "Une fois la grille commencee, elle garde ses dimensions : change de zone en rappelant trac.diviser avec les memes lignes et colonnes."
@@ -9394,7 +9413,7 @@ function enregistrerFonctionsBase() {
         if (args.length < 1) throw new Error("trac(...) attend au moins un vecteur : trac(y)  ou  trac(x, y)");
 
         // Separe les arguments positionnels des options nommees (cle~valeur)
-        let clesOptions = ["couleur", "style", "legende", "titre", "xlab", "ylab"];
+        let clesOptions = ["couleur", "style", "legende", "titre", "xlab", "ylab", "epaisseur"];
         let positionnels = [], nommes = {};
         for (let a of args) {
             let m = a.trim().match(/^(\w+)\s*~\s*(.*)$/);
@@ -9421,6 +9440,13 @@ function enregistrerFonctionsBase() {
         let titre = await texteOption("titre", "");
         let xlab = await texteOption("xlab", "");
         let ylab = await texteOption("ylab", "");
+        // epaisseur~ : epaisseur du trait en points de dessin (2 par defaut), un NOMBRE
+        let epaisseur = 2;
+        if ("epaisseur" in nommes) {
+            let ve = await evalExpr(nommes.epaisseur.trim(), ctxExpr);
+            if (ve && ve.__type === "liste") throw new Error("trac(...) : epaisseur~ attend un nombre ; une liste (une valeur par courbe) ne marche qu'avec trac.multi(...)");
+            epaisseur = verifierEpaisseur(ve, "trac(...)");
+        }
 
         // couleur : lettre(s) façon Scilab (r, v, b, n, j, m, c, bl) ou code hexadecimal direct
         let coCode = couleur.trim().toLowerCase();
@@ -9461,7 +9487,11 @@ function enregistrerFonctionsBase() {
         // La zone active est la source d'autorité; ne jamais réutiliser par erreur
         // le dernier graphique d'une autre feuille ou d'une autre zone.
         if (zoneGraphiqueActive) dernierGraphique = zoneGraphiqueActive.graphique;
-        let optionsCourbe = { couleur, type, style: infoStyle.code, legende, titre, xlab, ylab, grille: dernierGraphique ? !!dernierGraphique.options.grille : false };
+        // grille et droites d'axes ne sont herites que d'un graphique encore AFFICHE (celui qu'on complete) :
+        // pas d'un graphique d'une execution precedente, dont le canvas n'est plus dans la console.
+        let graphiqueVivant = (dernierGraphique && dernierGraphique.canvas && dernierGraphique.canvas.isConnected) ? dernierGraphique : null;
+        let optionsCourbe = { couleur, type, style: infoStyle.code, legende, titre, xlab, ylab, epaisseur, grille: graphiqueVivant ? !!graphiqueVivant.options.grille : false,
+            axes: (graphiqueVivant && Array.isArray(graphiqueVivant.options.axes)) ? graphiqueVivant.options.axes.map(d => Object.assign({}, d)) : [] };
         let courbe = { xs: xs, ys: ys, options: optionsCourbe };
         if (dernierGraphique && dernierGraphique.canvas && dernierGraphique.canvas.isConnected) {
             let courbes = Array.isArray(dernierGraphique.courbes) ? dernierGraphique.courbes.slice() : [{ xs: dernierGraphique.xs, ys: dernierGraphique.ys, options: dernierGraphique.options }];
@@ -9478,7 +9508,7 @@ function enregistrerFonctionsBase() {
     // lorsque couleur n'est pas precisée. Le rendu reutilise trac() et son canvas.
     fonctionsBase["trac.multi"] = async function(args, ctxExpr) {
         if (args.length < 3) throw new Error("trac.multi(...) attend x et au moins deux vecteurs y : trac.multi(x, y1, y2, ...)");
-        let optionsConnues = ["couleur", "style", "legende", "titre", "xlab", "ylab"];
+        let optionsConnues = ["couleur", "style", "legende", "titre", "xlab", "ylab", "epaisseur"];
         let positionnels = [], nommes = {};
         for (let a of args) {
             let m = a.trim().match(/^(\w+)\s*~\s*(.*)$/);
@@ -9510,16 +9540,28 @@ function enregistrerFonctionsBase() {
         let optStyle = await optionParCourbe("style");
         let optLegende = await optionParCourbe("legende");
         if (optLegende && !optLegende.liste) throw new Error("trac.multi(...) : legende~ attend une liste avec un nom par courbe : legende~liste(|nom1|, |nom2|, ...)");
+        // epaisseur~ : un NOMBRE (vaut pour toutes les courbes) ou une LISTE de nombres, un par courbe
+        let optEpaisseur = null;
+        if (Object.prototype.hasOwnProperty.call(nommes, "epaisseur")) {
+            let ve = await evalExpr(nommes.epaisseur.trim(), ctxExpr);
+            if (ve && ve.__type === "liste") {
+                if (ve.elements.length !== nbCourbes) throw new Error("trac.multi(...) : epaisseur~liste(...) doit contenir " + nbCourbes + " valeurs, une par courbe (il y en a " + ve.elements.length + ")");
+                optEpaisseur = { liste: ve.elements.map(e => verifierEpaisseur(e, "trac.multi(...)")) };
+            } else {
+                optEpaisseur = { global: verifierEpaisseur(ve, "trac.multi(...)") };
+            }
+        }
         for (let i = 1; i < positionnels.length; i++) {
             let argsTrac = [positionnels[0], positionnels[i]];
             for (let cle of Object.keys(nommes)) {
-                if (cle === "couleur" || cle === "style" || cle === "legende") continue;
+                if (cle === "couleur" || cle === "style" || cle === "legende" || cle === "epaisseur") continue;
                 argsTrac.push(cle + "~" + nommes[cle]);
             }
             let couleurI = !optCouleur ? palette[(i - 1) % palette.length] : (optCouleur.liste ? optCouleur.liste[i - 1] : optCouleur.global);
             argsTrac.push("couleur~|" + couleurI + "|");
             if (optStyle) argsTrac.push("style~|" + (optStyle.liste ? optStyle.liste[i - 1] : optStyle.global) + "|");
             if (optLegende) argsTrac.push("legende~|" + optLegende.liste[i - 1] + "|");
+            if (optEpaisseur) argsTrac.push("epaisseur~" + (optEpaisseur.liste ? optEpaisseur.liste[i - 1] : optEpaisseur.global));
             await fonctionsBase["trac"](argsTrac, ctxExpr);
         }
     };
@@ -9561,6 +9603,100 @@ function enregistrerFonctionsBase() {
         dernierGraphique = null;
         zoneGraphiqueActive = null;
     };
+
+    // ===== DROITES D'AXES (debut) =====
+    // axe.horizontal(couleur~, epaisseur~, style~) : l'axe horizontal (la droite qui passe par y=0, l'axe des x)
+    // axe.vertical(couleur~, epaisseur~, style~)   : l'axe vertical (la droite qui passe par x=0, l'axe des y)
+    // axes(...) : les deux a la fois ; axe.effa() / axes(FAUX) / axe.horizontal(FAUX) : les retirer.
+    // Aucun axe par defaut (comme matplotlib) : l'utilisateur demande ceux qu'il veut. Comme grille() : agit sur
+    // le graphique de la zone active et le redessine. Un axe dont la valeur 0 n'est pas dans le repere n'est pas visible.
+    function resoudreCouleurAxe(texte, nomCmd) {
+        let k = texte.trim().toLowerCase();
+        let c = Object.prototype.hasOwnProperty.call(COULEURS_TRAC, k) ? COULEURS_TRAC[k]
+              : Object.prototype.hasOwnProperty.call(ZONE_COULEURS, k) ? ZONE_COULEURS[k] : texte.trim();
+        if (typeof CSS !== "undefined" && CSS.supports && !CSS.supports("color", c)) {
+            throw new Error(nomCmd + " : couleur inconnue '" + texte + "' (ex: |rouge|, |gris|, |r|, |#ff8800|)");
+        }
+        return c;
+    }
+    // Lit les arguments d'un axe : { retirer: true } pour FAUX, sinon { retirer: false, droite } (VRAI ou rien = style par defaut).
+    async function lireAxe(args, ctxExpr, nomCmd, sens) {
+        let debut = 0;
+        if (args.length >= 1 && args[0].trim() !== "" && !/^\w+\s*~/.test(args[0].trim())) {
+            let v = await evalExpr(args[0], ctxExpr);
+            if (typeof v !== "boolean") {
+                throw new Error(nomCmd + " : pas de valeur a donner, l'axe est toujours celui qui passe par 0. Mets seulement des options (couleur~, epaisseur~, style~), ou FAUX pour le retirer");
+            }
+            if (args.length > 1) throw new Error(nomCmd + "(" + (v ? "VRAI" : "FAUX") + ") ne prend pas d'autre argument");
+            return v ? { retirer: false, droite: { sens: sens, valeur: 0, couleur: null, epaisseur: null, style: "-" } } : { retirer: true };
+        }
+        let droite = { sens: sens, valeur: 0, couleur: null, epaisseur: null, style: "-" };
+        let vus = {};
+        for (let i = debut; i < args.length; i++) {
+            let brut = args[i].trim();
+            let m = brut.match(/^(\w+)\s*~\s*([\s\S]*)$/);
+            if (!m) throw new Error(nomCmd + " : argument inattendu '" + brut + "' (options : couleur~, epaisseur~, style~)");
+            let cle = m[1];
+            if (["couleur", "epaisseur", "style"].indexOf(cle) < 0) throw new Error(nomCmd + " : option inconnue '" + cle + "~' (options : couleur~, epaisseur~, style~)");
+            if (vus[cle]) throw new Error(nomCmd + " : l'option " + cle + "~ est donnee deux fois");
+            vus[cle] = true;
+            let src = m[2].trim();
+            if (cle === "epaisseur") {
+                droite.epaisseur = verifierEpaisseur(await evalExpr(src, ctxExpr), nomCmd);
+                continue;
+            }
+            let texte;
+            if (/^\|[\s\S]*\|$/.test(src)) texte = src.slice(1, -1);
+            else {
+                verifierTexteLitteralFerme(src);
+                let v = await evalExpr(src, ctxExpr);
+                if (typeof v !== "string") throw new ErreurTypeInvalide(nomCmd + " : " + cle + "~ attend un texte (ex: " + cle + "~|" + (cle === "style" ? "--" : "rouge") + "|)");
+                texte = v;
+            }
+            if (cle === "style") {
+                if (texte !== "-" && texte !== "--" && texte !== ":") throw new Error(nomCmd + " : style~ attend |-| (trait continu), |--| (tirets) ou |:| (pointilles)");
+                droite.style = texte;
+            } else {
+                droite.couleur = resoudreCouleurAxe(texte, nomCmd);
+            }
+        }
+        return { retirer: false, droite: droite };
+    }
+    // Remplace la liste des axes du graphique actif, la repercute sur chaque courbe (le graphique est
+    // reconstruit a partir des options de la derniere courbe, comme pour grille()) et redessine.
+    function appliquerDroitesAxes(nomCmd, modifier) {
+        if (zoneGraphiqueActive) dernierGraphique = zoneGraphiqueActive.graphique;
+        if (!dernierGraphique || !dernierGraphique.canvas || !dernierGraphique.canvas.isConnected) throw new Error(nomCmd + " : aucun graphique n'a encore ete trace, utilise trac(...) avant");
+        let courbes = Array.isArray(dernierGraphique.courbes) ? dernierGraphique.courbes : [{ xs: dernierGraphique.xs, ys: dernierGraphique.ys, options: dernierGraphique.options }];
+        let actuelles = Array.isArray(dernierGraphique.options.axes) ? dernierGraphique.options.axes.map(d => Object.assign({}, d)) : [];
+        let nouvelles = modifier(actuelles);
+        dernierGraphique.options.axes = nouvelles;
+        for (let c of courbes) c.options.axes = nouvelles.map(d => Object.assign({}, d));
+        dessinerCourbe(dernierGraphique.xs, dernierGraphique.ys, Object.assign({}, dernierGraphique.options, { courbes: courbes }), dernierGraphique.canvas);
+    }
+    function remplacerAxe(liste, droite) {   // un seul axe horizontal et un seul vertical : le redefinir remplace l'ancien
+        let reste = liste.filter(d => d.sens !== droite.sens);
+        reste.push(droite);
+        return reste;
+    }
+    fonctionsBase["axe.horizontal"] = async function(args, ctxExpr) {
+        let r = await lireAxe(args, ctxExpr, "axe.horizontal", "h");
+        appliquerDroitesAxes("axe.horizontal(...)", liste => r.retirer ? liste.filter(d => d.sens !== "h") : remplacerAxe(liste, r.droite));
+    };
+    fonctionsBase["axe.vertical"] = async function(args, ctxExpr) {
+        let r = await lireAxe(args, ctxExpr, "axe.vertical", "v");
+        appliquerDroitesAxes("axe.vertical(...)", liste => r.retirer ? liste.filter(d => d.sens !== "v") : remplacerAxe(liste, r.droite));
+    };
+    fonctionsBase["axe.effa"] = async function(args, ctxExpr) {
+        if (args.length !== 0) throw new Error("axe.effa() ne prend aucun argument");
+        appliquerDroitesAxes("axe.effa()", () => []);
+    };
+    // axes(...) : les deux axes d'un coup, avec les memes options (axes() = style par defaut) ; axes(FAUX) = les retirer
+    fonctionsBase["axes"] = async function(args, ctxExpr) {
+        let r = await lireAxe(args, ctxExpr, "axes", "h");
+        appliquerDroitesAxes("axes(...)", liste => r.retirer ? [] : remplacerAxe(remplacerAxe(liste, r.droite), Object.assign({}, r.droite, { sens: "v" })));
+    };
+    // ===== DROITES D'AXES (fin) =====
 
     // ===== ENREGISTREMENT D'IMAGE (debut) =====
     // trac.enregistre(chemin, largeur~, hauteur~, resolution~, theme~, ecra~)  : image du graphique de la zone active.
@@ -9645,6 +9781,7 @@ function enregistrerFonctionsBase() {
         if (typeof chemin !== "string" || chemin.trim() === "") throw new ErreurTypeInvalide("trac.enregistre(...) : chemin doit etre du texte");
         let opt = await lireOptionsEnregistrement(args, 1, "trac.enregistre", ctxExpr);
         let g = zoneGraphiqueActive ? zoneGraphiqueActive.graphique : dernierGraphique;
+        if (g && !(g.canvas && g.canvas.isConnected)) g = null;   // graphique d'une execution precedente : plus affiche
         if (!g || !Array.isArray(g.courbes) || g.courbes.length === 0) {
             throw new Error("trac.enregistre(...) : aucun graphique a enregistrer dans la zone active (utilise trac(...) avant)");
         }
@@ -10012,6 +10149,16 @@ function clearConsole() {
 
 /* ===================== GRAPHIQUE (trac) ===================== */
 // Formate un nombre pour les graduations des axes (compact, lisible sur mobile).
+// epaisseur~ (courbes de trac, droites d'axes) : un nombre de points de dessin entre 0.5 et 20.
+function verifierEpaisseur(v, nomCmd) {
+  let n = Number(v);
+  if (typeof v === "boolean" || typeof v === "string" || v === null || v === undefined || !Number.isFinite(n)) {
+    throw new ErreurTypeInvalide(nomCmd + " : epaisseur~ attend un nombre (ex: epaisseur~3)");
+  }
+  if (n < 0.5 || n > 20) throw new Error(nomCmd + " : epaisseur~ doit etre entre 0.5 et 20 (2 par defaut pour une courbe, 1 pour une droite d'axe)");
+  return n;
+}
+
 function formaterNombreAxe(v) {
   if (v === 0) return "0";
   if (Math.abs(v) >= 1000 || Math.abs(v) < 0.01) return v.toExponential(1);
@@ -10114,6 +10261,9 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
   let xlab = options.xlab || "";
   let ylab = options.ylab || "";
   let grille = !!options.grille;
+  // Axes (droites par y=0 et x=0) demandes par l'utilisateur (axe.horizontal, axe.vertical, axes) :
+  // [{ sens: "h"|"v", valeur, couleur, epaisseur, style }]. Aucune par defaut (comme matplotlib).
+  let droitesAxes = Array.isArray(options.axes) ? options.axes : [];
   // Mode exportation (trac.enregistre / feuille.enregistre) : dessin HORS ECRAN sur un canvas fourni, avec un
   // theme (clair par defaut) et le titre dessine DANS l'image. Aucun effet sur la console ni sur l'etat
   // (dernierGraphique, zones) : voir la fin de la fonction. Sans exportation, rien ne change (theme sombre).
@@ -10207,6 +10357,20 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
   if (ymin === ymax) { ymin -= 1; ymax += 1; }
   let padY = (ymax - ymin) * 0.08;
   ymin -= padY; ymax += padY;
+
+  // Marge gauche adaptee a la largeur des graduations de l'axe y : un nombre large (-31.32, 1.4e-5...)
+  // ne deborde plus sur le nom de l'axe ni hors du dessin. Jamais plus etroite que 44 (rendu habituel).
+  {
+    let policeAvant = ctx.font;
+    ctx.font = "10px monospace";
+    let largeurGrad = 0;
+    for (let i = 0; i <= 4; i++) largeurGrad = Math.max(largeurGrad, ctx.measureText(formaterNombreAxe(ymin + (ymax - ymin) * i / 4)).width);
+    ctx.font = policeAvant;
+    // [nom de l'axe : 14] + [graduations] + [4 avant l'axe] ; sans nom d'axe : 4 de degagement a gauche
+    let besoin = Math.ceil(largeurGrad) + 4 + (ylab ? 14 : 4);
+    marge.gauche = Math.min(Math.max(marge.gauche, besoin), Math.floor(largeurCSS * 0.4));
+    largeurTrace = largeurCSS - marge.gauche - marge.droite;
+  }
 
   function px(x) { return marge.gauche + (x - xmin) / (xmax - xmin) * largeurTrace; }
   function py(y) { return marge.haut + hauteurTrace - (y - ymin) / (ymax - ymin) * hauteurTrace; }
@@ -10319,10 +10483,21 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
   }
   ctx.textAlign = "left";
 
-  // Axes x=0 / y=0 s'ils sont visibles
-  ctx.strokeStyle = T.axes;
-  if (xmin <= 0 && xmax >= 0) { ctx.beginPath(); ctx.moveTo(px(0), marge.haut); ctx.lineTo(px(0), marge.haut + hauteurTrace); ctx.stroke(); }
-  if (ymin <= 0 && ymax >= 0) { ctx.beginPath(); ctx.moveTo(marge.gauche, py(0)); ctx.lineTo(largeurCSS - marge.droite, py(0)); ctx.stroke(); }
+  // Axes : seulement ceux que l'utilisateur a demandes, et seulement si 0 est dans le repere visible
+  // (ils ne changent jamais les bornes).
+  for (let d of droitesAxes) {
+    let horizontale = d.sens === "h";
+    let dedans = horizontale ? (d.valeur >= ymin && d.valeur <= ymax) : (d.valeur >= xmin && d.valeur <= xmax);
+    if (!dedans) continue;
+    ctx.strokeStyle = d.couleur ? adapter(d.couleur) : T.axes;
+    ctx.lineWidth = Number.isFinite(d.epaisseur) ? d.epaisseur : 1;
+    ctx.setLineDash(d.style === "--" ? [8, 5] : d.style === ":" ? [2, 4] : []);
+    ctx.beginPath();
+    if (horizontale) { let yy = py(d.valeur); ctx.moveTo(marge.gauche, yy); ctx.lineTo(largeurCSS - marge.droite, yy); }
+    else { let xx = px(d.valeur); ctx.moveTo(xx, marge.haut); ctx.lineTo(xx, marge.haut + hauteurTrace); }
+    ctx.stroke();
+  }
+  ctx.setLineDash([]); ctx.lineWidth = 1;
 
   // Cadre
   ctx.strokeStyle = T.cadre;
@@ -10337,7 +10512,7 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
     let typeCourbe = (opt.type || type).toLowerCase();
     ctx.strokeStyle = couleurCourbe;
     ctx.fillStyle = couleurCourbe;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = Number.isFinite(opt.epaisseur) ? opt.epaisseur : 2;   // epaisseur~ de trac (2 par defaut)
     // Style = ligne (-, --, :) et/ou marqueur (o . + x * ^ #). Sans champ style (anciens appels) : type lignes/points.
     let styleBrut = opt.style || (typeCourbe === "points" ? "o" : "-");
     let stm = /^(--|-|:)?([o.+x*^#])?$/.exec(styleBrut) || [null, "-", ""];
@@ -10392,7 +10567,7 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
         let col = adapter(opt.couleur || couleur);
         let stm2 = /^(--|-|:)?([o.+x*^#])?$/.exec(opt.style || ((opt.type || type) === "points" ? "o" : "-")) || [null, "-", ""];
         let sx = L.entrees[i].x, ex = sx + L.echantillon, mx = (sx + ex) / 2;
-        ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 2;
+        ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = Number.isFinite(opt.epaisseur) ? Math.min(opt.epaisseur, 6) : 2;
         if (stm2[1]) { ctx.setLineDash(stm2[1] === "--" ? [5, 3] : stm2[1] === ":" ? [2, 3] : []); ctx.beginPath(); ctx.moveTo(sx, cy2); ctx.lineTo(ex, cy2); ctx.stroke(); ctx.setLineDash([]); }
         let mq = stm2[2];
         if (mq) {
