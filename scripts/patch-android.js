@@ -904,6 +904,25 @@ public class MonLangageBridge {
             }
         }
 
+        // Ecrit des OCTETS (donnees recues en base64) : images PNG/JPEG de trac.enregistre et
+        // feuille.enregistre. Cree les dossiers manquants. Renvoie VRAI en cas de succes.
+        @JavascriptInterface
+        public boolean ecrireFichierOctets(String cheminComplet, String base64) {
+            try {
+                byte[] octets = android.util.Base64.decode(base64, android.util.Base64.DEFAULT);
+                File fichier = new File(cheminComplet);
+                File parent = fichier.getParentFile();
+                if (parent != null && !parent.exists()) parent.mkdirs();
+                try (FileOutputStream sortie = new FileOutputStream(fichier)) {
+                    sortie.write(octets);
+                }
+                return true;
+            } catch (Exception | OutOfMemoryError e) {
+                e.printStackTrace();
+                return false;
+            }
+        }
+
         // VRAI si un fichier (pas un dossier) existe deja a cet emplacement. Utilise par
         // existe.fichier(...) et par ecrire.fichier(..., ecra~FAUX) pour eviter d'ecraser
         // un fichier existant sans que le codeur l'ait explicitement demande.
