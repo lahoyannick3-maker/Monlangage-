@@ -62,6 +62,13 @@
     #btnRetour { background: #30363d; }
     #btnRetour:hover { background: #484f58; }
     #btnArretUrgence { background: #da3633; margin-left: auto; }
+    /* En-tete de la console : tout doit rester visible sur un petit ecran (bug reel : « Paquets »
+       etait repousse hors de l'ecran pendant l'execution). Les boutons peuvent se comprimer (leur
+       texte passe sur deux lignes, comme « Retour ») au lieu de deborder ; le titre se cache pendant
+       qu'un programme tourne, quand le bouton Arret d'urgence apparait. */
+    #headerConsole > button { flex: 0 1 auto; min-width: 0; padding: 6px 10px; }
+    #headerConsole #titreConsole { flex: 1 1 0; min-width: 0; }
+    #headerConsole.executionEnCours #titreConsole { display: none; }
     #btnArretUrgence:hover { background: #f85149; }
     #btnSauver {
       background: #8957e5;
@@ -253,7 +260,7 @@
     #barreOutilsBas button:hover, #barreOutilsBas button:active { background: #21262d; }
     #barreOutilsBas button:disabled { color: #444; background: transparent; }
 
-    #headerConsole { background: #010409; padding: 10px 10px 0 10px; flex-shrink: 0 -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+    #headerConsole { background: #010409; padding: 10px 10px 0 10px; flex-shrink: 0; flex-wrap: wrap; row-gap: 6px; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
     /* Bug reel signale par Yannick : le long appui pour copier ne faisait apparaitre AUCUNE
        bulle "Copier" (ni sur l'app buildee, ni dans l'apercu fichier, ni dans Chrome) -- a la
        difference de #code (un vrai <textarea>, toujours selectionnable nativement quel que
@@ -635,6 +642,11 @@ let btnFermerSpecification = document.getElementById("btnFermerSpecification");
 let btnConsole = document.getElementById("btnConsole");
 let btnRetour = document.getElementById("btnRetour");
 let btnArretUrgence = document.getElementById("btnArretUrgence");
+// Le titre se cache tant que le bouton Arret d'urgence est visible (classe posee ici, a chaque
+// changement de l'attribut hidden : fiable sur tous les WebView, contrairement a :has()).
+new MutationObserver(() => {
+  document.getElementById("headerConsole").classList.toggle("executionEnCours", !btnArretUrgence.hidden);
+}).observe(btnArretUrgence, { attributes: true, attributeFilter: ["hidden"] });
 let btnSauver = document.getElementById("btnSauver");
 let btnOuvrir = document.getElementById("btnOuvrir");
 let inputOuvrir = document.getElementById("inputOuvrir");
@@ -6795,7 +6807,7 @@ let aideCommandes = [
       "Options facultatives (a la suite, dans n'importe quel ordre) : couleur~|...|, style~|...|, legende~|...|, titre~|...|, xlab~|...|, ylab~|...|.",
       "couleur (comme en Scilab, mais en francais) : r=rouge, v=vert, b=bleu (par defaut), n=noir, j=jaune, m=magenta, c=cyan, bl=blanc. On peut aussi mettre un nom comme dans zone() : |rouge|, |vert|, |bleu|, |jaune|, |orange|, |violet|, |rose|, |cyan|, |blanc|, |noir|, |gris|, |marron|, ou un code hexadecimal, ex: couleur~|#ff00aa|.",
       "style : que des symboles. Lignes : |-| trait continu (par defaut), |--| tirets, |:| pointilles. Marqueurs : |o| cercles, |.| petits points, |+| croix, |x| croix en diagonale, |*| etoile, |^| triangle, |#| carre. Un marqueur seul trace des points sans trait ; on peut combiner une ligne et un marqueur : |-o|, |--+|, |:^|. Toute autre valeur donne une erreur. (L'ancien nom de cette option, type~, donne une erreur qui indique d'utiliser style~.)",
-      "legende : le nom de la courbe. Des qu'une courbe a un nom, un petit cadre de legende apparait en haut a droite du graphique, avec une ligne par courbe nommee (echantillon du trait et du marqueur dans sa couleur, puis son nom). Les courbes sans nom n'y figurent pas. Exemple : trac(x, y, couleur~|r|, legende~|vitesse|). 12 noms au plus sont affiches (les autres sont comptes), chaque nom est limite a 30 caracteres."
+      "legende : le nom de la courbe. Des qu'une courbe a un nom, un petit cadre de legende apparait dans un coin du graphique ou aucune courbe ne passe (haut droit en priorite) ; si les quatre coins sont traverses, il se place au-dessus du graphique, qui se reduit d'autant : la legende ne cache jamais une courbe. Une ligne par courbe nommee (echantillon du trait et du marqueur dans sa couleur, puis son nom). Les courbes sans nom n'y figurent pas. Exemple : trac(x, y, couleur~|r|, legende~|vitesse|). 12 noms au plus sont affiches (les autres sont comptes), chaque nom est limite a 30 caracteres."
     ], exemple: "x ~ seq(-5,5,0.1)\ny ~ x*x\ntrac(x, y, couleur~|r|, style~|-|, titre~|Ma courbe|)" },
 
   { noms: ["trac.multi"], categorie: "Graphique", syntaxe: "trac.multi(x, y1, y2, ...)", description: [
@@ -6817,6 +6829,16 @@ let aideCommandes = [
   { noms: ["feuille.effa"], categorie: "Graphique", syntaxe: "feuille.effa()", description: [
       "Efface tous les graphiques de la feuille active, en gardant ses zones et leur historique. Erreur si aucune feuille n'est active."
     ], exemple: "feuille(1)\ntrac(seq(1,5,1))\nfeuille.effa()" },
+  { noms: ["trac.enregistre"], categorie: "Graphique", syntaxe: "trac.enregistre(chemin, largeur~, hauteur~, resolution~, theme~, ecra~)", description: [
+      "Enregistre en image (.png ou .jpg) le graphique de la zone active, avec TOUTES ses courbes superposees, sa legende, sa grille, son titre et ses noms d'axes. C'est une photo du moment : ce que tu traces apres n'y est pas.",
+      "Fond blanc par defaut (theme~|clair|) ; theme~|sombre| donne l'aspect de la console. Les courbes blanches deviennent sombres sur fond blanc pour rester visibles.",
+      "largeur~ et hauteur~ : taille de la mise en page en points de dessin (640 x 416 par defaut, entre 100 et 8000). resolution~ : pixels par point (2 par defaut, de 1 a 8). Image finale = taille x resolution (1280 x 832 par defaut). Plus la mise en page est grande, plus le texte parait petit ; une resolution plus haute rend le meme dessin plus net. Maximum 16 millions de pixels.",
+      "Chemin complet avec / (ex: |/sdcard/Download/courbe.png|), ou juste un nom : une fenetre propose l'emplacement. Un fichier existant est refuse sauf ecra~VRAI. Sans extension, .png est ajoute. Dans l'app installee seulement (dans un navigateur, l'image est telechargee)."
+    ], exemple: "x ~ seq(-3,3,0.1)\ntrac(x, x*x, legende~|x^2|, titre~|Deux courbes|)\ntrac(x, x*x*x, legende~|x^3|)\ntrac.enregistre(|/sdcard/Download/courbes.png|, largeur~800, resolution~3)" },
+  { noms: ["feuille.enregistre"], categorie: "Graphique", syntaxe: "feuille.enregistre(chemin, ...)  ou  feuille.enregistre(n, chemin, ...)", description: [
+      "Enregistre en UNE image toute la feuille : tous les graphiques de sa grille (trac.diviser), chacun avec ses courbes. Sans numero, la feuille active ; avec n, la feuille numero n. Une case jamais utilisee reste vide.",
+      "Memes options que trac.enregistre. Ici largeur~ et hauteur~ donnent la taille de TOUTE l'image (en points de dessin) ; par defaut chaque graphique fait 640 x 416 plus des marges."
+    ], exemple: "x ~ seq(-3,3,0.1)\ntrac.diviser(1, 2, 1)\ntrac(x, x*x)\ntrac.diviser(1, 2, 2)\ntrac(x, x*x*x)\nfeuille.enregistre(|/sdcard/Download/feuille.png|)" },
   { noms: ["grille"], categorie: "Graphique", syntaxe: "grille()  ou  grille(FAUX)", description: [
       "Active ou desactive la grille sur le dernier graphique trace avec trac(...) — comme xgrid() en Scilab.",
       "grille() : active la grille (par defaut, elle n'est pas affichee).",
@@ -9540,6 +9562,155 @@ function enregistrerFonctionsBase() {
         zoneGraphiqueActive = null;
     };
 
+    // ===== ENREGISTREMENT D'IMAGE (debut) =====
+    // trac.enregistre(chemin, largeur~, hauteur~, resolution~, theme~, ecra~)  : image du graphique de la zone active.
+    // feuille.enregistre([n,] chemin, ...mêmes options)                        : image de toute la feuille (grille de zones).
+    // largeur~ / hauteur~ = taille de la mise en page en points de dessin (meme echelle que la console : texte et
+    // traits gardent leur taille relative), resolution~ = pixels par point (1 a 8). Image finale = taille x resolution.
+    async function lireOptionsEnregistrement(args, debut, nomCmd, ctxExpr) {
+        let opt = { largeur: null, hauteur: null, resolution: EXPORT_RESOLUTION_DEFAUT, theme: "clair", ecra: false };
+        let vus = {};
+        for (let i = debut; i < args.length; i++) {
+            let brut = args[i].trim();
+            let m = brut.match(/^(\w+)\s*~\s*([\s\S]*)$/);
+            if (!m) throw new Error(nomCmd + " : argument inattendu '" + brut + "' (options : largeur~, hauteur~, resolution~, theme~, ecra~)");
+            let cle = m[1];
+            if (["largeur", "hauteur", "resolution", "theme", "ecra"].indexOf(cle) < 0) throw new Error(nomCmd + " : option inconnue '" + cle + "~' (options : largeur~, hauteur~, resolution~, theme~, ecra~)");
+            if (vus[cle]) throw new Error(nomCmd + " : l'option " + cle + "~ est donnee deux fois");
+            vus[cle] = true;
+            let v = await evalExpr(m[2], ctxExpr);
+            if (cle === "ecra") { opt.ecra = estVrai(v); continue; }
+            if (cle === "theme") {
+                if (v !== "clair" && v !== "sombre") throw new Error(nomCmd + " : theme~ attend |clair| ou |sombre|");
+                opt.theme = v; continue;
+            }
+            let nombre = Number(v);
+            if (typeof v === "boolean" || typeof v === "string" || !Number.isFinite(nombre)) throw new ErreurTypeInvalide(nomCmd + " : " + cle + "~ attend un nombre");
+            if (cle === "resolution") {
+                if (nombre < 1 || nombre > 8) throw new Error(nomCmd + " : resolution~ doit etre entre 1 et 8 (pixels par point ; 2 par defaut)");
+                opt.resolution = nombre;
+            } else {
+                if (!Number.isInteger(nombre) || nombre < 100 || nombre > 8000) throw new Error(nomCmd + " : " + cle + "~ doit etre un entier entre 100 et 8000 (points de dessin)");
+                opt[cle] = nombre;
+            }
+        }
+        return opt;
+    }
+
+    function verifierTailleImage(largeurPx, hauteurPx, nomCmd) {
+        if (largeurPx * hauteurPx > EXPORT_MAX_PIXELS) {
+            throw new Error(nomCmd + " : image trop grande (" + largeurPx + " x " + hauteurPx + " pixels, maximum " + (EXPORT_MAX_PIXELS / 1000000) + " millions) : baisse resolution~ ou la taille");
+        }
+    }
+
+    // Ecrit le canvas en PNG ou JPEG. Meme logique que ecrire.fichier : chemin complet (avec '/'), ou nom seul =
+    // fenetre de choix d'emplacement ; ecra~ pour ecraser ; repli telechargement dans un navigateur.
+    async function ecrireImageCanvas(canvasFinal, chemin, ecra, nomCmd) {
+        let mExt = /\.([a-zA-Z0-9]+)$/.exec(chemin);
+        let ext = mExt ? mExt[1].toLowerCase() : "png";
+        if (!mExt) chemin += ".png";
+        let format = ext === "png" ? "image/png" : (ext === "jpg" || ext === "jpeg") ? "image/jpeg" : null;
+        if (!format) throw new Error(nomCmd + " : format ." + ext + " non gere (.png ou .jpg)");
+        let url = canvasFinal.toDataURL(format, 0.92);
+        if (typeof url !== "string" || url.indexOf("data:" + format) !== 0) throw new Error(nomCmd + " : le telephone n'a pas pu produire l'image (essaie une resolution~ plus basse)");
+        let base64 = url.slice(url.indexOf(",") + 1);
+        let pont = window.MonLangage;
+        if (pont && typeof pont.ecrireFichierOctets === "function") {
+            let cheminFinal = chemin;
+            if (chemin.indexOf("/") === -1) {
+                cheminFinal = await demanderEmplacementEcritureFichier(chemin.replace(/\.[a-zA-Z0-9]+$/, ""), "." + ext);
+            } else if (!verifierPermissionStockage()) {
+                throw new ErreurPermissionRefusee(nomCmd + " : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
+            }
+            if (!ecra && typeof pont.existeFichier === "function" && pont.existeFichier(cheminFinal)) {
+                throw new ErreurFichierDejaExistant(nomCmd + " : le fichier '" + cheminFinal + "' existe deja (utilise ecra~VRAI pour l'ecraser)");
+            }
+            if (!pont.ecrireFichierOctets(cheminFinal, base64)) throw new Error(nomCmd + " : echec de l'ecriture sur '" + cheminFinal + "'");
+            return cheminFinal;
+        }
+        if (pont && typeof pont.ecrireFichier === "function") {
+            throw new ErreurIndisponibleHorsApp(nomCmd + " : l'enregistrement d'image demande une version plus recente de l'app (rebuild requis)");
+        }
+        // Repli navigateur (previsualisation hors app) : telechargement classique.
+        let nomFichier = chemin.split("/").pop();
+        let a = document.createElement("a");
+        a.href = url; a.download = nomFichier;
+        document.body.appendChild(a); a.click(); a.remove();
+        return nomFichier;
+    }
+
+    fonctionsBase["trac.enregistre"] = async function(args, ctxExpr) {
+        if (args.length < 1) throw new Error("trac.enregistre(chemin, ...) attend au moins le chemin du fichier");
+        let chemin = await evalExpr(args[0], ctxExpr);
+        if (typeof chemin !== "string" || chemin.trim() === "") throw new ErreurTypeInvalide("trac.enregistre(...) : chemin doit etre du texte");
+        let opt = await lireOptionsEnregistrement(args, 1, "trac.enregistre", ctxExpr);
+        let g = zoneGraphiqueActive ? zoneGraphiqueActive.graphique : dernierGraphique;
+        if (!g || !Array.isArray(g.courbes) || g.courbes.length === 0) {
+            throw new Error("trac.enregistre(...) : aucun graphique a enregistrer dans la zone active (utilise trac(...) avant)");
+        }
+        let L = opt.largeur, H = opt.hauteur;
+        if (L === null && H === null) { L = EXPORT_LARGEUR_DEFAUT; H = EXPORT_HAUTEUR_DEFAUT; }
+        else if (H === null) H = Math.max(1, Math.round(L * 0.65));
+        else if (L === null) L = Math.max(1, Math.round(H / 0.65));
+        verifierTailleImage(Math.round(L * opt.resolution), Math.round(H * opt.resolution), "trac.enregistre");
+        let image = rendreGraphiqueVersCanvas(g, L, H, opt.resolution, opt.theme);
+        return await ecrireImageCanvas(image, chemin.trim(), opt.ecra, "trac.enregistre");
+    };
+
+    fonctionsBase["feuille.enregistre"] = async function(args, ctxExpr) {
+        if (args.length < 1) throw new Error("feuille.enregistre([n,] chemin, ...) attend au moins le chemin du fichier");
+        let premier = await evalExpr(args[0], ctxExpr);
+        let numero = null, chemin, debutOptions;
+        if (typeof premier === "string") { chemin = premier; debutOptions = 1; }
+        else {
+            numero = Number(premier);
+            if (typeof premier === "boolean" || !Number.isInteger(numero) || numero < 1 || numero > 100) throw new Error("feuille.enregistre(n, chemin, ...) : n doit etre un numero de feuille entre 1 et 100");
+            if (args.length < 2) throw new Error("feuille.enregistre(n, chemin, ...) : il manque le chemin du fichier");
+            chemin = await evalExpr(args[1], ctxExpr);
+            debutOptions = 2;
+        }
+        if (typeof chemin !== "string" || chemin.trim() === "") throw new ErreurTypeInvalide("feuille.enregistre(...) : chemin doit etre du texte");
+        let opt = await lireOptionsEnregistrement(args, debutOptions, "feuille.enregistre", ctxExpr);
+        let feuille = numero === null ? feuilleGraphiqueActive : feuillesGraphiques.get(numero);
+        if (!feuille) {
+            throw new Error(numero === null
+                ? "feuille.enregistre(...) : aucune feuille active (utilise feuille(n) ou trac.diviser(...) avant, ou donne le numero : feuille.enregistre(n, chemin))"
+                : "feuille.enregistre(...) : la feuille " + numero + " n'existe pas encore");
+        }
+        let cases = [], nbGraphiques = 0;
+        for (let position = 1; position <= feuille.lignes * feuille.colonnes; position++) {
+            let zone = feuille.zones.get(feuille.lignes + "x" + feuille.colonnes + ":" + position);
+            let g = zone && zone.graphique && Array.isArray(zone.graphique.courbes) && zone.graphique.courbes.length ? zone.graphique : null;
+            if (g) nbGraphiques++;
+            cases.push(g);
+        }
+        if (nbGraphiques === 0) throw new Error("feuille.enregistre(...) : la feuille " + feuille.numero + " ne contient aucun graphique");
+        let nl = feuille.lignes, nc = feuille.colonnes, M = EXPORT_MARGE_FEUILLE, E = EXPORT_ECART_FEUILLE;
+        let ecartsX = M * 2 + (nc - 1) * E, ecartsY = M * 2 + (nl - 1) * E;
+        let cw, ch;
+        if (opt.largeur === null && opt.hauteur === null) { cw = EXPORT_LARGEUR_DEFAUT; ch = EXPORT_HAUTEUR_DEFAUT; }
+        else if (opt.hauteur === null) { cw = Math.floor((opt.largeur - ecartsX) / nc); ch = Math.round(cw * 0.65); }
+        else if (opt.largeur === null) { ch = Math.floor((opt.hauteur - ecartsY) / nl); cw = Math.round(ch / 0.65); }
+        else { cw = Math.floor((opt.largeur - ecartsX) / nc); ch = Math.floor((opt.hauteur - ecartsY) / nl); }
+        if (cw < 100 || ch < 80) throw new Error("feuille.enregistre(...) : la taille demandee est trop petite pour " + nl + " x " + nc + " graphiques (chaque graphique doit faire au moins 100 x 80 points)");
+        let L = cw * nc + ecartsX, H = ch * nl + ecartsY, res = opt.resolution;
+        verifierTailleImage(Math.round(L * res), Math.round(H * res), "feuille.enregistre");
+        let image = document.createElement("canvas");
+        image.width = Math.round(L * res); image.height = Math.round(H * res);
+        let ctx = image.getContext("2d");
+        ctx.fillStyle = THEMES_GRAPHIQUE[opt.theme].fond;
+        ctx.fillRect(0, 0, image.width, image.height);
+        for (let i = 0; i < cases.length; i++) {
+            if (!cases[i]) continue;   // case jamais utilisee (ou effacee) : reste vide
+            let x = M + (i % nc) * (cw + E), y = M + Math.floor(i / nc) * (ch + E);
+            let sous = rendreGraphiqueVersCanvas(cases[i], cw, ch, res, opt.theme);
+            ctx.drawImage(sous, Math.round(x * res), Math.round(y * res));
+            sous.width = 0; sous.height = 0;   // libere la memoire tout de suite
+        }
+        return await ecrireImageCanvas(image, chemin.trim(), opt.ecra, "feuille.enregistre");
+    };
+    // ===== ENREGISTREMENT D'IMAGE (fin) =====
+
 // Pour ajouter une future fonction native :
     // - fonctionsBase["nom"] = async (args, ctxExpr) => { ... };  -> utilisable en instruction + base.nom(...)
     // - ajouter aussi fonctionsExpression["nom"] = fonctionsBase["nom"]; si elle doit
@@ -9943,6 +10114,12 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
   let xlab = options.xlab || "";
   let ylab = options.ylab || "";
   let grille = !!options.grille;
+  // Mode exportation (trac.enregistre / feuille.enregistre) : dessin HORS ECRAN sur un canvas fourni, avec un
+  // theme (clair par defaut) et le titre dessine DANS l'image. Aucun effet sur la console ni sur l'etat
+  // (dernierGraphique, zones) : voir la fin de la fonction. Sans exportation, rien ne change (theme sombre).
+  let exportation = options.__exportation || null;
+  const T = THEMES_GRAPHIQUE[exportation && exportation.theme === "clair" ? "clair" : "sombre"];
+  const adapter = c => exportation ? adapterCouleurPourTheme(c, exportation.theme) : c;
 
   let canvas, largeurCSS, hauteurCSS, ratio;
 
@@ -9994,6 +10171,15 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
   ctx.scale(ratio, ratio);
 
   let marge = { gauche: 44, droite: 12, haut: 10, bas: 28 };
+  if (exportation) {
+    ctx.fillStyle = T.fond; ctx.fillRect(0, 0, largeurCSS, hauteurCSS);
+    if (titre) {
+      ctx.fillStyle = T.titre; ctx.font = "bold 13px monospace"; ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
+      ctx.fillText(titre.length > 80 ? titre.slice(0, 79) + "\u2026" : titre, largeurCSS / 2, 18);
+      ctx.textAlign = "left";
+      marge.haut += 24;
+    }
+  }
   let largeurTrace = largeurCSS - marge.gauche - marge.droite;
   let hauteurTrace = hauteurCSS - marge.haut - marge.bas;
 
@@ -10025,16 +10211,98 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
   function px(x) { return marge.gauche + (x - xmin) / (xmax - xmin) * largeurTrace; }
   function py(y) { return marge.haut + hauteurTrace - (y - ymin) / (ymax - ymin) * hauteurTrace; }
 
+  // ---- Legende : disposition choisie AVANT les graduations (elle peut reserver de la place en haut) ----
+  // Un coin du repere SANS aucune courbe dessous (ordre : haut-droite, bas-droite, haut-gauche, bas-gauche).
+  // Si les quatre coins sont traverses par une courbe, la legende passe AU-DESSUS du repere, en ligne
+  // (plusieurs lignes si besoin), et le repere se reduit d'autant : elle ne cache jamais une courbe.
+  let dispoLegende = null;
+  {
+    let nommees = courbes.filter(c => c.options && c.options.legende);
+    if (nommees.length) {
+      const MAX_LEGENDE = 12;
+      let affichees = nommees.slice(0, MAX_LEGENDE);
+      let reste = nommees.length - affichees.length;
+      let noms = affichees.map(c => { let n = String(c.options.legende); return n.length > 30 ? n.slice(0, 29) + "\u2026" : n; });
+      if (reste > 0) noms.push("+" + reste + " autre" + (reste > 1 ? "s" : ""));
+      ctx.font = "11px monospace";
+      const pad = 6, haut = 15, echantillon = 22;
+      let largeursEntrees = noms.map(n => echantillon + 6 + ctx.measureText(n).width);
+
+      // Nombre de points de courbe (sur-echantillonnes le long des segments) qui tomberaient sous le cadre.
+      function coutLegende(bx, by, bl, bh) {
+        const m = 4;
+        let x0 = bx - m, x1 = bx + bl + m, y0 = by - m, y1 = by + bh + m;
+        let cout = 0;
+        for (let courbe of courbes) {
+          let opt = courbe.options || {};
+          let pointsSeuls = (opt.type || type) === "points" || /^[o.+x*^#]$/.test(String(opt.style || ""));
+          let precX = null, precY = null;
+          for (let i = 0; i < courbe.xs.length; i++) {
+            if (!(Number.isFinite(courbe.xs[i]) && Number.isFinite(courbe.ys[i]))) { precX = null; continue; }
+            let X = px(courbe.xs[i]), Y = py(courbe.ys[i]);
+            if (X >= x0 && X <= x1 && Y >= y0 && Y <= y1) cout++;
+            if (!pointsSeuls && precX !== null) {
+              let n = Math.min(60, Math.ceil(Math.hypot(X - precX, Y - precY) / 4));
+              for (let k = 1; k < n; k++) {
+                let t = k / n, XX = precX + (X - precX) * t, YY = precY + (Y - precY) * t;
+                if (XX >= x0 && XX <= x1 && YY >= y0 && YY <= y1) cout++;
+              }
+            }
+            precX = X; precY = Y;
+          }
+        }
+        return cout;
+      }
+
+      let boiteL = pad + Math.max(...largeursEntrees) + pad, boiteH = pad + noms.length * haut - 2 + pad;
+      let gauche = marge.gauche + 6, droite = marge.gauche + largeurTrace - boiteL - 6;
+      let hautY = marge.haut + 6, basY = marge.haut + hauteurTrace - boiteH - 6;
+      if (droite < gauche) droite = gauche;
+      let candidats = [[droite, hautY], [droite, basY], [gauche, hautY], [gauche, basY]];
+      for (let [bx, by] of candidats) {
+        if (boiteH + 12 > hauteurTrace) break;                    // repere trop petit pour contenir la legende
+        if (coutLegende(bx, by, boiteL, boiteH) === 0) {
+          dispoLegende = { bx: bx, by: by, boiteL: boiteL, boiteH: boiteH, noms: noms, affichees: affichees, pad: pad, haut: haut, echantillon: echantillon,
+            entrees: noms.map((n, i) => ({ x: bx + pad, cy: by + pad + i * haut + (haut - 2) / 2 })) };
+          break;
+        }
+      }
+      if (!dispoLegende) {
+        // Au-dessus du repere : entrees cote a cote, a la ligne quand la largeur manque.
+        let maxL = Math.max(60, largeurTrace - 2 * pad), sep = 14;
+        let rangees = [[]], largeurRangee = 0, largeurMax = 0;
+        for (let i = 0; i < noms.length; i++) {
+          let w = largeursEntrees[i];
+          if (rangees[rangees.length - 1].length && largeurRangee + sep + w > maxL) { rangees.push([]); largeurRangee = 0; }
+          largeurRangee += (rangees[rangees.length - 1].length ? sep : 0) + w;
+          rangees[rangees.length - 1].push(i);
+          largeurMax = Math.max(largeurMax, largeurRangee);
+        }
+        let hl = pad + rangees.length * haut - 2 + pad;
+        let bl = Math.min(largeurTrace, pad + largeurMax + pad);
+        let bx = marge.gauche + (largeurTrace - bl) / 2, by = 6 + (exportation && titre ? 24 : 0);
+        let entrees = new Array(noms.length);
+        rangees.forEach((idxs, r) => {
+          let x = bx + pad;
+          for (let i of idxs) { entrees[i] = { x: x, cy: by + pad + r * haut + (haut - 2) / 2 }; x += largeursEntrees[i] + sep; }
+        });
+        dispoLegende = { bx: bx, by: by, boiteL: bl, boiteH: hl, noms: noms, affichees: affichees, pad: pad, haut: haut, echantillon: echantillon, entrees: entrees };
+        marge.haut = by + hl + 8;                                  // le repere se reduit : la legende ne cache rien
+        hauteurTrace = hauteurCSS - marge.haut - marge.bas;
+      }
+    }
+  }
+
   // Graduations (toujours affichees) + grille (seulement si active via grille(...))
   let nGrilleX = 4, nGrilleY = 4;
-  ctx.fillStyle = "#6e7681";
+  ctx.fillStyle = T.graduations;
   ctx.font = "10px monospace";
   ctx.textAlign = "center";
   for (let i = 0; i <= nGrilleX; i++) {
     let x = xmin + (xmax - xmin) * i / nGrilleX;
     let pxv = px(x);
     if (grille) {
-      ctx.strokeStyle = "#21262d"; ctx.lineWidth = 1;
+      ctx.strokeStyle = T.grille; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(pxv, marge.haut); ctx.lineTo(pxv, marge.haut + hauteurTrace); ctx.stroke();
     }
     ctx.fillText(formaterNombreAxe(x), pxv, hauteurCSS - marge.bas + 12);
@@ -10044,7 +10312,7 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
     let y = ymin + (ymax - ymin) * i / nGrilleY;
     let pyv = py(y);
     if (grille) {
-      ctx.strokeStyle = "#21262d"; ctx.lineWidth = 1;
+      ctx.strokeStyle = T.grille; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(marge.gauche, pyv); ctx.lineTo(largeurCSS - marge.droite, pyv); ctx.stroke();
     }
     ctx.fillText(formaterNombreAxe(y), marge.gauche - 4, pyv + 3);
@@ -10052,12 +10320,12 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
   ctx.textAlign = "left";
 
   // Axes x=0 / y=0 s'ils sont visibles
-  ctx.strokeStyle = "#484f58";
+  ctx.strokeStyle = T.axes;
   if (xmin <= 0 && xmax >= 0) { ctx.beginPath(); ctx.moveTo(px(0), marge.haut); ctx.lineTo(px(0), marge.haut + hauteurTrace); ctx.stroke(); }
   if (ymin <= 0 && ymax >= 0) { ctx.beginPath(); ctx.moveTo(marge.gauche, py(0)); ctx.lineTo(largeurCSS - marge.droite, py(0)); ctx.stroke(); }
 
   // Cadre
-  ctx.strokeStyle = "#30363d";
+  ctx.strokeStyle = T.cadre;
   ctx.strokeRect(marge.gauche, marge.haut, largeurTrace, hauteurTrace);
 
   // Dessine toutes les courbes sur le même repère. Chaque courbe conserve
@@ -10065,7 +10333,7 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
   for (let courbe of courbes) {
     let cx = courbe.xs, cy = courbe.ys;
     let opt = courbe.options || {};
-    let couleurCourbe = opt.couleur || couleur;
+    let couleurCourbe = adapter(opt.couleur || couleur);
     let typeCourbe = (opt.type || type).toLowerCase();
     ctx.strokeStyle = couleurCourbe;
     ctx.fillStyle = couleurCourbe;
@@ -10107,60 +10375,47 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
     }
   }
 
-  // Legende : un petit cadre en haut a droite du repere, une ligne par courbe NOMMEE (option legende~),
+  // Legende : cadre dispose plus haut (dispoLegende), une entree par courbe NOMMEE (option legende~),
   // avec un echantillon du trait et/ou du marqueur dans la couleur de la courbe.
-  {
-    let nommees = courbes.filter(c => c.options && c.options.legende);
-    if (nommees.length) {
-      const MAX_LEGENDE = 12;
-      let affichees = nommees.slice(0, MAX_LEGENDE);
-      let reste = nommees.length - affichees.length;
-      let noms = affichees.map(c => { let n = String(c.options.legende); return n.length > 30 ? n.slice(0, 29) + "\u2026" : n; });
-      if (reste > 0) noms.push("+" + reste + " autre" + (reste > 1 ? "s" : ""));
-      ctx.font = "11px monospace";
-      let largeurTexte = 0;
-      for (let n of noms) largeurTexte = Math.max(largeurTexte, ctx.measureText(n).width);
-      const pad = 6, haut = 15, echantillon = 22;
-      let boiteL = pad + echantillon + 6 + largeurTexte + pad, boiteH = pad + noms.length * haut - 2 + pad;
-      let bx = largeurCSS - marge.droite - boiteL - 6, by = marge.haut + 6;
-      if (bx < marge.gauche + 2) bx = marge.gauche + 2;
-      ctx.fillStyle = "rgba(1, 4, 9, 0.82)";
-      ctx.fillRect(bx, by, boiteL, boiteH);
-      ctx.strokeStyle = "#30363d"; ctx.lineWidth = 1; ctx.setLineDash([]);
-      ctx.strokeRect(bx + 0.5, by + 0.5, boiteL - 1, boiteH - 1);
-      ctx.textBaseline = "middle"; ctx.textAlign = "left";
-      for (let i = 0; i < noms.length; i++) {
-        let cy2 = by + pad + i * haut + (haut - 2) / 2;
-        if (i < affichees.length) {
-          let opt = affichees[i].options;
-          let col = opt.couleur || couleur;
-          let stm2 = /^(--|-|:)?([o.+x*^#])?$/.exec(opt.style || ((opt.type || type) === "points" ? "o" : "-")) || [null, "-", ""];
-          let sx = bx + pad, ex = sx + echantillon, mx = (sx + ex) / 2;
-          ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 2;
-          if (stm2[1]) { ctx.setLineDash(stm2[1] === "--" ? [5, 3] : stm2[1] === ":" ? [2, 3] : []); ctx.beginPath(); ctx.moveTo(sx, cy2); ctx.lineTo(ex, cy2); ctx.stroke(); ctx.setLineDash([]); }
-          let mq = stm2[2];
-          if (mq) {
-            ctx.lineWidth = 1.5;
-            if (mq === "o" || mq === ".") { ctx.beginPath(); ctx.arc(mx, cy2, mq === "o" ? 2.5 : 1.2, 0, Math.PI * 2); ctx.fill(); }
-            else if (mq === "#") ctx.fillRect(mx - 2.5, cy2 - 2.5, 5, 5);
-            else if (mq === "^") { ctx.beginPath(); ctx.moveTo(mx, cy2 - 3.5); ctx.lineTo(mx + 3.2, cy2 + 2.5); ctx.lineTo(mx - 3.2, cy2 + 2.5); ctx.closePath(); ctx.fill(); }
-            else {
-              ctx.beginPath();
-              if (mq === "+" || mq === "*") { ctx.moveTo(mx - 3.5, cy2); ctx.lineTo(mx + 3.5, cy2); ctx.moveTo(mx, cy2 - 3.5); ctx.lineTo(mx, cy2 + 3.5); }
-              if (mq === "x" || mq === "*") { ctx.moveTo(mx - 3, cy2 - 3); ctx.lineTo(mx + 3, cy2 + 3); ctx.moveTo(mx - 3, cy2 + 3); ctx.lineTo(mx + 3, cy2 - 3); }
-              ctx.stroke();
-            }
+  if (dispoLegende) {
+    let L = dispoLegende;
+    ctx.font = "11px monospace";
+    ctx.fillStyle = T.legendeFond;
+    ctx.fillRect(L.bx, L.by, L.boiteL, L.boiteH);
+    ctx.strokeStyle = T.cadre; ctx.lineWidth = 1; ctx.setLineDash([]);
+    ctx.strokeRect(L.bx + 0.5, L.by + 0.5, L.boiteL - 1, L.boiteH - 1);
+    ctx.textBaseline = "middle"; ctx.textAlign = "left";
+    for (let i = 0; i < L.noms.length; i++) {
+      let cy2 = L.entrees[i].cy;
+      if (i < L.affichees.length) {
+        let opt = L.affichees[i].options;
+        let col = adapter(opt.couleur || couleur);
+        let stm2 = /^(--|-|:)?([o.+x*^#])?$/.exec(opt.style || ((opt.type || type) === "points" ? "o" : "-")) || [null, "-", ""];
+        let sx = L.entrees[i].x, ex = sx + L.echantillon, mx = (sx + ex) / 2;
+        ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 2;
+        if (stm2[1]) { ctx.setLineDash(stm2[1] === "--" ? [5, 3] : stm2[1] === ":" ? [2, 3] : []); ctx.beginPath(); ctx.moveTo(sx, cy2); ctx.lineTo(ex, cy2); ctx.stroke(); ctx.setLineDash([]); }
+        let mq = stm2[2];
+        if (mq) {
+          ctx.lineWidth = 1.5;
+          if (mq === "o" || mq === ".") { ctx.beginPath(); ctx.arc(mx, cy2, mq === "o" ? 2.5 : 1.2, 0, Math.PI * 2); ctx.fill(); }
+          else if (mq === "#") ctx.fillRect(mx - 2.5, cy2 - 2.5, 5, 5);
+          else if (mq === "^") { ctx.beginPath(); ctx.moveTo(mx, cy2 - 3.5); ctx.lineTo(mx + 3.2, cy2 + 2.5); ctx.lineTo(mx - 3.2, cy2 + 2.5); ctx.closePath(); ctx.fill(); }
+          else {
+            ctx.beginPath();
+            if (mq === "+" || mq === "*") { ctx.moveTo(mx - 3.5, cy2); ctx.lineTo(mx + 3.5, cy2); ctx.moveTo(mx, cy2 - 3.5); ctx.lineTo(mx, cy2 + 3.5); }
+            if (mq === "x" || mq === "*") { ctx.moveTo(mx - 3, cy2 - 3); ctx.lineTo(mx + 3, cy2 + 3); ctx.moveTo(mx - 3, cy2 + 3); ctx.lineTo(mx + 3, cy2 - 3); }
+            ctx.stroke();
           }
         }
-        ctx.fillStyle = "#c9d1d9";
-        ctx.fillText(noms[i], bx + pad + echantillon + 6, cy2);
       }
-      ctx.textBaseline = "alphabetic";
+      ctx.fillStyle = T.texte;
+      ctx.fillText(L.noms[i], L.entrees[i].x + L.echantillon + 6, cy2);
     }
+    ctx.textBaseline = "alphabetic";
   }
 
   // Labels des axes
-  ctx.fillStyle = "#8b949e";
+  ctx.fillStyle = T.labels;
   ctx.font = "11px monospace";
   if (xlab) { ctx.textAlign = "right"; ctx.fillText(xlab, largeurCSS - marge.droite, hauteurCSS - 4); ctx.textAlign = "left"; }
   if (ylab) {
@@ -10179,6 +10434,7 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
     ? options.courbes.map(c => ({ xs: c.xs, ys: c.ys, options: Object.assign({}, c.options || {}) }))
     : [{ xs: xs, ys: ys, options: Object.assign({}, options) }];
   let derniere = collectionCourbes[collectionCourbes.length - 1];
+  if (exportation) return;   // exportation : on ne touche ni a dernierGraphique ni aux zones
   dernierGraphique = {
     canvas: canvas,
     xs: derniere.xs,
@@ -10188,6 +10444,51 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
   };
   if (zoneGraphiqueActive) { zoneGraphiqueActive.graphique = dernierGraphique; zoneGraphiqueActive.utilisee = true; }
 }
+
+// ===== THEMES ET RENDU HORS ECRAN DES GRAPHIQUES (debut) =====
+const THEMES_GRAPHIQUE = {
+  sombre: { fond: "#010409", graduations: "#6e7681", grille: "#21262d", axes: "#484f58", cadre: "#30363d", legendeFond: "rgba(1, 4, 9, 0.82)", texte: "#c9d1d9", labels: "#8b949e", titre: "#c9d1d9" },
+  clair:  { fond: "#ffffff", graduations: "#57606a", grille: "#e1e4e8", axes: "#8c959f", cadre: "#afb8c1", legendeFond: "rgba(255, 255, 255, 0.92)", texte: "#24292f", labels: "#57606a", titre: "#24292f" }
+};
+const EXPORT_LARGEUR_DEFAUT = 640, EXPORT_HAUTEUR_DEFAUT = 416, EXPORT_RESOLUTION_DEFAUT = 2, EXPORT_MAX_PIXELS = 16000000;
+const EXPORT_MARGE_FEUILLE = 16, EXPORT_ECART_FEUILLE = 16;
+
+// Luminance (0 a 1) d'une couleur CSS quelconque (#hex, nom, rgb(), hsl()) : le canvas la normalise.
+let _ctxLuminance = null;
+function luminanceCouleur(c) {
+  if (!_ctxLuminance) _ctxLuminance = document.createElement("canvas").getContext("2d");
+  _ctxLuminance.fillStyle = "#000000";
+  _ctxLuminance.fillStyle = String(c);
+  let n = String(_ctxLuminance.fillStyle), r, g, b;
+  if (n[0] === "#" && n.length >= 7) { r = parseInt(n.slice(1, 3), 16); g = parseInt(n.slice(3, 5), 16); b = parseInt(n.slice(5, 7), 16); }
+  else { let m = n.match(/[\d.]+/g) || [0, 0, 0]; r = +m[0]; g = +m[1]; b = +m[2]; }
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+}
+// Une courbe blanche disparait sur fond blanc (et une noire sur fond noir) : on la remplace par la couleur du texte.
+function adapterCouleurPourTheme(c, theme) {
+  let lum = luminanceCouleur(c);
+  if (theme === "clair" && lum > 0.85) return THEMES_GRAPHIQUE.clair.texte;
+  if (theme === "sombre" && lum < 0.12) return THEMES_GRAPHIQUE.sombre.texte;
+  return c;
+}
+// Dessine un graphique (la meme fonction que la console) sur un canvas hors ecran de taille largeur x hauteur
+// (points de dessin) a resolution pixels par point. Titre/axes viennent de la derniere courbe qui en a un.
+function rendreGraphiqueVersCanvas(graphique, largeur, hauteur, resolution, theme) {
+  let c = document.createElement("canvas");
+  c.width = Math.round(largeur * resolution);
+  c.height = Math.round(hauteur * resolution);
+  c._largeurCSS = largeur; c._hauteurCSS = hauteur; c._ratio = resolution;
+  let opts = Object.assign({}, graphique.options, { courbes: graphique.courbes, __exportation: { theme: theme } });
+  for (let cle of ["titre", "xlab", "ylab"]) {
+    for (let i = graphique.courbes.length - 1; i >= 0; i--) {
+      let v = graphique.courbes[i].options && graphique.courbes[i].options[cle];
+      if (v) { opts[cle] = v; break; }
+    }
+  }
+  dessinerCourbe(graphique.xs, graphique.ys, opts, c);
+  return c;
+}
+// ===== THEMES ET RENDU HORS ECRAN DES GRAPHIQUES (fin) =====
 
 /* ===================== DECOUPAGE DES ELEMENTS DE affi(...) ===================== */
 // Chaque element est separe par une virgule (hors parentheses / hors texte litteral |...|)
