@@ -1006,11 +1006,35 @@ async function fermerOnglet(id) {
 }
 
 function chargerFichierDansNouvelOnglet(texte, nom, dossier) {
-  let onglet = creerOnglet(nom || "sans titre", texte, texte, true);
+  nom = nom || "sans titre";
+  // Fichier deja ouvert dans un onglet : on y retourne au lieu de le dupliquer. Un meme fichier peut arriver
+  // deux fois (Android relit le fichier d'ouverture quand l'activite est recreee, ou ouverture repetee).
+  //  - meme nom (+ meme dossier s'il est connu) ET meme contenu que sur le disque : on active cet onglet ;
+  //  - meme nom/dossier, onglet NON modifie mais fichier change sur le disque : on recharge l'onglet ;
+  //  - onglet modifie (edits non enregistres) et different : nouvel onglet, rien n'est ecrase.
+  let memeFichier = onglets.filter(o => o.nom === nom && (!dossier || !o.dossier || o.dossier === dossier));
+  let existant = memeFichier.find(o => o.contenuSauvegarde === texte)
+              || memeFichier.find(o => !o.dirty && dossier && o.dossier === dossier);
+  if (existant) {
+    if (existant.contenuSauvegarde !== texte) {   // fichier modifie sur le disque, onglet intact : rechargement
+      existant.contenu = texte; existant.contenuSauvegarde = texte; existant.dirty = false;
+      existant.historique = { piles: [texte], index: 0 };
+      if (existant.id === ongletActifId) codeArea.value = texte;
+    }
+    if (dossier && !existant.dossier) existant.dossier = dossier;
+    if (existant.id !== ongletActifId) activerOnglet(existant.id);
+    else { majNumeros(); majSurbrillance(); mettreAJourBarreOnglets(); sauvegarderEtatOnglets(); }
+    sauvegarderCode();
+    afficherEditeur();
+    requestAnimationFrame(synchroniserScrollEditeur);
+    return existant;
+  }
+  let onglet = creerOnglet(nom, texte, texte, true);
   if (dossier) onglet.dossier = dossier;
   sauvegarderCode();
   afficherEditeur();
   requestAnimationFrame(synchroniserScrollEditeur);
+  return onglet;
 }
 
 function initialiserOnglets() {
@@ -10268,6 +10292,8 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
   // theme (clair par defaut) et le titre dessine DANS l'image. Aucun effet sur la console ni sur l'etat
   // (dernierGraphique, zones) : voir la fin de la fonction. Sans exportation, rien ne change (theme sombre).
   let exportation = options.__exportation || null;
+  // Lisibilite (console ET images) : graduations et noms d'axes en 13 px, cadre de 2 points d'epaisseur.
+  const POLICE_GRAD = 13, EPAISSEUR_CADRE = 2;
   const T = THEMES_GRAPHIQUE[exportation && exportation.theme === "clair" ? "clair" : "sombre"];
   const adapter = c => exportation ? adapterCouleurPourTheme(c, exportation.theme) : c;
 
@@ -10320,7 +10346,7 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.scale(ratio, ratio);
 
-  let marge = { gauche: 44, droite: 12, haut: 10, bas: 28 };
+  let marge = { gauche: 44, droite: 12, haut: 10, bas: 34 };
   if (exportation) {
     ctx.fillStyle = T.fond; ctx.fillRect(0, 0, largeurCSS, hauteurCSS);
     if (titre) {
@@ -10362,12 +10388,12 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
   // ne deborde plus sur le nom de l'axe ni hors du dessin. Jamais plus etroite que 44 (rendu habituel).
   {
     let policeAvant = ctx.font;
-    ctx.font = "10px monospace";
+    ctx.font = POLICE_GRAD + "px monospace";
     let largeurGrad = 0;
     for (let i = 0; i <= 4; i++) largeurGrad = Math.max(largeurGrad, ctx.measureText(formaterNombreAxe(ymin + (ymax - ymin) * i / 4)).width);
     ctx.font = policeAvant;
     // [nom de l'axe : 14] + [graduations] + [4 avant l'axe] ; sans nom d'axe : 4 de degagement a gauche
-    let besoin = Math.ceil(largeurGrad) + 4 + (ylab ? 14 : 4);
+    let besoin = Math.ceil(largeurGrad) + 4 + (ylab ? 16 : 4);
     marge.gauche = Math.min(Math.max(marge.gauche, besoin), Math.floor(largeurCSS * 0.4));
     largeurTrace = largeurCSS - marge.gauche - marge.droite;
   }
@@ -10460,7 +10486,7 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
   // Graduations (toujours affichees) + grille (seulement si active via grille(...))
   let nGrilleX = 4, nGrilleY = 4;
   ctx.fillStyle = T.graduations;
-  ctx.font = "10px monospace";
+  ctx.font = POLICE_GRAD + "px monospace";
   ctx.textAlign = "center";
   for (let i = 0; i <= nGrilleX; i++) {
     let x = xmin + (xmax - xmin) * i / nGrilleX;
@@ -10469,7 +10495,7 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
       ctx.strokeStyle = T.grille; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(pxv, marge.haut); ctx.lineTo(pxv, marge.haut + hauteurTrace); ctx.stroke();
     }
-    ctx.fillText(formaterNombreAxe(x), pxv, hauteurCSS - marge.bas + 12);
+    ctx.fillText(formaterNombreAxe(x), pxv, hauteurCSS - marge.bas + 16);
   }
   ctx.textAlign = "right";
   for (let i = 0; i <= nGrilleY; i++) {
@@ -10479,7 +10505,7 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
       ctx.strokeStyle = T.grille; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(marge.gauche, pyv); ctx.lineTo(largeurCSS - marge.droite, pyv); ctx.stroke();
     }
-    ctx.fillText(formaterNombreAxe(y), marge.gauche - 4, pyv + 3);
+    ctx.fillText(formaterNombreAxe(y), marge.gauche - 4, pyv + 4);
   }
   ctx.textAlign = "left";
 
@@ -10513,7 +10539,9 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
 
   // Cadre
   ctx.strokeStyle = T.cadre;
+  ctx.lineWidth = EPAISSEUR_CADRE;
   ctx.strokeRect(marge.gauche, marge.haut, largeurTrace, hauteurTrace);
+  ctx.lineWidth = 1;
 
   // Dessine toutes les courbes sur le même repère. Chaque courbe conserve
   // ses propres options de couleur et de type.
@@ -10603,13 +10631,20 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
 
   // Labels des axes
   ctx.fillStyle = T.labels;
-  ctx.font = "11px monospace";
+  ctx.font = POLICE_GRAD + "px monospace";
   if (xlab) { ctx.textAlign = "right"; ctx.fillText(xlab, largeurCSS - marge.droite, hauteurCSS - 4); ctx.textAlign = "left"; }
   if (ylab) {
     ctx.save();
-    ctx.translate(11, marge.haut + 4);
+    // Texte pivote : il se lit de bas en haut a partir du point d'origine. On le place donc de facon a ce qu'il
+    // tienne dans la hauteur du repere (avant, un nom d'axe de plus d'une lettre depassait en haut et etait coupe).
+    let texteY = ylab;
+    if (ctx.measureText(texteY).width > hauteurTrace) {
+      while (texteY.length > 1 && ctx.measureText(texteY + "\u2026").width > hauteurTrace) texteY = texteY.slice(0, -1);
+      texteY += "\u2026";
+    }
+    ctx.translate(13, marge.haut + 4 + Math.min(ctx.measureText(texteY).width, hauteurTrace));
     ctx.rotate(-Math.PI / 2);
-    ctx.fillText(ylab, 0, 0);
+    ctx.fillText(texteY, 0, 0);
     ctx.restore();
   }
 
