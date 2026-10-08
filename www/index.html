@@ -6821,12 +6821,12 @@ let aideCommandes = [
   { noms: ["axes"], categorie: "Graphique", syntaxe: "axes()  ou  axes(couleur~, epaisseur~, style~)  ou  axes(FAUX)", description: [
       "Trace les deux axes qui se croisent au milieu du graphique : l'axe horizontal (la droite qui passe par y=0) et l'axe vertical (la droite qui passe par x=0), sur le graphique de la zone active.",
       "Par defaut AUCUN axe n'est trace (comme en Python) : le repere n'a que son cadre et ses graduations. C'est toi qui demandes les axes avec axes(), axe.horizontal() ou axe.vertical(). A utiliser apres trac(...), comme grille().",
-      "axes() donne un trait fin gris continu. Avec des options, les deux axes les partagent : axes(couleur~|noir|, epaisseur~2, style~|--|). Pour des axes differents, utilise axe.horizontal(...) et axe.vertical(...). axes(FAUX) retire les deux.",
+      "axes() donne un trait fin continu : gris dans la console, NOIR dans les images enregistrees (trac.enregistre, feuille.enregistre ; avec theme~|sombre| il reste gris, le noir serait invisible sur fond sombre). Avec des options, les deux axes les partagent : axes(couleur~|noir|, epaisseur~2, style~|--|). Pour des axes differents, utilise axe.horizontal(...) et axe.vertical(...). axes(FAUX) retire les deux.",
       "Si 0 n'est pas dans le repere visible (par exemple des y qui vont de 5 a 10), l'axe correspondant n'est pas visible. Les axes ressortent aussi dans trac.enregistre et feuille.enregistre."
     ], exemple: "x ~ seq(-3,3,0.1)\ntrac(x, x*x*x)\naxes()" },
   { noms: ["axe.horizontal"], categorie: "Graphique", syntaxe: "axe.horizontal()  ou  axe.horizontal(couleur~, epaisseur~, style~)  ou  axe.horizontal(FAUX)", description: [
       "Personnalise l'axe horizontal (la droite qui passe par y=0, l'axe des x) du graphique de la zone active : tu le traces avec la couleur, l'epaisseur et le style que tu choisis. L'axe vertical n'est pas touche.",
-      "Options : couleur~|rouge| (memes noms que trac, ou |#ff8800|), epaisseur~nombre (de 0.5 a 20, 1 par defaut), style~|-| trait continu (par defaut), |--| tirets, |:| pointilles. axe.horizontal() sans option : trait fin gris continu.",
+      "Options : couleur~|rouge| (memes noms que trac, ou |#ff8800|), epaisseur~nombre (de 0.5 a 20, 1 par defaut), style~|-| trait continu (par defaut), |--| tirets, |:| pointilles. axe.horizontal() sans option : trait fin continu, gris dans la console et noir dans les images enregistrees.",
       "Redefinir l'axe remplace l'ancien. axe.horizontal(FAUX) le retire. Aucun axe n'est trace tant que tu ne le demandes pas. A utiliser apres trac(...)."
     ], exemple: "x ~ seq(-3,3,0.1)\ntrac(x, x*x*x)\naxe.horizontal(couleur~|rouge|, epaisseur~2, style~|--|)" },
   { noms: ["axe.vertical"], categorie: "Graphique", syntaxe: "axe.vertical()  ou  axe.vertical(couleur~, epaisseur~, style~)  ou  axe.vertical(FAUX)", description: [
@@ -10490,11 +10490,23 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
     let dedans = horizontale ? (d.valeur >= ymin && d.valeur <= ymax) : (d.valeur >= xmin && d.valeur <= xmax);
     if (!dedans) continue;
     ctx.strokeStyle = d.couleur ? adapter(d.couleur) : T.axes;
-    ctx.lineWidth = Number.isFinite(d.epaisseur) ? d.epaisseur : 1;
+    let epaisseurAxe = Number.isFinite(d.epaisseur) ? d.epaisseur : 1;
+    // Image enregistree : epaisseur arrondie a un nombre ENTIER de pixels (sinon 1,5 pixel reste pale avec une resolution non entiere).
+    if (exportation) epaisseurAxe = Math.max(1, Math.round(epaisseurAxe * ratio)) / ratio;
+    ctx.lineWidth = epaisseurAxe;
     ctx.setLineDash(d.style === "--" ? [8, 5] : d.style === ":" ? [2, 4] : []);
+    // Dans une image enregistree, un trait fin pose entre deux lignes de pixels se repartit sur les deux et
+    // parait gris : on l'aligne sur la grille de pixels pour qu'il soit net, de la couleur demandee.
+    // (Console : inchange.)
+    const aligner = v => {
+      if (!exportation) return v;
+      let pos = v * ratio;
+      pos = (Math.round(epaisseurAxe * ratio) % 2 === 1) ? Math.floor(pos) + 0.5 : Math.round(pos);
+      return pos / ratio;
+    };
     ctx.beginPath();
-    if (horizontale) { let yy = py(d.valeur); ctx.moveTo(marge.gauche, yy); ctx.lineTo(largeurCSS - marge.droite, yy); }
-    else { let xx = px(d.valeur); ctx.moveTo(xx, marge.haut); ctx.lineTo(xx, marge.haut + hauteurTrace); }
+    if (horizontale) { let yy = aligner(py(d.valeur)); ctx.moveTo(marge.gauche, yy); ctx.lineTo(largeurCSS - marge.droite, yy); }
+    else { let xx = aligner(px(d.valeur)); ctx.moveTo(xx, marge.haut); ctx.lineTo(xx, marge.haut + hauteurTrace); }
     ctx.stroke();
   }
   ctx.setLineDash([]); ctx.lineWidth = 1;
@@ -10623,7 +10635,7 @@ function dessinerCourbe(xs, ys, options, canvasExistant) {
 // ===== THEMES ET RENDU HORS ECRAN DES GRAPHIQUES (debut) =====
 const THEMES_GRAPHIQUE = {
   sombre: { fond: "#010409", graduations: "#6e7681", grille: "#21262d", axes: "#484f58", cadre: "#30363d", legendeFond: "rgba(1, 4, 9, 0.82)", texte: "#c9d1d9", labels: "#8b949e", titre: "#c9d1d9" },
-  clair:  { fond: "#ffffff", graduations: "#57606a", grille: "#e1e4e8", axes: "#8c959f", cadre: "#afb8c1", legendeFond: "rgba(255, 255, 255, 0.92)", texte: "#24292f", labels: "#57606a", titre: "#24292f" }
+  clair:  { fond: "#ffffff", graduations: "#57606a", grille: "#e1e4e8", axes: "#000000", cadre: "#afb8c1", legendeFond: "rgba(255, 255, 255, 0.92)", texte: "#24292f", labels: "#57606a", titre: "#24292f" }
 };
 const EXPORT_LARGEUR_DEFAUT = 640, EXPORT_HAUTEUR_DEFAUT = 416, EXPORT_RESOLUTION_DEFAUT = 2, EXPORT_MAX_PIXELS = 16000000;
 const EXPORT_MARGE_FEUILLE = 16, EXPORT_ECART_FEUILLE = 16;
