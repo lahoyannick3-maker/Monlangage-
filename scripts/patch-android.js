@@ -1398,7 +1398,10 @@ public class MainActivity extends BridgeActivity {
         serviceIntent.setAction(MonLangageService.ACTION_START);
         androidx.core.content.ContextCompat.startForegroundService(MainActivity.this, serviceIntent);
         MonLangageBridge.definirActivitePrincipale(MainActivity.this);
-        traiterIntentOuverture(getIntent());
+        // savedInstanceState != null : l'activite est RECREEE (rotation, memoire faible...) et son intent
+        // d'origine (le .mlg a ouvrir) est toujours la : sans cette garde, le meme fichier etait reouvert
+        // a chaque recreation, donc duplique dans un nouvel onglet.
+        if (savedInstanceState == null) traiterIntentOuverture(getIntent());
     }
 
     @Override
@@ -1516,6 +1519,10 @@ public class MainActivity extends BridgeActivity {
 
         Uri uri = intent.getData();
         if (uri == null) return;
+
+        // Un meme intent ne doit etre traite qu'une fois (il peut etre redonne par le systeme).
+        if (intent.getBooleanExtra("monlangage_ouverture_traitee", false)) return;
+        intent.putExtra("monlangage_ouverture_traitee", true);
 
         try {
             StringBuilder contenu = new StringBuilder();
