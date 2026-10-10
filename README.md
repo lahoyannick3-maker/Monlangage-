@@ -51,7 +51,7 @@ Quelques conventions permettent de reconnaître immédiatement du code MLG :
 | Extension des données MLG sérialisées | `.mld` |
 | Affectation | `~` |
 | Comparaison d’égalité | `==` |
-| Texte littéral | '|texte|' |
+| Texte littéral | |texte| |
 | Commentaire | `**` en début de commentaire |
 | Affichage | `affi(...)` |
 | Saisie interactive | `entr(...)` |
