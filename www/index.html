@@ -1007,6 +1007,7 @@ async function fermerOnglet(id) {
 
 function chargerFichierDansNouvelOnglet(texte, nom, dossier) {
   nom = nom || "sans titre";
+  if (/\.mld$/i.test(nom)) texte = affichageLisibleMld(texte);   // fichier de sauvegarde : lisible sur plusieurs lignes
   // Fichier deja ouvert dans un onglet : on y retourne au lieu de le dupliquer. Un meme fichier peut arriver
   // deux fois (Android relit le fichier d'ouverture quand l'activite est recreee, ou ouverture repetee).
   //  - meme nom (+ meme dossier s'il est connu) ET meme contenu que sur le disque : on active cet onglet ;
@@ -2431,18 +2432,32 @@ function _analyserSegmentsExpression(str) {
   }
   while (i < n) {
     let precedent = i > 0 ? str[i-1] : "";
-    let nomTrouve = null, mRacine = null, mFonc = null;
+    let nomTrouve = null, mRacine = null, mFonc = null, forceNatif = false, decalage = 0;
     if (!/[a-zA-Z0-9_]/.test(precedent)) {
-      mFonc = /^fonc\s*\(/.exec(str.slice(i));
-      if (!mFonc) {
-        mRacine = /^racine(\d*)\(/.exec(str.slice(i));
-        if (!mRacine) {
+      // base.nom(...) : force la version NATIVE, meme si une fonction de l'utilisateur porte ce nom.
+      if (str.startsWith('base.', i)) {
+        let resteBase = str.slice(i + 5);
+        let mRacBase = /^racine(\d*)\(/.exec(resteBase);
+        if (mRacBase) { mRacine = mRacBase; forceNatif = true; decalage = 5; }
+        else {
           for (let nom of noms) {
-            if (str.startsWith(nom + '(', i)) { nomTrouve = nom; break; }
+            if (resteBase.startsWith(nom + '(')) { nomTrouve = nom; forceNatif = true; decalage = 5; break; }
+          }
+        }
+      }
+      if (!forceNatif) {
+        mFonc = /^fonc\s*\(/.exec(str.slice(i));
+        if (!mFonc) {
+          mRacine = /^racine(\d*)\(/.exec(str.slice(i));
+          if (!mRacine) {
+            for (let nom of noms) {
+              if (str.startsWith(nom + '(', i)) { nomTrouve = nom; break; }
+            }
           }
         }
       }
     }
+    if (nomTrouve === "trier" && precedent === ".") nomTrouve = null; // l.trier(...) = methode, pas la fonction trier(...)
     if (mFonc) {
       // Fonction anonyme fonc(params) corps : voir commentaire original -- on saute tout le
       // bloc (parametres + corps) SANS y toucher, en suivant la profondeur de parentheses/
@@ -2480,7 +2495,7 @@ function _analyserSegmentsExpression(str) {
     if (mRacine) {
       let n2 = mRacine[1] === "" ? 2 : parseInt(mRacine[1], 10);
       let longueurNom = mRacine[0].length - 1;
-      let debutArgs = i + longueurNom + 1;
+      let debutArgs = i + decalage + longueurNom + 1;
       let depth = 1, j = debutArgs;
       while (j < n && depth > 0) {
         if (str[j] === '(') depth++;
@@ -2494,14 +2509,15 @@ function _analyserSegmentsExpression(str) {
       }
       let argStr = str.slice(debutArgs, j - 1).trim();
       let argExprs = argStr === "" ? [] : splitTopLevelComma(argStr);
-      segments.push({ type: 'racine', n2: n2,
+      segments.push({ type: 'racine', n2: n2, nom: "racine" + mRacine[1], forceNatif: forceNatif,
+        debutArgs: debutArgs, fin: j,
         erreurArgs: argExprs.length !== 1 ? (nomRacine(n2) + "(...) attend exactement 1 argument") : null,
         argExprs: argExprs });
       i = j;
       continue;
     }
     if (nomTrouve) {
-      let debutArgs = i + nomTrouve.length + 1;
+      let debutArgs = i + decalage + nomTrouve.length + 1;
       let depth = 1, j = debutArgs;
       while (j < n && depth > 0) {
         if (str[j] === '(') depth++;
@@ -2515,7 +2531,7 @@ function _analyserSegmentsExpression(str) {
       }
       let argStr = str.slice(debutArgs, j - 1).trim();
       let argExprs = argStr === "" ? [] : splitTopLevelComma(argStr);
-      segments.push({ type: 'appel', nom: nomTrouve, argExprs: argExprs });
+      segments.push({ type: 'appel', nom: nomTrouve, argExprs: argExprs, forceNatif: forceNatif, debutArgs: debutArgs, fin: j });
       i = j;
     } else {
       texteAccum += str[i];
@@ -2544,17 +2560,34 @@ function _obtenirSegmentsExpression(str) {
   return segments;
 }
 
-async function extraireFonctionsExpression(str) {
+// Vrai si une fonction, une classe ou une variable contenant une fonction, definie par l'UTILISATEUR,
+// porte ce nom : elle masque alors la commande native du meme nom (base.nom(...) reste possible).
+function nomMasqueParUtilisateur(nom) {
+  if (Object.prototype.hasOwnProperty.call(fonctions, nom) || Object.prototype.hasOwnProperty.call(classes, nom)) return true;
+  let v = chercherVariable(nom);
+  return v.trouve && estValeurFonction(v.valeur);
+}
+async function extraireFonctionsExpression(str, prefixeTemp) {
   let segments = _obtenirSegmentsExpression(str);
+  let prefixe = prefixeTemp || "__ext";
   let resultat = "", temp = {}, compteur = 0;
   for (let seg of segments) {
     if (seg.type === 'texte') { resultat += seg.valeur; continue; }
     if (seg.type === 'skip') { resultat += str.slice(seg.debut, seg.fin); continue; }
     if (seg.type === 'erreur') { throw new Error(seg.message); }
+    if ((seg.type === 'racine' || seg.type === 'appel') && !seg.forceNatif && nomMasqueParUtilisateur(seg.nom)) {
+      // L'appel reste dans le texte (le parseur appellera la fonction de l'utilisateur), mais les
+      // commandes natives placees dans ses arguments sont quand meme evaluees maintenant.
+      let sous = await extraireFonctionsExpression(str.slice(seg.debutArgs, seg.fin - 1), prefixe + compteur + "n");
+      compteur++;
+      Object.assign(temp, sous.temp);
+      resultat += seg.nom + "(" + sous.str + ")";
+      continue;
+    }
     if (seg.type === 'racine') {
       if (seg.erreurArgs) throw new Error(seg.erreurArgs);
       let valeur = appliquerRacineN(seg.n2, await evalExpr(seg.argExprs[0], ctxExpr));
-      let nomTemp = "__ext" + compteur + "__";
+      let nomTemp = prefixe + compteur + "__";
       temp[nomTemp] = valeur;
       compteur++;
       resultat += nomTemp;
@@ -2562,7 +2595,7 @@ async function extraireFonctionsExpression(str) {
     }
     // seg.type === 'appel'
     let valeur = await fonctionsExpression[seg.nom](seg.argExprs, ctxExpr);
-    let nomTemp = "__ext" + compteur + "__";
+    let nomTemp = prefixe + compteur + "__";
     temp[nomTemp] = valeur;
     compteur++;
     resultat += nomTemp;
@@ -2842,7 +2875,7 @@ function evaluerArbreRapide(noeud, ctx) {
       return construireSequence(g, d);
     }
     case 'pow': return combinerPuissance(evaluerArbreRapide(noeud.g, ctx), evaluerArbreRapide(noeud.d, ctx));
-    case 'idx1': return accederUnique(evaluerArbreRapide(noeud.base, ctx), noeud.i === null ? null : evaluerArbreRapide(noeud.i, ctx), "resultat");
+    case 'idx1': return accederUnique(evaluerArbreRapide(noeud.base, ctx), noeud.i === null ? null : evaluerArbreRapide(noeud.i, ctx), noeud.base.t === 'var' ? noeud.base.nom : "resultat");
     case 'idx2': return accederMatrice(evaluerArbreRapide(noeud.base, ctx), noeud.i1 === null ? null : evaluerArbreRapide(noeud.i1, ctx), noeud.i2 === null ? null : evaluerArbreRapide(noeud.i2, ctx), "resultat");
   }
   throw new Error("Noeud d'arbre rapide inconnu: " + noeud.t);
@@ -2950,6 +2983,16 @@ function evalExprSansEntreeSync(str, ctx) {
     // rencontree ici (a.methode(...)) a besoin d'executer un corps entier : on delegue au
     // parseur lent.
     while (true) {
+      // Methodes d'un dictionnai (d.lire/cles/valeurs) : evaluees par le parseur lent (arguments a evaluer).
+      if (peek() && peek().type === 'op' && peek().v === '.' &&
+          tokens[pos + 1] && tokens[pos + 1].type === 'ident' &&
+          tokens[pos + 2] && tokens[pos + 2].type === '(') {
+        if (estDictionnai(valeur)) {
+          if (!METHODES_DICTIONNAI.has(tokens[pos + 1].v)) throw new Error(messageMethodeDictionnaiInconnue(tokens[pos + 1].v));
+          throw new __BesoinAsync();
+        }
+        if (tokens[pos + 1].v === 'trier' && (estListe(valeur) || estVecteur(valeur))) throw new Error(MSG_TRIER_EXPRESSION);
+      }
       // Attribut/methode d'une instance de classe : a.nom (lecture), a.methode(...) (appel).
       if (peek() && peek().type === 'op' && peek().v === '.' &&
           tokens[pos + 1] && tokens[pos + 1].type === 'ident' &&
@@ -2999,7 +3042,7 @@ function evalExprSansEntreeSync(str, ctx) {
       }
       // Indexation sur le resultat d'un attribut/appel precedent : moi.comptes[i], f()[1]...
       // (inclut le texte : moi.nom[1], f()[2:4]... voir accederUnique -> accederTexte)
-      if (peek() && peek().type === '[' && (estVecteur(valeur) || estMatrice(valeur) || estListe(valeur) || typeof valeur === 'string')) {
+      if (peek() && peek().type === '[' && (estVecteur(valeur) || estMatrice(valeur) || estListe(valeur) || estDictionnai(valeur) || typeof valeur === 'string')) {
         next(); // '['
         let idx1 = (peek() && peek().type !== ',' && peek().type !== ']') ? parseOr() : null;
         if (peek() && peek().type === ',') {
@@ -3199,6 +3242,26 @@ async function evalExprSansEntreeAsync(str, ctx) {
     // enchaines sur le resultat, dans n'importe quel ordre : moi.comptes[i].nom,
     // moi.comptes[i].verifier(pin), v[i].texte(), etc.
     while (true) {
+      // Methodes d'un dictionnai dans une expression : d.lire(cle, defaut), d.cles(), d.valeurs().
+      if (peek() && peek().type === 'op' && peek().v === '.' &&
+          tokens[pos + 1] && tokens[pos + 1].type === 'ident' &&
+          tokens[pos + 2] && tokens[pos + 2].type === '(') {
+        if (estDictionnai(valeur)) {
+          let nomMeth = tokens[pos + 1].v;
+          if (!METHODES_DICTIONNAI.has(nomMeth)) throw new Error(messageMethodeDictionnaiInconnue(nomMeth));
+          next(); next(); next(); // '.' nomMethode '('
+          let argsD = [];
+          if (!(peek() && peek().type === ')')) {
+            argsD.push(await lireArgument());
+            while (peek() && peek().type === ',') { next(); argsD.push(await lireArgument()); }
+          }
+          if (!peek() || peek().type !== ')') throw new Error("Parenthese fermante manquante pour l'appel de " + nomMeth);
+          next();
+          valeur = appliquerMethodeDictionnai(valeur, nomMeth, argsD, "le dictionnai");
+          continue;
+        }
+        if (tokens[pos + 1].v === 'trier' && (estListe(valeur) || estVecteur(valeur))) throw new Error(MSG_TRIER_EXPRESSION);
+      }
       // Attribut/methode d'une instance de classe : a.nom (lecture), a.methode(...) (appel,
       // execute reellement le corps de la methode, moi = l'instance elle-meme).
       if (peek() && peek().type === 'op' && peek().v === '.' &&
@@ -3256,7 +3319,7 @@ async function evalExprSansEntreeAsync(str, ctx) {
       }
       // Indexation sur le resultat d'un attribut/appel precedent : moi.comptes[i], f()[1]...
       // (inclut le texte : moi.nom[1], f()[2:4]... voir accederUnique -> accederTexte)
-      if (peek() && peek().type === '[' && (estVecteur(valeur) || estMatrice(valeur) || estListe(valeur) || typeof valeur === 'string')) {
+      if (peek() && peek().type === '[' && (estVecteur(valeur) || estMatrice(valeur) || estListe(valeur) || estDictionnai(valeur) || typeof valeur === 'string')) {
         next(); // '['
         let idx1 = (peek() && peek().type !== ',' && peek().type !== ']') ? await parseOr() : null;
         if (peek() && peek().type === ',') {
@@ -3385,11 +3448,277 @@ let ctxExpr = { getVar: getVar, appelerFonction: (nom, args) => appelerFonction(
 function estMatrice(v) { return v !== null && typeof v === 'object' && v.__type === 'matrice'; }
 function estVecteur(v) { return Array.isArray(v); }
 function estListe(v) { return v !== null && typeof v === 'object' && v.__type === 'liste'; }
+
+/* ===================== DICTIONNAI (cle -> valeur) ===================== */
+// Un dictionnai est { __type:"dictionnai", entrees: Map(cleNormalisee -> {cle, valeur}) } : l'ordre
+// d'insertion est conserve. Les cles sont du TEXTE ou des NOMBRES (1 et entier(1) designent la meme cle).
+const METHODES_DICTIONNAI = new Set(["lire", "cles", "valeurs"]);
+const MSG_TRIER_EXPRESSION = ".trier() modifie la liste sur place et ne renvoie rien : ecris-le seul sur sa ligne (l.trier()), ou utilise trier(l) pour obtenir une nouvelle liste triee";
+function estDictionnai(v) { return v !== null && typeof v === 'object' && v.__type === 'dictionnai'; }
+function descriptionCleDico(cle) { return typeof cle === 'string' ? "|" + cle + "|" : String(cle); }
+function normaliserCleDico(cle, nom) {
+  if (typeof cle === 'string') return 's:' + cle;
+  if (typeof cle === 'bigint') return 'n:' + cle.toString();
+  if (typeof cle === 'number' && Number.isFinite(cle)) return 'n:' + String(cle);
+  throw new ErreurTypeInvalide(nom + " : une cle de dictionnai doit etre du texte ou un nombre (recu : " + nomNature(cle) + ")");
+}
+function dicoAvoirCle(d, cle) {
+  if (typeof cle === 'string') return d.entrees.has('s:' + cle);
+  if (typeof cle === 'bigint') return d.entrees.has('n:' + cle.toString());
+  if (typeof cle === 'number' && Number.isFinite(cle)) return d.entrees.has('n:' + String(cle));
+  return false;
+}
+function dicoLire(d, cle, nom) {
+  let e = d.entrees.get(normaliserCleDico(cle, nom));
+  if (e === undefined) throw new ErreurCleIntrouvable("La cle " + descriptionCleDico(cle) + " n'existe pas dans " + nom);
+  return e.valeur;
+}
+function dicoEcrire(d, cle, valeur, nom) {
+  let k = normaliserCleDico(cle, nom);
+  let e = d.entrees.get(k);
+  if (e !== undefined) e.valeur = valeur; else d.entrees.set(k, { cle: cle, valeur: valeur });
+}
+function dicoSupprimer(d, cle, nom) {
+  let k = normaliserCleDico(cle, nom);
+  if (!d.entrees.has(k)) throw new ErreurCleIntrouvable(".supri(...) : la cle " + descriptionCleDico(cle) + " n'existe pas dans " + nom);
+  d.entrees.delete(k);
+}
+function dicoCles(d) { return { __type: "liste", elements: Array.from(d.entrees.values(), e => e.cle) }; }
+function dicoValeurs(d) { return { __type: "liste", elements: Array.from(d.entrees.values(), e => e.valeur) }; }
+// Valeur affichee sur UNE seule ligne a l'interieur d'un dictionnai (listes/vecteurs/dictionnai imbriques compris).
+function formatValeurEnLigne(v) {
+  if (estListe(v)) return "liste(" + v.elements.map(formatValeurEnLigne).join(", ") + ")";
+  if (estVecteur(v)) return "c(" + v.map(formatValeurEnLigne).join(", ") + ")";
+  if (estDictionnai(v)) return formatDictionnaiLigne(v);
+  if (typeof v === 'string') return v;
+  return formatValeur(v);
+}
+// Forme courte, toujours sur une seule ligne (aussi utilisee pour un dictionnai place DANS une liste ou un autre dictionnai).
+function formatDictionnaiLigne(d) {
+  if (d.entrees.size === 0) return "dictionnai{}";
+  let champs = Array.from(d.entrees.values(), e => descriptionCleDico(e.cle) + ": " + formatValeurEnLigne(e.valeur));
+  return "dictionnai{" + champs.join(", ") + "}";
+}
+// Affichage : sur une ligne tant que ca tient a peu pres dans la largeur d'un ecran de telephone,
+// sinon une entree par ligne.
+const SEUIL_DICTIONNAI_UNE_LIGNE = 40;
+function formatDictionnai(d) {
+  let ligne = formatDictionnaiLigne(d);
+  if (ligne.length <= SEUIL_DICTIONNAI_UNE_LIGNE) return ligne;
+  let champs = Array.from(d.entrees.values(), e => descriptionCleDico(e.cle) + ": " + formatValeurEnLigne(e.valeur));
+  return "dictionnai{\n" + champs.map(c => "\u00A0\u00A0" + c).join(",\n") + "\n}";   // espaces insecables : affi() fusionne les espaces ordinaires
+}
+function messageMethodeDictionnaiInconnue(nom) {
+  if (nom === "supri") return ".supri(...) modifie le dictionnai et ne renvoie rien : ecris-le seul sur sa ligne (d.supri(cle))";
+  return "Methode inconnue pour un dictionnai : " + nom + " (methodes : lire, cles, valeurs, supri)";
+}
+// d.lire(cle, defaut) / d.cles() / d.valeurs() : args = valeurs DEJA evaluees.
+function appliquerMethodeDictionnai(d, methode, args, nom) {
+  if (args.some(a => a !== null && typeof a === 'object' && a.__argNomme !== undefined)) {
+    throw new Error("." + methode + "(...) n'accepte pas d'argument nomme");
+  }
+  if (methode === "lire") {
+    if (args.length < 1 || args.length > 2) throw new Error(nom + ".lire(cle, defaut) attend 1 ou 2 arguments");
+    if (dicoAvoirCle(d, args[0])) return dicoLire(d, args[0], nom);
+    normaliserCleDico(args[0], nom); // cle d'un type impossible (liste...) : erreur de type plutot que silence
+    return args.length === 2 ? args[1] : undefined;
+  }
+  if (methode === "cles" || methode === "valeurs") {
+    if (args.length !== 0) throw new Error(nom + "." + methode + "() n'accepte aucun argument");
+    return methode === "cles" ? dicoCles(d) : dicoValeurs(d);
+  }
+  throw new Error(messageMethodeDictionnaiInconnue(methode));
+}
+// Position du premier ':' de HAUT NIVEAU (hors texte |...|, parentheses, crochets) : cle: valeur.
+function trouverDeuxPointsHautNiveau(str) {
+  let depth = 0, dansTexte = false;
+  for (let i = 0; i < str.length; i++) {
+    let ch = str[i];
+    if (ch === '|') { dansTexte = !dansTexte; continue; }
+    if (dansTexte) continue;
+    if (ch === '(' || ch === '[') depth++;
+    else if (ch === ')' || ch === ']') depth--;
+    else if (ch === ':' && depth === 0) return i;
+  }
+  return -1;
+}
+
+/* ===================== TRI ET COPIE ===================== */
+function elementsTriables(v, nomCmd) {
+  if (estListe(v)) return v.elements;
+  if (estVecteur(v)) return v;
+  throw new ErreurTypeInvalide(nomCmd + " attend une liste ou un vecteur (recu : " + nomNature(v) + ")");
+}
+function classeCleTri(k) {
+  if (typeof k === 'number' || typeof k === 'bigint') return "nombres";
+  if (typeof k === 'string') return "textes";
+  if (typeof k === 'boolean') return "booleens";
+  return null;
+}
+async function lireOptionsTri(args, debut, nomCmd, ctxExpr) {
+  let opt = { decroiss: false, cle: null }, vus = {};
+  for (let i = debut; i < args.length; i++) {
+    let brut = args[i].trim();
+    let m = brut.match(/^(\w+)\s*~\s*([\s\S]*)$/);
+    if (!m) throw new Error(nomCmd + " : argument inattendu '" + brut + "' (options : decroiss~, cle~)");
+    let nomOpt = m[1];
+    if (nomOpt !== "decroiss" && nomOpt !== "cle") throw new Error(nomCmd + " : option inconnue '" + nomOpt + "~' (options : decroiss~, cle~)");
+    if (vus[nomOpt]) throw new Error(nomCmd + " : l'option " + nomOpt + "~ est donnee deux fois");
+    vus[nomOpt] = true;
+    let v = await evalExpr(m[2], ctxExpr);
+    if (nomOpt === "decroiss") {
+      if (typeof v !== 'boolean') throw new ErreurTypeInvalide(nomCmd + " : decroiss~ attend VRAI ou FAUX");
+      opt.decroiss = v;
+    } else {
+      if (!estValeurFonction(v)) throw new ErreurTypeInvalide(nomCmd + " : cle~ attend une fonction (ex: cle~fonc(x) x[2])");
+      opt.cle = v;
+    }
+  }
+  return opt;
+}
+// Renvoie un NOUVEAU tableau JS trie (tri stable : deux elements egaux gardent leur ordre).
+async function trierElements(elements, opt, nomCmd) {
+  let deco = [];
+  for (let i = 0; i < elements.length; i++) {
+    let k = elements[i];
+    if (opt.cle) {
+      await respirer();
+      k = await executerCorpsFonction(opt.cle.params, opt.cle.corps, [elements[i]], "La fonction passee a " + nomCmd, undefined, opt.cle.environnement);
+    }
+    deco.push({ k: k, el: elements[i] });
+  }
+  let classes = new Set();
+  for (let d of deco) {
+    let c = classeCleTri(d.k);
+    if (c === null) throw new ErreurTypeInvalide(nomCmd + " : impossible de trier une valeur de type " + nomNature(d.k) + " (seulement des nombres, du texte ou des booleens)");
+    classes.add(c);
+  }
+  if (classes.size > 1) throw new ErreurTypeInvalide(nomCmd + " : impossible de trier ensemble des " + Array.from(classes).join(" et des ") + " (choisis un critere avec cle~ pour comparer des valeurs du meme type)");
+  deco.sort(opt.decroiss
+    ? (a, b) => (b.k < a.k ? -1 : b.k > a.k ? 1 : 0)
+    : (a, b) => (a.k < b.k ? -1 : a.k > b.k ? 1 : 0));
+  return deco.map(d => d.el);
+}
+// copier(x) : copie de surface ; copier.profond(x) : copie complete (listes/dictionnai/instances imbriques inclus).
+function copierValeur(v, profond, memo) {
+  if (v === null || typeof v !== 'object') return v;
+  if (estValeurFonction(v) || v.__module !== undefined) return v;
+  if (memo.has(v)) return memo.get(v);
+  if (estListe(v)) {
+    let c = { __type: "liste", elements: [] };
+    memo.set(v, c);
+    for (let e of v.elements) c.elements.push(profond ? copierValeur(e, true, memo) : e);
+    return c;
+  }
+  if (estVecteur(v)) { let c = v.slice(); memo.set(v, c); return c; }
+  if (estMatrice(v)) { let c = Object.assign({}, v, { donnees: v.donnees.slice() }); memo.set(v, c); return c; }
+  if (estDictionnai(v)) {
+    let c = { __type: "dictionnai", entrees: new Map() };
+    memo.set(v, c);
+    for (let [k, e] of v.entrees) c.entrees.set(k, { cle: e.cle, valeur: profond ? copierValeur(e.valeur, true, memo) : e.valeur });
+    return c;
+  }
+  if (v.__classe !== undefined) {
+    let c = Object.create(Object.getPrototypeOf(v));
+    memo.set(v, c);
+    for (let k of Object.keys(v)) c[k] = (profond && k !== '__classe') ? copierValeur(v[k], true, memo) : v[k];
+    return c;
+  }
+  return v;
+}
+// Sauvegarde (ecrire.cle / ecrire.fichier / ajout.*) : une Map de dictionnai n'est pas du JSON, on la
+// range donc sous forme de liste d'entrees et on la reconstruit a la lecture.
+function jsonDepuisValeur(valeur) {
+  return JSON.stringify(valeur, (k, v) => (estDictionnai(v)
+    ? { __type: "dictionnai", entrees: Array.from(v.entrees.values(), e => ({ cle: e.cle, valeur: e.valeur })) }
+    : v));
+}
+function valeurDepuisJson(texte) {
+  return JSON.parse(texte, (k, v) => {
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) return v;
+    if (Array.isArray(v.__entreesDico)) return new Map(v.__entreesDico);      // ancien format (etape 23-24)
+    if (v.__type === "dictionnai" && Array.isArray(v.entrees)) {
+      let m = new Map();
+      for (let e of v.entrees) {
+        if (e === null || typeof e !== 'object' || !("cle" in e)) throw new Error("dictionnai sauvegarde invalide");
+        m.set(normaliserCleDico(e.cle, "sauvegarde"), { cle: e.cle, valeur: e.valeur });
+      }
+      return { __type: "dictionnai", entrees: m };
+    }
+    return v;
+  });
+}
+
+// ---------- Fichiers .mld : contenu lisible (IDE, editeur de texte) ----------
+// Un TEXTE est enregistre tel quel, avec de vraies lignes (un journal reste lisible) ; il n'est mis entre guillemets
+// JSON que si une relecture pourrait le confondre avec du JSON (commence par [ { " ou est deja du JSON valide).
+// Les autres valeurs (liste, dictionnai, nombre...) sont ecrites en JSON repartis sur plusieurs lignes.
+function premierCaractereNonVide(t) { let m = String(t).match(/\S/); return m ? m[0] : ""; }
+function texteSeRangeBrut(texte) {
+  if (typeof texte !== 'string') return false;
+  let c = premierCaractereNonVide(texte);
+  if (c === "[" || c === "{" || c === '"') return false;
+  try { JSON.parse(texte); return false; } catch (e) { return true; }
+}
+function formaterJsonLisible(v, niveau) {
+  const LARGEUR = 76;
+  let compact = JSON.stringify(v);
+  if (v === null || typeof v !== 'object') return compact;
+  let ind = "  ".repeat(niveau + 1), indFin = "  ".repeat(niveau);
+  if (Array.isArray(v)) {
+    if (v.length === 0) return "[]";
+    if (compact.length + indFin.length <= LARGEUR) return compact;
+    if (v.every(x => x === null || typeof x !== 'object')) {
+      let lignes = [], cur = "";
+      for (let x of v) {
+        let t = JSON.stringify(x);
+        if (cur !== "" && (ind + cur + ", " + t).length > LARGEUR) { lignes.push(cur + ","); cur = t; }
+        else cur = cur === "" ? t : cur + ", " + t;
+      }
+      lignes.push(cur);
+      return "[\n" + lignes.map(l => ind + l).join("\n") + "\n" + indFin + "]";
+    }
+    return "[\n" + v.map(x => ind + formaterJsonLisible(x, niveau + 1)).join(",\n") + "\n" + indFin + "]";
+  }
+  let cles = Object.keys(v);
+  if (cles.length === 0) return "{}";
+  if (compact.length + indFin.length <= LARGEUR) return compact;
+  return "{\n" + cles.map(k => ind + JSON.stringify(k) + ": " + formaterJsonLisible(v[k], niveau + 1)).join(",\n") + "\n" + indFin + "}";
+}
+function contenuFichierMld(valeur) {
+  if (typeof valeur === 'string' && texteSeRangeBrut(valeur)) return valeur;
+  let brut = jsonDepuisValeur(valeur);
+  if (typeof brut !== 'string') return brut;
+  return formaterJsonLisible(JSON.parse(brut), 0);
+}
+function valeurDepuisContenuMld(texte) {
+  try { return valeurDepuisJson(texte); }
+  catch (e) {
+    let c = premierCaractereNonVide(texte);
+    if (c === "[" || c === "{" || c === '"') throw e;   // vrai JSON abime : on ne le prend pas pour du texte
+    return texte;                                       // fichier de texte brut
+  }
+}
+// Affichage dans l'IDE d'un fichier .mld ouvert : texte (ancien format entre guillemets, "\n" ecrits en clair) -> vraies lignes ;
+// JSON trop long pour l'ecran -> repartis sur plusieurs lignes. Le contenu reste relu correctement par lire.fichier.
+function affichageLisibleMld(texte) {
+  let data;
+  try { data = JSON.parse(texte); } catch (e) { return texte; }
+  if (typeof data === 'string') return texteSeRangeBrut(data) ? data : texte;
+  if (data === null || typeof data !== 'object') return texte;
+  let plusLongue = texte.split("\n").reduce((m, l) => Math.max(m, l.length), 0);
+  return plusLongue <= 120 ? texte : formaterJsonLisible(data, 0);
+}
+function exigerTexte(v, nomCmd, quoi) {
+  if (typeof v !== 'string') throw new ErreurTypeInvalide(nomCmd + " : " + quoi + " doit etre du texte (recu : " + nomNature(v) + ")");
+  return v;
+}
 // Nom (texte) de la nature d'une valeur : "texte", "nombre", "booleen", "vecteur", "matrice" ou "inconnu".
 // Utilise par natu() et par les messages d'erreur de conver.*/est.*.
 function nomNature(v) {
   if (estMatrice(v)) return "matrice";
   if (estListe(v)) return "liste";
+  if (estDictionnai(v)) return "dictionnai";
   if (estVecteur(v)) return "vecteur";
   if (typeof v === "boolean") return "booleen";
   if (typeof v === "bigint") return "entier";
@@ -3445,8 +3774,21 @@ function appliquerRacineN(n, v) {
 // tout de suite une erreur precise. Sans ce garde-fou, un tel texte mal ferme finissait
 // par etre envoye tel quel a evalExpr, qui ne connait pas le caractere '|' et renvoyait
 // l'erreur vague "Caractere inattendu dans l'expression: '|'".
+// Vrai si s est UN SEUL texte litteral |...| (et rien d'autre autour). |a| + |b| ou |a|+x n'en sont pas un :
+// ce sont des expressions (concatenation avec +, repetition avec *...), evaluees normalement.
+// Un nombre IMPAIR de | (ex. |a|b|) reste lu comme un texte contenant un | (ancien comportement).
+function estTexteLitteralComplet(s) {
+  if (s.length < 2 || s[0] !== '|' || s[s.length - 1] !== '|') return false;
+  let parties = s.split('|');                 // ['', texte1, entre, texte2, ..., '']
+  let nbBarres = parties.length - 1;
+  if (nbBarres === 2 || nbBarres % 2 === 1) return true;
+  for (let i = 2; i < parties.length - 1; i += 2) {   // ce qui se trouve ENTRE deux textes
+    if (!/^[\s\w.()\[\]]*[+\-*\/][\s\w.()\[\]+\-*\/]*$/.test(parties[i])) return true;   // pas un operateur : texte contenant des |
+  }
+  return false;
+}
 function verifierTexteLitteralFerme(s) {
-  if (s.length > 0 && s[0] === '|' && !/^\|[\s\S]*\|$/.test(s)) {
+  if (s.length > 0 && s[0] === '|' && !estTexteLitteralComplet(s) && (s.split('|').length - 1) % 2 === 1) {
     throw new Error("Texte litteral non ferme (il manque le '|' final) : " + s);
   }
 }
@@ -3460,7 +3802,7 @@ function verifierTexteLitteralFerme(s) {
 async function evaluerElementBrut(argStr, ctxExpr) {
   let s = (argStr || "").trim();
   if (s === "saulig") return "\n";
-  if (/^\|[\s\S]*\|$/.test(s)) return s.slice(1, -1);
+  if (estTexteLitteralComplet(s)) return s.slice(1, -1);
   verifierTexteLitteralFerme(s);
   return await evalExpr(s, ctxExpr);
 }
@@ -3497,6 +3839,9 @@ function unifierTypeVecteur(elements) {
 }
 
 function verifierNombre(v, operateur) {
+  if (typeof v === 'string') {
+    throw new ErreurTypeInvalide("'" + operateur + "' : un nombre est attendu, mais pas du texte (recu : |" + v + "|)");
+  }
   if (estVecteur(v) || estMatrice(v)) {
     throw new Error("L'operateur '" + operateur + "' ne gere pas encore les vecteurs/matrices");
   }
@@ -3563,6 +3908,7 @@ function combinerComparaison(g, d, op) {
 // - var2 texte (suite de caracteres) : pas de notion de "position" au sens du langage,
 //   renvoie un simple VRAI/FAUX selon que var1 est une sous-chaine de var2.
 function testerAppartenance(g, d) {
+  if (estDictionnai(d)) return dicoAvoirCle(d, g); // |cle| dan d : la CLE existe-t-elle ?
   if (estVecteur(g) || estMatrice(g)) {
     throw new Error("'dan' attend une valeur simple a gauche (pas un vecteur/une matrice)");
   }
@@ -3574,8 +3920,64 @@ function testerAppartenance(g, d) {
 
 // '+' et '-' : element par element sur vecteurs/matrices (avec recyclage pour les vecteurs,
 // comme en R), broadcast d'un scalaire, ou operation classique entre deux nombres.
+// Operandes d'un calcul (+ - * / % ENTI ^ . .. ×) : seuls les nombres, les vecteurs et les matrices NUMERIQUES
+// se calculent. Une liste, un dictionnai, une instance, un vecteur/une matrice qui contient du texte ou des
+// elements imbriques, ou du texte combine a un vecteur/une matrice : erreur claire.
+function apercuTexteDansCollection(elements) {
+  let t = elements.find(x => typeof x === 'string');
+  return t === undefined ? "" : " (par exemple |" + t + "|)";
+}
+function verifierOperandesCalcul(g, d, op) {
+  for (let v of [g, d]) {
+    if (v === null || typeof v !== 'object') continue;
+    let nomType = estVecteur(v) ? "vecteur" : estMatrice(v) ? "matrice" : null;
+    if (nomType !== null) {
+      let elements = estVecteur(v) ? v : v.donnees;
+      if (elements.some(x => typeof x === 'string')) {
+        throw new ErreurTypeInvalide("'" + op + "' : " + (nomType === "matrice" ? "cette matrice" : "ce vecteur") + " contient du texte" + apercuTexteDansCollection(elements) + ". Un calcul ne marche que sur des nombres.");
+      }
+      if (elements.some(x => x !== null && typeof x === 'object')) {
+        throw new ErreurTypeInvalide("'" + op + "' : " + (nomType === "matrice" ? "cette matrice" : "ce vecteur") + " contient des elements imbriques (liste, vecteur...). Un calcul ne marche que sur des nombres.");
+      }
+      continue;
+    }
+    if (estListe(v)) {
+      throw new ErreurTypeInvalide("'" + op + "' : une liste ne se calcule pas directement. Convertis-la d'abord en vecteur (conver.liste.vecteu(...)) ou en matrice (conver.liste.matric(...)).");
+    }
+    throw new ErreurTypeInvalide("'" + op + "' : impossible de calculer avec " + typeOperande(v) + ". Pour le coller dans un texte, utilise texte(...).");
+  }
+  let estTexte = x => typeof x === 'string';
+  let estCollection = x => estVecteur(x) || estMatrice(x);
+  if ((estTexte(g) && estCollection(d)) || (estTexte(d) && estCollection(g))) {
+    throw new ErreurTypeInvalide("'" + op + "' : impossible de combiner du texte avec un vecteur ou une matrice. Le texte se combine avec un nombre ou un autre texte.");
+  }
+}
+function verifierMemeLongueur(g, d, op) {
+  if (g.length === 0 || d.length === 0) throw new Error("'" + op + "' : vecteur vide");
+  if (g.length !== d.length) throw new Error("'" + op + "' : les deux vecteurs doivent avoir la meme longueur (" + g.length + " et " + d.length + ")");
+}
+// Types affiches dans les messages d'erreur des operateurs : nombre / texte / sinon le nom du type.
+function typeOperande(v) {
+  if (typeof v === 'string') return "texte";
+  if (typeof v === 'number' || typeof v === 'bigint') return "nombre";
+  return nomNature(v);
+}
+// '+' avec du texte : l'autre cote est converti en texte (nombre, VRAI/FAUX, pasdefini) ; une liste, un
+// dictionnai, une instance... ne se concatenent pas a du texte.
+function operandePourConcatenation(v) {
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'bigint' || typeof v === 'boolean' || v === undefined) return formatValeur(v);
+  throw new ErreurTypeInvalide("'+' : impossible de concatener du texte avec " + typeOperande(v) + " (convertis-le d'abord avec texte(...))");
+}
 function combinerAddition(g, d, op) {
+  if (!(typeof g === 'number' && typeof d === 'number')) verifierOperandesCalcul(g, d, op);
   function combiner2(a, b) {
+    if (typeof a === 'string' || typeof b === 'string') {
+      if (op === '-') {
+        throw new ErreurTypeInvalide("'-' : impossible de soustraire avec du texte (" + typeOperande(a) + " - " + typeOperande(b) + "). La soustraction ne marche qu'entre nombres.");
+      }
+      return operandePourConcatenation(a) + operandePourConcatenation(b);
+    }
     if (typeof a === 'bigint' && typeof b === 'bigint') return op === '+' ? a + b : a - b;
     if (typeof a === 'bigint' || typeof b === 'bigint') {
       // Melange grand entier + nombre normal : JS interdit de melanger bigint et number dans
@@ -3595,17 +3997,13 @@ function combinerAddition(g, d, op) {
       return { __type: "matrice", nlig: g.nlig, ncol: g.ncol, donnees: g.donnees.map((v, i) => combiner2(v, d.donnees[i])) };
     }
     if (estVecteur(g) || estVecteur(d)) throw new Error("'" + op + "' : impossible de combiner une matrice et un vecteur");
-    let mat = estMatrice(g) ? g : d, scal = estMatrice(g) ? d : g;
-    let donnees = mat.donnees.map(v => estMatrice(g) ? combiner2(v, scal) : combiner2(scal, v));
-    return { __type: "matrice", nlig: mat.nlig, ncol: mat.ncol, donnees: donnees };
+    throw new ErreurTypeInvalide("'" + op + "' : impossible " + (op === '+' ? "d'additionner" : "de soustraire") + " un nombre et une matrice. " + (op === '+' ? "L'addition" : "La soustraction") + " marche entre deux matrices de memes dimensions.");
   }
   if (estVecteur(g) || estVecteur(d)) {
     if (estVecteur(g) && estVecteur(d)) {
-      if (g.length === 0 || d.length === 0) throw new Error("'" + op + "' : vecteur vide");
-      let n = Math.max(g.length, d.length), pMin = Math.min(g.length, d.length);
-      if (n % pMin !== 0) throw new Error("'" + op + "' : tailles de vecteurs incompatibles (" + g.length + " et " + d.length + ")");
+      verifierMemeLongueur(g, d, op);
       let res = [];
-      for (let i = 0; i < n; i++) res.push(combiner2(g[i % g.length], d[i % d.length]));
+      for (let i = 0; i < g.length; i++) res.push(combiner2(g[i], d[i]));
       return res;
     }
     let vec = estVecteur(g) ? g : d, scal = estVecteur(g) ? d : g;
@@ -3626,8 +4024,25 @@ function diviserEntierBigInt(a, b) {
   if (r !== 0n && ((r < 0n) !== (b < 0n))) q -= 1n;
   return q;
 }
+const TAILLE_MAX_TEXTE_REPETE = 10000000;
 function combinerMultiplication(g, d, op) {
+  if (!(typeof g === 'number' && typeof d === 'number')) verifierOperandesCalcul(g, d, op);
   function combiner2(a, b) {
+    if (typeof a === 'string' || typeof b === 'string') {
+      let ta = typeof a === 'string', tb = typeof b === 'string';
+      if (op === '*') {
+        if (ta && tb) throw new ErreurTypeInvalide("'*' : impossible de multiplier du texte par du texte (texte * texte). Pour repeter un texte, multiplie-le par un nombre : |ab| * 3.");
+        let texte = ta ? a : b, n = ta ? b : a;
+        if (typeof n === 'bigint') n = Number(n);
+        if (typeof n !== 'number') throw new ErreurTypeInvalide("'*' : un texte ne se multiplie que par un nombre entier (recu : " + typeOperande(ta ? b : a) + ")");
+        if (!Number.isInteger(n) || n < 0) throw new ErreurTypeInvalide("'*' : pour repeter un texte, le nombre doit etre un entier positif ou nul (recu : " + formatValeur(n) + ")");
+        if (texte.length * n > TAILLE_MAX_TEXTE_REPETE) throw new Error("'*' : le texte obtenu serait trop long (plus de 10 000 000 caracteres)");
+        return texte.repeat(n);
+      }
+      let noms = { '/': ["/", "La division"], '%': ["%", "Le reste de la division (%)"], 'enti': ["enti", "La division entiere"] };
+      let [symbole, quoi] = noms[op] || [op, "Cette operation"];
+      throw new ErreurTypeInvalide("'" + symbole + "' : impossible avec du texte (" + typeOperande(a) + " " + symbole + " " + typeOperande(b) + "). " + quoi + " ne marche qu'entre nombres.");
+    }
     verifierNombre(a, op); verifierNombre(b, op);
     if (typeof a === 'bigint' && typeof b === 'bigint') {
       if (b === 0n && (op === '/' || op === '%' || op === 'enti')) throw new ErreurDivisionZero("division par zero");
@@ -3660,21 +4075,22 @@ function combinerMultiplication(g, d, op) {
 
   if (estMatrice(g) || estMatrice(d)) {
     if (estMatrice(g) && estMatrice(d)) {
+      if (op === '*') throw new ErreurTypeInvalide("'*' : impossible de multiplier deux matrices avec '*'. Pour un produit matriciel, utilise l'operateur '..' (m1 .. m2).");
+      if (op === '/') throw new ErreurTypeInvalide("'/' : impossible de diviser une matrice par une matrice. Pour 'diviser' par une matrice, multiplie par son inverse : m1 .. inverse(m2).");
       if (g.nlig !== d.nlig || g.ncol !== d.ncol) throw new Error("'" + op + "' : dimensions incompatibles entre les deux matrices (" + g.nlig + "x" + g.ncol + " et " + d.nlig + "x" + d.ncol + ")");
       return { __type: "matrice", nlig: g.nlig, ncol: g.ncol, donnees: g.donnees.map((v, i) => combiner2(v, d.donnees[i])) };
     }
     if (estVecteur(g) || estVecteur(d)) throw new Error("'" + op + "' : impossible de combiner une matrice et un vecteur");
+    if (op === '/' && estMatrice(g)) throw new ErreurTypeInvalide("'/' : impossible de diviser une matrice par un nombre. Multiplie-la plutot par l'inverse du nombre : m * (1 / n).");
     let mat = estMatrice(g) ? g : d, scal = estMatrice(g) ? d : g;
     let donnees = mat.donnees.map(v => estMatrice(g) ? combiner2(v, scal) : combiner2(scal, v));
     return { __type: "matrice", nlig: mat.nlig, ncol: mat.ncol, donnees: donnees };
   }
   if (estVecteur(g) || estVecteur(d)) {
     if (estVecteur(g) && estVecteur(d)) {
-      if (g.length === 0 || d.length === 0) throw new Error("'" + op + "' : vecteur vide");
-      let n = Math.max(g.length, d.length), pMin = Math.min(g.length, d.length);
-      if (n % pMin !== 0) throw new Error("'" + op + "' : tailles de vecteurs incompatibles (" + g.length + " et " + d.length + ")");
+      verifierMemeLongueur(g, d, op);
       let res = [];
-      for (let i = 0; i < n; i++) res.push(combiner2(g[i % g.length], d[i % d.length]));
+      for (let i = 0; i < g.length; i++) res.push(combiner2(g[i], d[i]));
       return res;
     }
     let vec = estVecteur(g) ? g : d, scal = estVecteur(g) ? d : g;
@@ -3686,6 +4102,7 @@ function combinerMultiplication(g, d, op) {
 // '^' : puissance, element par element sur vecteurs/matrices (avec recyclage pour les
 // vecteurs, comme en R), broadcast d'un scalaire, ou operation classique entre deux nombres.
 function combinerPuissance(g, d) {
+  if (!(typeof g === 'number' && typeof d === 'number')) verifierOperandesCalcul(g, d, '^');
   function combiner2(a, b) {
     verifierNombre(a, '^'); verifierNombre(b, '^');
     if (typeof a === 'bigint' && typeof b === 'bigint') {
@@ -3745,6 +4162,7 @@ function combinerPuissance(g, d) {
 
 
 function produitScalaire(g, d) {
+  verifierOperandesCalcul(g, d, '.');
   if (!estVecteur(g) || !estVecteur(d)) throw new Error("'.' (produit scalaire) attend deux vecteurs");
   if (g.length !== d.length) throw new Error("'.' : les deux vecteurs doivent avoir la meme taille (" + g.length + " et " + d.length + ")");
   let somme = 0;
@@ -3757,6 +4175,7 @@ function produitScalaire(g, d) {
 
 // '×' : produit vectoriel, defini uniquement pour des vecteurs de taille 3.
 function produitVectoriel(g, d) {
+  verifierOperandesCalcul(g, d, '×');
   if (!estVecteur(g) || !estVecteur(d)) throw new Error("'×' (produit vectoriel) attend deux vecteurs");
   if (g.length !== 3 || d.length !== 3) throw new Error("'×' : le produit vectoriel n'est defini que pour des vecteurs de taille 3");
   return [g[1] * d[2] - g[2] * d[1], g[2] * d[0] - g[0] * d[2], g[0] * d[1] - g[1] * d[0]];
@@ -3764,7 +4183,9 @@ function produitVectoriel(g, d) {
 
 // '..' : produit matriciel classique (A est m x n, B doit etre n x p).
 function produitMatriciel(g, d) {
-  if (!estMatrice(g) || !estMatrice(d)) throw new Error("'..' (produit matriciel) attend deux matrices");
+  verifierOperandesCalcul(g, d, '..');
+  if (estVecteur(g) && estVecteur(d)) return produitScalaire(g, d);   // vecteur .. vecteur : produit scalaire (comme '.')
+  if (!estMatrice(g) || !estMatrice(d)) throw new Error("'..' attend deux matrices (produit matriciel) ou deux vecteurs (produit scalaire)");
   if (g.ncol !== d.nlig) throw new Error("'..' : dimensions incompatibles (" + g.nlig + "x" + g.ncol + " et " + d.nlig + "x" + d.ncol + ")");
   let donnees = new Array(g.nlig * d.ncol);
   for (let i = 0; i < g.nlig; i++) {
@@ -4121,6 +4542,10 @@ function accederTexte(v, indice, nom) {
 }
 function accederUnique(v, indice, nom) {
   if (typeof v === 'string') return accederTexte(v, indice, nom);
+  if (estDictionnai(v)) {
+    if (indice === null) throw new ErreurTypeInvalide(nom + "[] : donne une cle entre les crochets (ex: " + nom + "[|nom|])");
+    return dicoLire(v, indice, nom);
+  }
   if (estListe(v)) {
     let elements = v.elements;
     if (indice === null) return { __type: "liste", elements: elements.slice() };
@@ -4326,6 +4751,7 @@ function formatValeur(v) {
   if (v === undefined) return "pasdefini";
   if (estMatrice(v)) return formatMatrice(v);
   if (estListe(v)) return formatListe(v);
+  if (estDictionnai(v)) return formatDictionnai(v);
   if (estVecteur(v)) return formatVecteur(v);
   if (v === true) return "VRAI";
   if (v === false) return "FAUX";
@@ -4773,7 +5199,7 @@ async function extraireAttributsPartages(tokens, debut, fin, ctxExpr) {
     if (mAttr) {
       let nomAttr = mAttr[1], valeurExpr = mAttr[2].trim();
       let valeur;
-      if (/^\|[\s\S]*\|$/.test(valeurExpr)) valeur = valeurExpr.slice(1, -1);
+      if (estTexteLitteralComplet(valeurExpr)) valeur = valeurExpr.slice(1, -1);
       else valeur = await evalExpr(valeurExpr, ctxExpr);
       attrs[nomAttr] = valeur;
     }
@@ -6052,7 +6478,8 @@ let aideCommandes = [
       "Avec plusieurs valeurs, elles sont regroupees comme une liste() (meme regle que ecrire.cle()).",
       "ecra~FAUX par defaut : si le fichier existe deja, l'ecriture est REFUSEE (erreur, a intercepter avec essai/attrape). ecra~VRAI ecrase sans verifier.",
       "Le chemin direct et la verification ecra ne fonctionnent que dans l'app installee (pas en previsualisation navigateur).",
-      "Contrairement a ecrire.cle(), le fichier peut ensuite etre partage, copie, deplace hors de l'app."
+      "Contrairement a ecrire.cle(), le fichier peut ensuite etre partage, copie, deplace hors de l'app.",
+      "Un TEXTE est enregistre tel quel, avec ses vraies lignes (un journal reste lisible dans l'IDE) ; une liste ou un dictionnai est ecrit sur plusieurs lignes. lire.fichier(...) renvoie toujours la valeur d'origine."
     ], exemple: "ecrire.fichier(|sauvegarde_banque|, moi, ecra~VRAI)\nsi(existe.fichier(|/storage/emulated/0/Download/banque.mld|)) { affi(|deja present|) }\nsinon { ecrire.fichier(|/storage/emulated/0/Download/banque.mld|, moi) }" },
   { noms: ["existe.fichier"], categorie: "Sauvegarde", syntaxe: "existe.fichier(chemin)", description: [
       "Renvoie VRAI si un fichier existe deja a ce CHEMIN COMPLET (avec '/'), FAUX sinon.",
@@ -6115,7 +6542,8 @@ let aideCommandes = [
   { noms: ["base"], categorie: "Base", syntaxe: "base.nom(...)", description: [
       "Force l'utilisation de la version d'origine (native) d'une commande avec le prefixe base.",
       "Exemple : base.affi(...), base.aide(), base.sin(...).",
-      "Utile si tu as defini ta propre fonction avec le meme nom qu'une commande du langage, car elle la masquerait sinon.",
+      "Utile si tu as defini ta propre fonction avec le meme nom qu'une commande du langage, car elle la masquerait sinon. Ta fonction masque la commande partout : sur une ligne seule ET dans une expression (x ~ trier(l), affi(trier(l))...).",
+      "base.nom(...) marche sur une ligne seule et aussi dans une expression : x ~ base.trier(l), affi(base.lon(t)).",
       "Les methodes de variable comme var.miniscul(), var.majuscul() et var.suprespac() restent attachees a la variable et ne se remplacent pas par base.var... ."
     ], exemple: "fonc affi(x){ ... }\naffi(1)         ->  utilise TA fonction\nbase.affi(1)    ->  utilise l'affi() d'origine" },
   { noms: ["aide"], categorie: "Base", syntaxe: "aide()  ou  aide(nomOuSymbole)  ou  aide(spec)", description: [
@@ -6147,7 +6575,7 @@ let aideCommandes = [
       "VRAI si la valeur est un TEXTE fait uniquement de chiffres, avec un + facultatif au debut (un numero de telephone, par exemple). FAUX pour tout le reste : un nombre, un texte avec des lettres, des espaces ou un tiret, un texte vide.",
       "Ne pas confondre avec est.nombr(...) : est.nombr regarde le TYPE (5 est un nombre, |5| est du texte), est.numero regarde le CONTENU d'un texte. est.numero(5) est donc FAUX, est.numero(|5|) est VRAI."
     ], exemple: "est.numero(|0612345678|)   ->   VRAI\nest.numero(|+212612345678|)   ->   VRAI\nest.numero(|INWI|)   ->   FAUX\nest.numero(5)   ->   FAUX" },
-  { noms: ["est.nombr", "est.text", "est.vecteu", "est.matric", "est.enti", "est.reel", "est.liste"], categorie: "Base", syntaxe: "est.nombr(var) / est.text(var) / est.vecteu(var) / est.matric(var) / est.enti(var) / est.reel(var) / est.liste(var)", description: [
+  { noms: ["est.nombr", "est.text", "est.vecteu", "est.matric", "est.enti", "est.reel", "est.liste", "est.dictionnai"], categorie: "Base", syntaxe: "est.nombr(var) / est.text(var) / est.vecteu(var) / est.matric(var) / est.enti(var) / est.reel(var) / est.liste(var) / est.dictionnai(var)", description: [
       "Verifie le type de var, et renvoie VRAI ou FAUX.",
       "est.nombr(var) : VRAI si var est un nombre normal OU un grand entier (large ; voir est.enti/est.reel pour distinguer precisement).",
       "est.text(var) : VRAI si var est un texte.",
@@ -6155,7 +6583,8 @@ let aideCommandes = [
       "est.matric(var) : VRAI si var est une matrice.",
       "est.enti(var) : VRAI uniquement si var est un GRAND ENTIER (cree via entier(...)) ; FAUX pour un nombre normal meme de valeur entiere.",
       "est.reel(var) : VRAI uniquement si var est un nombre normal (reel) ; FAUX pour un grand entier.",
-      "est.liste(var) : VRAI si var est une liste (creee via liste(...))."
+      "est.liste(var) : VRAI si var est une liste (creee via liste(...)).",
+      "est.dictionnai(var) : VRAI si var est un dictionnai (cree via dictionnai(...))."
     ], exemple: "est.nombr(3)        ->   VRAI\nest.text(|bonjour|) ->   VRAI\nest.vecteu(c(1,2))  ->   VRAI\nest.enti(entier(3)) ->   VRAI\nest.reel(3)          ->   VRAI\nest.reel(entier(3)) ->   FAUX\nest.liste(liste(1,2)) ->   VRAI\nsi(est.nombr(x)){ affi(|x est un nombre|) }" },
   { noms: ["est.fonction"], categorie: "Base", syntaxe: "est.fonction(var)", description: [
       "VRAI si var contient une fonction (recue en parametre, ou stockee avec f ~ nomFonction).",
@@ -6407,6 +6836,34 @@ let aideCommandes = [
       "Ecriture indexee possible : maliste[i]~valeur (ou moi.maliste[i]~valeur pour un attribut).",
       "maliste.ajout(...) et maliste.supri(...) fonctionnent comme sur un vecteur, sans fusion ni unification."
     ], exemple: "l ~ liste(1, |bonjour|, VRAI, c(1,2,3))\naffi(l[1])   ->   1\naffi(l[2])   ->   bonjour\nl[1] ~ |change|" },
+  { noms: ["dictionnai", "lire", "cles", "valeurs"], categorie: "Creer un vecteur/une matrice", syntaxe: "dictionnai(|cle|: valeur, ...)  /  d[cle]  /  d.lire(cle, defaut)  /  d.cles()  /  d.valeurs()  /  d.supri(cle)", description: [
+      "Construit un dictionnai : des valeurs rangees sous des cles (du texte ou des nombres), comme un dict Python. Chaque element s'ecrit cle: valeur, avec deux-points entre les deux.",
+      "Les valeurs peuvent etre de n'importe quel type (nombre, texte, liste, autre dictionnai, instance...). L'ordre d'ajout est conserve.",
+      "d[cle] lit une valeur : si la cle n'existe pas, erreur CleIntrouvable. d[cle]~valeur ecrit : la cle est creee si elle n'existe pas (d[cle][i]~valeur pour modifier l'interieur d'une valeur).",
+      "d.lire(cle, defaut) lit sans erreur : renvoie defaut si la cle est absente (sans rien ajouter), ou pasdefini si defaut est omis.",
+      "d.cles() et d.valeurs() renvoient une liste. d.supri(cle) retire une cle (erreur si elle n'existe pas) et s'ecrit seul sur sa ligne.",
+      "cle dan d : VRAI si la cle existe. pou(c dan d){...} parcourt les cles. lon(d) donne le nombre de cles. copier(d) / copier.profond(d) copient le dictionnai.",
+      "affi(d) affiche le dictionnai sur une ligne s'il est court, et une entree par ligne s'il est long (plus d'environ 40 caracteres).",
+      "Un dictionnai se sauvegarde avec ecrire.cle(...) / ecrire.fichier(...) comme une liste. est.dictionnai(var) teste le type, natu(var) renvoie dictionnai."
+    ], exemple: "d ~ dictionnai(|nom|: |Yannick|, |age|: 30)\naffi(d[|nom|])                 ->   Yannick\nd[|ville|] ~ |Abidjan|         ** cree la cle\naffi(d.lire(|pays|, |?|))      ->   ?\nsi(|age| dan d){ affi(d[|age|]) }\npou(c dan d){ affi(c, d[c]) }\n** compter des mots :\ncompte ~ dictionnai()\npou(mot dan liste(|a|,|b|,|a|)){ compte[mot] ~ compte.lire(mot, 0) + 1 }" },
+  { noms: ["trier"], categorie: "Acceder / modifier un element", syntaxe: "trier(l, decroiss~, cle~)  /  l.trier(decroiss~, cle~)", description: [
+      "trier(l) renvoie une NOUVELLE liste (ou un nouveau vecteur) trie par ordre croissant : l reste intacte (comme sorted() en Python).",
+      "l.trier() trie l ELLE-MEME, sur place, et ne renvoie rien (comme list.sort() en Python) : a ecrire seul sur sa ligne.",
+      "decroiss~VRAI trie du plus grand au plus petit. cle~fonction trie selon la valeur que la fonction calcule pour chaque element (ex: cle~fonc(x) x[2]).",
+      "Le tri est stable : deux elements egaux gardent leur ordre. On trie des nombres, ou du texte (ordre des caracteres : les majuscules passent avant les minuscules), mais pas un melange des deux : utilise cle~ pour comparer des valeurs du meme type (ex: cle~fonc(x) x.miniscul())."
+    ], exemple: "l ~ liste(3,1,2)\nm ~ trier(l)                    ** m = 1,2,3  et l inchangee\nl.trier(decroiss~VRAI)          ** l = 3,2,1\np ~ liste(liste(|b|,2), liste(|a|,1))\nq ~ trier(p, cle~fonc(x) x[2])  ** trie selon le 2e element" },
+  { noms: ["copier", "copier.profond"], categorie: "Acceder / modifier un element", syntaxe: "copier(x)  /  copier.profond(x)", description: [
+      "Une liste (ou un dictionnai, une instance) copiee avec b~a reste LA MEME : modifier b modifie a. Pour avoir une vraie copie independante, utilise copier.",
+      "copier(x) copie la liste, le vecteur, la matrice, le dictionnai ou l'instance, mais les listes/dictionnai places A L'INTERIEUR restent partages avec l'original.",
+      "copier.profond(x) copie tout, a tous les niveaux : plus aucun element n'est partage avec l'original."
+    ], exemple: "a ~ liste(liste(1,2), 3)\nb ~ copier(a)\nb[2] ~ 7                  ** a[2] reste 3\nb[1][1] ~ 99              ** a[1][1] devient aussi 99 (liste interne partagee)\nc ~ copier.profond(a)\nc[1][1] ~ 5               ** a n'est pas touche" },
+  { noms: ["decoup", "joindr", "remplace", "cherch", "commence", "termine"], categorie: "Texte", syntaxe: "decoup(texte, separateur)  /  joindr(liste, separateur)  /  remplace(texte, ancien, nouveau)  /  cherch(texte, morceau)  /  commence(texte, debut)  /  termine(texte, fin)", description: [
+      "decoup(texte, sep) coupe le texte a chaque sep (n'importe quel texte, de n'importe quelle longueur) et renvoie une liste. Sans sep : coupe sur les espaces. Avec sep vide || : coupe lettre par lettre.",
+      "joindr(liste, sep) colle les elements avec sep entre chaque (sans sep : colles sans rien entre eux). Les nombres sont convertis en texte.",
+      "remplace(texte, ancien, nouveau) remplace TOUTES les occurrences de ancien par nouveau (ancien ne peut pas etre vide).",
+      "cherch(texte, morceau) donne la position (a partir de 1, comme texte[i]) de la premiere occurrence, ou 0 si le morceau est absent.",
+      "commence(texte, debut) et termine(texte, fin) renvoient VRAI ou FAUX. Majuscules et minuscules comptent comme des lettres differentes."
+    ], exemple: "decoup(|a, b, c|, |, |)         ->   liste(|a|, |b|, |c|)\ndecoup(|un deux  trois|)         ->   liste(|un|, |deux|, |trois|)\njoindr(liste(|a|,|b|), | et |)   ->   a et b\nremplace(|le chat|, |chat|, |chien|)   ->   le chien\ncherch(|bonjour|, |jou|)         ->   4\ncommence(|bonjour|, |bon|)       ->   VRAI" },
   { noms: ["seq"], categorie: "Creer un vecteur/une matrice", syntaxe: "seq(debut, fin, pas)", description: [
       "Construit une suite de nombres, de debut a fin.",
       "pas est facultatif : +1 par defaut (ou -1 si fin est plus petit que debut)."
@@ -6509,29 +6966,46 @@ let aideCommandes = [
   { noms: ["supri"], categorie: "Acceder / modifier un element", syntaxe: "nom.supri(elements)", description: [
       "Supprime des elements d'un vecteur ou d'une matrice qui existe deja (inverse de .ajout()).",
       "Pour un vecteur : supprime, pour chaque valeur donnee, sa premiere occurrence trouvee.",
-      "Pour une matrice : les elements donnes (par groupe de nlig, comme pour .ajout()) doivent correspondre exactement a une colonne existante, qui est alors supprimee."
+      "Pour une matrice : les elements donnes (par groupe de nlig, comme pour .ajout()) doivent correspondre exactement a une colonne existante, qui est alors supprimee.",
+      "Pour un dictionnai : d.supri(cle) retire la cle et sa valeur (erreur CleIntrouvable si elle n'existe pas)."
     ], exemple: "v~c(2,3,2,5)\nv.supri(2,3)     ->   reste c(2,5)\nv~c(|rea|,|r|,|e|)\nv.supri(|rea|)   ->   reste c(|r|,|e|)\nv.supri(v[1])    ->   supprime la valeur en 1ere position" },
 
   { noms: ["+"], categorie: "Operateurs", syntaxe: "a + b", description: [
-      "Additionne deux nombres, deux vecteurs (element par element) ou deux matrices (element par element, memes dimensions).",
-      "Un nombre seul est ajoute a chaque element si on l'additionne avec un vecteur ou une matrice."
-    ], exemple: "c(1,2,3) + c(10,20,30)   ->   [1] 11 22 33" },
+      "Additionne deux nombres, deux vecteurs de MEME longueur (element par element) ou deux matrices de memes dimensions.",
+      "Nombre + vecteur (ou vecteur + nombre) : le nombre est ajoute a chaque element. Nombre + matrice (ou matrice + nombre) : erreur claire ; ajoute plutot une matrice de memes dimensions.",
+      "Deux vecteurs de longueurs differentes : erreur claire (pas de repetition automatique).",
+      "Si au moins un des deux cotes est du TEXTE (|23| ou | a|, meme s'il ressemble a un nombre), + CONCATENE : |a| + |b| donne ab, |n=| + 5 donne n=5, 1 + |a| donne 1a. Un nombre, VRAI/FAUX ou pasdefini est converti en texte.",
+      "Sans aucun texte, c'est l'addition normale : |23| + 1 donne 231, mais 23 + 1 donne 24.",
+      "Erreur claire aussi pour : du texte avec un vecteur ou une matrice, un vecteur/une matrice qui contient du texte ou des elements imbriques, une liste (convertis-la avec conver.liste.vecteu(...) ou conver.liste.matric(...)), un dictionnai ou une instance (utilise texte(...) pour les coller dans un texte)."
+    ], exemple: "c(1,2,3) + c(10,20,30)   ->   [1] 11 22 33\nc(1,2,3) + 10   ->   [1] 11 12 13\n|trouve a | + 5   ->   trouve a 5\n|23| + 1   ->   231\n23 + 1   ->   24" },
   { noms: ["-"], categorie: "Operateurs", syntaxe: "a - b", description: [
-      "Soustrait deux nombres, deux vecteurs ou deux matrices, meme principe que +."
-    ], exemple: "c(10,20,30) - c(1,2,3)   ->   [1] 9 18 27" },
+      "Soustrait deux nombres, deux vecteurs de MEME longueur (element par element) ou deux matrices de memes dimensions.",
+      "Nombre - vecteur ou vecteur - nombre : applique a chaque element. Nombre et matrice (dans un sens ou dans l'autre) : erreur claire.",
+      "Avec du texte (texte - nombre, nombre - texte, texte - texte) : erreur claire. La soustraction ne marche qu'entre nombres.",
+      "Deux vecteurs de longueurs differentes, un vecteur/une matrice qui contient du texte, une liste : erreur claire (voir +)."
+    ], exemple: "c(10,20,30) - c(1,2,3)   ->   [1] 9 18 27\n10 - c(1,2)   ->   [1] 9 8\n|a| - 1   ->   erreur : impossible de soustraire avec du texte" },
   { noms: ["*"], categorie: "Operateurs", syntaxe: "a * b", description: [
       "Multiplie deux nombres.",
-      "Ne fonctionne pas encore sur les vecteurs/matrices (utilise . , × ou .. pour ceux-la)."
-    ], exemple: "3 * 4   ->   12" },
+      "Nombre * vecteur (ou vecteur * nombre) : chaque element est multiplie. Vecteur * vecteur : produit element par element (meme longueur obligatoire, sinon erreur claire).",
+      "Nombre * matrice (ou matrice * nombre) : chaque element est multiplie.",
+      "Matrice * matrice : erreur claire. Il existe un operateur dedie, .. (produit matriciel). Pour le produit scalaire de deux vecteurs, utilise . ou ..",
+      "texte * nombre (ou nombre * texte) REPETE le texte : |ab| * 3 donne ababab. Le nombre doit etre un entier positif ou nul (0 donne un texte vide). texte * texte : erreur claire.",
+      "Un vecteur/une matrice qui contient du texte ou des elements imbriques, une liste : erreur claire (voir +)."
+    ], exemple: "3 * 4   ->   12\nc(1,2,3) * 2   ->   [1] 2 4 6\nc(1,2) * c(3,4)   ->   [1] 3 8\n|ab| * 3   ->   ababab\n3 * |-|   ->   ---" },
   { noms: ["/"], categorie: "Operateurs", syntaxe: "a / b", description: [
-      "Divise deux nombres."
-    ], exemple: "10 / 4   ->   2.5" },
+      "Divise deux nombres.",
+      "Nombre / vecteur, vecteur / nombre et vecteur / vecteur (meme longueur) : element par element. Nombre / matrice : le nombre est divise par chaque element.",
+      "Matrice / nombre et matrice / matrice : erreur claire. Pour une matrice, multiplie par un inverse : m * (1 / n), ou m1 .. inverse(m2).",
+      "Avec du texte (nombre / texte, texte / nombre, texte / texte) : erreur claire. Il en va de meme pour % (reste), ENTI (division entiere) et ^ (puissance) : ils ne marchent qu'entre nombres.",
+      "Un vecteur/une matrice qui contient du texte ou des elements imbriques, une liste : erreur claire (voir +)."
+    ], exemple: "10 / 4   ->   2.5\nc(2,4) / 2   ->   [1] 1 2\n8 / c(2,4)   ->   [1] 4 2" },
   { noms: ["%"], categorie: "Operateurs", syntaxe: "a % b", description: [
       "Renvoie le reste de la division entiere de a par b."
     ], exemple: "7 % 2   ->   1" },
   { noms: ["."], categorie: "Operateurs", syntaxe: "v1 . v2", description: [
       "Calcule le produit scalaire entre deux vecteurs de meme taille.",
-      "Multiplie les elements un par un puis additionne le tout : le resultat est un seul nombre."
+      "Multiplie les elements un par un puis additionne le tout : le resultat est un seul nombre.",
+      "Un vecteur qui contient du texte, une liste : erreur claire. L'operateur .. donne le meme resultat entre deux vecteurs."
     ], exemple: "c(1,2,3) . c(4,5,6)   ->   32" },
   { noms: ["×"], categorie: "Operateurs", syntaxe: "v1 × v2", description: [
       "Calcule le produit vectoriel entre deux vecteurs.",
@@ -6539,7 +7013,8 @@ let aideCommandes = [
     ], exemple: "c(1,0,0) × c(0,1,0)   ->   [1] 0 0 1" },
   { noms: [".."], categorie: "Operateurs", syntaxe: "m1 .. m2", description: [
       "Multiplie deux matrices selon les regles du produit matriciel (pas element par element).",
-      "Le nombre de colonnes de m1 doit etre egal au nombre de lignes de m2."
+      "Le nombre de colonnes de m1 doit etre egal au nombre de lignes de m2.",
+      "Entre deux VECTEURS de meme longueur, .. calcule leur produit scalaire (comme l'operateur .). Une liste, ou un vecteur/une matrice qui contient du texte : erreur claire."
     ], exemple: "m1 .. m2" },
   { noms: ["^"], categorie: "Operateurs", syntaxe: "a ^ b", description: [
       "Puissance : a a la puissance b.",
@@ -6928,7 +7403,7 @@ function enregistrerFonctionsBase() {
                 // mais traite ici directement (sans repasser par elle) pour rester coherent
                 // avec le formatage d'affichage (formatPourAffichage) plutot que formatValeur.
                 parties.push("\n");
-            } else if (/^\|[\s\S]*\|$/.test(elemTrim)) {
+            } else if (estTexteLitteralComplet(elemTrim)) {
                 parties.push(elemTrim.slice(1, -1));
             } else {
                 verifierTexteLitteralFerme(elemTrim);
@@ -6956,7 +7431,7 @@ function enregistrerFonctionsBase() {
             let elemTrim = elem.trim();
             if (elemTrim === "saulig") {
                 parties.push("\n");
-            } else if (/^\|[\s\S]*\|$/.test(elemTrim)) {
+            } else if (estTexteLitteralComplet(elemTrim)) {
                 parties.push(elemTrim.slice(1, -1));
             } else {
                 verifierTexteLitteralFerme(elemTrim);
@@ -6988,6 +7463,87 @@ function enregistrerFonctionsBase() {
         let elements = [];
         for (let a of args) elements.push(await evaluerElementBrut(a, ctxExpr));
         return { __type: "liste", elements: elements };
+    };
+
+    // dictionnai(|cle|: valeur, ...) : cles (texte ou nombres) associees a des valeurs de n'importe quel type.
+    fonctionsBase["dictionnai"] = fonctionsExpression["dictionnai"] = async function(args, ctxExpr) {
+        let d = { __type: "dictionnai", entrees: new Map() };
+        for (let a of args) {
+            let p = trouverDeuxPointsHautNiveau(a);
+            if (p < 0) throw new Error("dictionnai(...) : chaque element s'ecrit cle: valeur (ex: dictionnai(|nom|: |Yannick|, |age|: 30)) -- recu : " + a.trim());
+            let cle = await evalExpr(a.slice(0, p), ctxExpr);
+            let valeur = await evaluerElementBrut(a.slice(p + 1), ctxExpr);
+            dicoEcrire(d, cle, valeur, "dictionnai(...)");
+        }
+        return d;
+    };
+    fonctionsBase["est.dictionnai"] = fonctionsExpression["est.dictionnai"] = async function(args, ctxExpr) {
+        if (args.length < 1) throw new Error("est.dictionnai(...) attend un argument");
+        return estDictionnai(await evalExpr(args[0], ctxExpr));
+    };
+
+    // trier(l, decroiss~VRAI, cle~fonc(x) ...) : NOUVELLE liste/vecteur trie (l reste intacte, comme sorted() en Python).
+    fonctionsBase["trier"] = fonctionsExpression["trier"] = async function(args, ctxExpr) {
+        if (args.length < 1) throw new Error("trier(l, decroiss~, cle~) attend au moins la liste a trier");
+        let v = await evaluerElementBrut(args[0], ctxExpr);
+        let opt = await lireOptionsTri(args, 1, "trier", ctxExpr);
+        let tries = await trierElements(elementsTriables(v, "trier(...)"), opt, "trier");
+        return estListe(v) ? { __type: "liste", elements: tries } : tries;
+    };
+
+    // copier(x) : copie de surface ; copier.profond(x) : copie complete.
+    fonctionsBase["copier"] = fonctionsExpression["copier"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("copier(x) attend exactement 1 argument");
+        return copierValeur(await evaluerElementBrut(args[0], ctxExpr), false, new Map());
+    };
+    fonctionsBase["copier.profond"] = fonctionsExpression["copier.profond"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("copier.profond(x) attend exactement 1 argument");
+        return copierValeur(await evaluerElementBrut(args[0], ctxExpr), true, new Map());
+    };
+
+    // Texte : decoup, joindr, remplace, cherch, commence, termine.
+    fonctionsBase["decoup"] = fonctionsExpression["decoup"] = async function(args, ctxExpr) {
+        if (args.length < 1 || args.length > 2) throw new Error("decoup(texte, separateur) attend 1 ou 2 arguments (separateur facultatif)");
+        let t = exigerTexte(await evalExpr(args[0], ctxExpr), "decoup", "le texte");
+        let morceaux;
+        if (args.length === 1) morceaux = t.split(/\s+/).filter(m => m !== "");
+        else {
+            let sep = exigerTexte(await evalExpr(args[1], ctxExpr), "decoup", "le separateur");
+            morceaux = sep === "" ? Array.from(t) : t.split(sep);
+        }
+        return { __type: "liste", elements: morceaux };
+    };
+    fonctionsBase["joindr"] = fonctionsExpression["joindr"] = async function(args, ctxExpr) {
+        if (args.length < 1 || args.length > 2) throw new Error("joindr(liste, separateur) attend 1 ou 2 arguments (separateur facultatif)");
+        let l = await evaluerElementBrut(args[0], ctxExpr);
+        let elements = estListe(l) ? l.elements : (estVecteur(l) ? l : null);
+        if (elements === null) throw new ErreurTypeInvalide("joindr : le 1er argument doit etre une liste ou un vecteur (recu : " + nomNature(l) + ")");
+        let sep = args.length === 2 ? exigerTexte(await evalExpr(args[1], ctxExpr), "joindr", "le separateur") : "";
+        return elements.map(e => formatValeur(e)).join(sep);
+    };
+    fonctionsBase["remplace"] = fonctionsExpression["remplace"] = async function(args, ctxExpr) {
+        if (args.length !== 3) throw new Error("remplace(texte, ancien, nouveau) attend 3 arguments");
+        let t = exigerTexte(await evalExpr(args[0], ctxExpr), "remplace", "le texte");
+        let ancien = exigerTexte(await evalExpr(args[1], ctxExpr), "remplace", "'ancien'");
+        let nouveau = exigerTexte(await evalExpr(args[2], ctxExpr), "remplace", "'nouveau'");
+        if (ancien === "") throw new Error("remplace : le texte a remplacer ('ancien') ne peut pas etre vide");
+        return t.split(ancien).join(nouveau);
+    };
+    fonctionsBase["cherch"] = fonctionsExpression["cherch"] = async function(args, ctxExpr) {
+        if (args.length !== 2) throw new Error("cherch(texte, morceau) attend 2 arguments");
+        let t = exigerTexte(await evalExpr(args[0], ctxExpr), "cherch", "le texte");
+        let m = exigerTexte(await evalExpr(args[1], ctxExpr), "cherch", "le morceau cherche");
+        return t.indexOf(m) + 1; // position a partir de 1 (comme texte[i]), 0 si absent
+    };
+    fonctionsBase["commence"] = fonctionsExpression["commence"] = async function(args, ctxExpr) {
+        if (args.length !== 2) throw new Error("commence(texte, debut) attend 2 arguments");
+        let t = exigerTexte(await evalExpr(args[0], ctxExpr), "commence", "le texte");
+        return t.startsWith(exigerTexte(await evalExpr(args[1], ctxExpr), "commence", "le debut"));
+    };
+    fonctionsBase["termine"] = fonctionsExpression["termine"] = async function(args, ctxExpr) {
+        if (args.length !== 2) throw new Error("termine(texte, fin) attend 2 arguments");
+        let t = exigerTexte(await evalExpr(args[0], ctxExpr), "termine", "le texte");
+        return t.endsWith(exigerTexte(await evalExpr(args[1], ctxExpr), "termine", "la fin"));
     };
 
 
@@ -7151,7 +7707,7 @@ function enregistrerFonctionsBase() {
             if (elemTrim === "") continue;
             if (elemTrim === "saulig") {
                 parties.push("\n");
-            } else if (/^\|[\s\S]*\|$/.test(elemTrim)) {
+            } else if (estTexteLitteralComplet(elemTrim)) {
                 parties.push(elemTrim.slice(1, -1));
             } else {
                 try { verifierTexteLitteralFerme(elemTrim); parties.push(formatValeur(await evalExpr(elemTrim, ctxExpr))); }
@@ -7332,7 +7888,7 @@ function enregistrerFonctionsBase() {
         for (let i = 1; i < args.length; i++) valeurs.push(await evaluerElementBrut(args[i], ctxExpr));
         let valeur = valeurs.length === 1 ? valeurs[0] : { __type: "liste", elements: valeurs };
         let texte;
-        try { texte = JSON.stringify(valeur); }
+        try { texte = jsonDepuisValeur(valeur); }
         catch (e) { throw new Error("ecrire.cle(...) : cette valeur ne peut pas etre sauvegardee"); }
         try { ecrireBrutCle(cle, texte); }
         catch (e) { throw new Error("ecrire.cle(...) : sauvegarde impossible (" + e.message + ")"); }
@@ -7346,7 +7902,7 @@ function enregistrerFonctionsBase() {
         if (typeof cle !== 'string') throw new ErreurTypeInvalide("lire.cle(cle) : cle doit etre du texte");
         let brut = lireBrutCle(cle);
         if (brut === null) return undefined;
-        try { return JSON.parse(brut); }
+        try { return valeurDepuisJson(brut); }
         catch (e) { throw new Error("lire.cle(...) : la sauvegarde pour '" + cle + "' est corrompue"); }
     };
 
@@ -7420,7 +7976,7 @@ function enregistrerFonctionsBase() {
         let valeur = valeursBrutes.length === 1 ? valeursBrutes[0] : { __type: "liste", elements: valeursBrutes };
 
         let texte;
-        try { texte = JSON.stringify(valeur); }
+        try { texte = contenuFichierMld(valeur); }
         catch (e) { throw new Error("ecrire.fichier(...) : cette valeur ne peut pas etre sauvegardee"); }
 
         if (nom.indexOf("/") !== -1) {
@@ -7502,7 +8058,7 @@ function enregistrerFonctionsBase() {
         let brut = lireBrutCle(cle);
         if (brut === null) throw new ErreurCleIntrouvable("ajout.cle(...) : la cle '" + cle + "' n'existe pas encore (utilise ecrire.cle(...) pour la creer)");
         let existant;
-        try { existant = JSON.parse(brut); }
+        try { existant = valeurDepuisJson(brut); }
         catch (e) { throw new Error("ajout.cle(...) : la sauvegarde pour '" + cle + "' est corrompue"); }
 
         let nouvelles = [];
@@ -7510,7 +8066,7 @@ function enregistrerFonctionsBase() {
         let fusion = fusionnerPourAjout(existant, nouvelles);
 
         let texte;
-        try { texte = JSON.stringify(fusion); }
+        try { texte = jsonDepuisValeur(fusion); }
         catch (e) { throw new Error("ajout.cle(...) : cette valeur ne peut pas etre sauvegardee"); }
         try { ecrireBrutCle(cle, texte); }
         catch (e) { throw new Error("ajout.cle(...) : sauvegarde impossible (" + e.message + ")"); }
@@ -7551,12 +8107,12 @@ function enregistrerFonctionsBase() {
         let texteExistant = window.MonLangage.lireFichier(cheminComplet);
         if (texteExistant === null || texteExistant === undefined) throw new Error("ajout.fichier(...) : impossible de lire '" + cheminComplet + "'");
         let existant;
-        try { existant = JSON.parse(texteExistant); }
+        try { existant = valeurDepuisContenuMld(texteExistant); }
         catch (e) { throw new ErreurFichierInvalide("ajout.fichier(...) : le fichier '" + cheminComplet + "' n'est pas une sauvegarde valide"); }
 
         let fusion = fusionnerPourAjout(existant, nouvelles);
         let texteFinal;
-        try { texteFinal = JSON.stringify(fusion); }
+        try { texteFinal = contenuFichierMld(fusion); }
         catch (e) { throw new Error("ajout.fichier(...) : cette valeur ne peut pas etre sauvegardee"); }
         let ok = window.MonLangage.ecrireFichier(cheminComplet, texteFinal);
         if (!ok) throw new Error("ajout.fichier(...) : echec de l'ecriture sur '" + cheminComplet + "'");
@@ -7597,7 +8153,7 @@ function enregistrerFonctionsBase() {
         let texteExistantBrut = window.MonLangage.lireFichier(cheminComplet);
         if (texteExistantBrut === null || texteExistantBrut === undefined) throw new Error("ajout.Tfichier(...) : impossible de lire '" + cheminComplet + "'");
         let existant;
-        try { existant = JSON.parse(texteExistantBrut); }
+        try { existant = valeurDepuisContenuMld(texteExistantBrut); }
         catch (e) { throw new ErreurFichierInvalide("ajout.Tfichier(...) : le fichier '" + cheminComplet + "' n'est pas une sauvegarde valide"); }
         if (typeof existant !== 'string') {
             throw new Error("ajout.Tfichier(...) : le fichier '" + cheminComplet + "' ne contient pas du texte (utilise ajout.fichier() pour ce type de contenu)");
@@ -7611,7 +8167,7 @@ function enregistrerFonctionsBase() {
                                    .replace(/ *\n */g, "\n");
 
         let texteFinal;
-        try { texteFinal = JSON.stringify(existant + ajoutTexte); }
+        try { texteFinal = contenuFichierMld(existant + ajoutTexte); }
         catch (e) { throw new Error("ajout.Tfichier(...) : cette valeur ne peut pas etre sauvegardee"); }
         let ok = window.MonLangage.ecrireFichier(cheminComplet, texteFinal);
         if (!ok) throw new Error("ajout.Tfichier(...) : echec de l'ecriture sur '" + cheminComplet + "'");
@@ -7722,7 +8278,7 @@ function enregistrerFonctionsBase() {
             }
             let texte = window.MonLangage.lireFichier(chemin);
             if (texte === null || texte === undefined) throw new Error("lire.fichier(...) : impossible de lire '" + chemin + "'");
-            try { return JSON.parse(texte); }
+            try { return valeurDepuisContenuMld(texte); }
             catch (e) { throw new ErreurFichierInvalide("lire.fichier(...) : le fichier '" + chemin + "' n'est pas une sauvegarde valide"); }
         }
 
@@ -7730,12 +8286,12 @@ function enregistrerFonctionsBase() {
             let cheminComplet = await demanderEmplacementLectureFichier();
             let texte = window.MonLangage.lireFichier(cheminComplet);
             if (texte === null || texte === undefined) throw new Error("lire.fichier(...) : impossible de lire ce fichier");
-            try { return JSON.parse(texte); }
+            try { return valeurDepuisContenuMld(texte); }
             catch (e) { throw new ErreurFichierInvalide("lire.fichier(...) : le fichier choisi n'est pas une sauvegarde valide"); }
         }
 
         let texte = await demanderFichierConsole();
-        try { return JSON.parse(texte); }
+        try { return valeurDepuisContenuMld(texte); }
         catch (e) { throw new ErreurFichierInvalide("lire.fichier(...) : le fichier choisi n'est pas une sauvegarde valide"); }
     };
 
@@ -7745,6 +8301,7 @@ function enregistrerFonctionsBase() {
         if (args.length < 1) throw new Error("lon(...) attend un argument");
         let v = await evalExpr(args[0], ctxExpr);
         if (estListe(v)) return v.elements.length;
+        if (estDictionnai(v)) return v.entrees.size;
         if (estVecteur(v)) return v.length;
         if (estMatrice(v)) return v.donnees.length;
         if (typeof v === 'string') return v.length; // nombre de caracteres, coherent avec texte[i]
@@ -8411,7 +8968,7 @@ function enregistrerFonctionsBase() {
             let elemTrim = (elem || "").trim();
             if (elemTrim === "saulig") {
                 parties.push("\n");
-            } else if (/^\|[\s\S]*\|$/.test(elemTrim)) {
+            } else if (estTexteLitteralComplet(elemTrim)) {
                 parties.push(elemTrim.slice(1, -1));
             } else {
                 verifierTexteLitteralFerme(elemTrim);
@@ -9451,7 +10008,7 @@ function enregistrerFonctionsBase() {
         async function texteOption(cle, defaut) {
             if (!(cle in nommes)) return defaut;
             let s = nommes[cle].trim();
-            if (/^\|[\s\S]*\|$/.test(s)) return s.slice(1, -1);
+            if (estTexteLitteralComplet(s)) return s.slice(1, -1);
             verifierTexteLitteralFerme(s);
             let v = await evalExpr(s, ctxExpr);
             if (v && v.__type === "liste") throw new Error("trac(...) : " + cle + "~ attend un texte ; une liste (une valeur par courbe) ne marche qu'avec trac.multi(...)");
@@ -9548,7 +10105,7 @@ function enregistrerFonctionsBase() {
         async function optionParCourbe(cle) {
             if (!Object.prototype.hasOwnProperty.call(nommes, cle)) return null;
             let src = nommes[cle].trim();
-            if (/^\|[\s\S]*\|$/.test(src)) return { global: src.slice(1, -1) };
+            if (estTexteLitteralComplet(src)) return { global: src.slice(1, -1) };
             verifierTexteLitteralFerme(src);
             let v = await evalExpr(src, ctxExpr);
             if (v && v.__type === "liste") {
@@ -9670,7 +10227,7 @@ function enregistrerFonctionsBase() {
                 continue;
             }
             let texte;
-            if (/^\|[\s\S]*\|$/.test(src)) texte = src.slice(1, -1);
+            if (estTexteLitteralComplet(src)) texte = src.slice(1, -1);
             else {
                 verifierTexteLitteralFerme(src);
                 let v = await evalExpr(src, ctxExpr);
@@ -10860,6 +11417,7 @@ async function executerCommandeSimple(ligne) {
       // Parent + position de la cible quand elle est un element d'une liste : necessaire pour
       // reecrire un TEXTE (immuable en JS) apres modification, ex: l[2][1] ~ |x|.
       let parentListe = null, indiceParent = null;
+      let parentDico = null, cleParentDico = null; // idem quand l'element est une valeur de dictionnai
       // Descente dans tous les groupes sauf le dernier : chacun doit designer UN element de liste.
       for (let g = 0; g < groupes.length - 1; g++) {
         let partsIdx = splitTopLevelComma(groupes[g]);
@@ -10867,6 +11425,17 @@ async function executerCommandeSimple(ligne) {
           throw new Error(nomAff + " : un indice avant le dernier doit etre un seul nombre (ex: " + chemin + "[i][j] ~ valeur)");
         }
         let idx = await evalExpr(partsIdx[0], ctxExpr);
+        if (estDictionnai(cible)) {
+          let entreeD = cible.entrees.get(normaliserCleDico(idx, nomAff));
+          if (entreeD === undefined) throw new ErreurCleIntrouvable("La cle " + descriptionCleDico(idx) + " n'existe pas dans " + nomAff + " : rien a modifier a l'interieur");
+          parentListe = null; indiceParent = null; parentDico = cible; cleParentDico = idx;
+          cible = entreeD.valeur;
+          nomAff = nomAff + "[" + descriptionCleDico(idx) + "]";
+          if (cible === undefined || cible === null) {
+            throw new ErreurTypeInvalide(nomAff + " est pasdefini : rien a modifier a l'interieur");
+          }
+          continue;
+        }
         verifierIndiceEntier(idx, nomAff);
         if (!estListe(cible)) {
           throw new ErreurTypeInvalide(nomAff + " n'est pas une liste : on ne peut pas ecrire " + chemin + groupes.map(x => "[" + x + "]").join("") + " (un vecteur ne contient que des valeurs simples)");
@@ -10874,7 +11443,7 @@ async function executerCommandeSimple(ligne) {
         if (idx < 1 || idx > cible.elements.length) {
           throw new ErreurIndexHorsLimite("Indice " + idx + " hors limites pour " + nomAff + " (taille " + cible.elements.length + ")");
         }
-        parentListe = cible; indiceParent = idx;
+        parentListe = cible; indiceParent = idx; parentDico = null;
         cible = cible.elements[idx - 1];
         nomAff = nomAff + "[" + idx + "]";
         if (cible === undefined || cible === null) {
@@ -10882,11 +11451,17 @@ async function executerCommandeSimple(ligne) {
         }
       }
       let indices = splitTopLevelComma(groupes[groupes.length - 1]);
+      if (estDictionnai(cible)) {
+        if (indices.length !== 1 || indices[0].trim() === "") throw new Error(nomAff + " est un dictionnai : ecris " + chemin + "[cle] ~ valeur (une seule cle)");
+        dicoEcrire(cible, await evalExpr(indices[0], ctxExpr), valeur, nomAff);
+        return;
+      }
       if (typeof cible === 'string') {
         if (indices.length !== 1) throw new Error(nomAff + " est du texte (une seule dimension) : indexation a un seul indice, pas [l,c]");
         let idx = indices[0].trim() === "" ? null : await evalExpr(indices[0], ctxExpr);
         let nouveauTexte = affecterTexte(cible, idx, valeur, nomAff);
         if (parentListe) parentListe.elements[indiceParent - 1] = nouveauTexte;
+        else if (parentDico) dicoEcrire(parentDico, cleParentDico, nouveauTexte, nomAff);
         else assignerCheminValeur(chemin, nouveauTexte);
       } else if (indices.length === 1) {
         let idx = indices[0].trim() === "" ? null : await evalExpr(indices[0], ctxExpr);
@@ -10961,6 +11536,28 @@ async function executerCommandeSimple(ligne) {
       let trouve = trouverMethodeAvecClasse(cibleEventuelle.__classe, methode);
       let val = await appellerMethodeInstance(cibleEventuelle, methode, argsVals);
       if (doitAfficherResultatAppel(val, trouve && trouve.methode.aRetourVide)) printValeur(await formatPourAffichage(val));
+      return;
+    }
+
+    // Dictionnai : d.supri(cle...) modifie ; d.lire/cles/valeurs seuls sur une ligne affichent leur resultat.
+    if (estDictionnai(cibleEventuelle)) {
+      if (methode === "supri") {
+        if (argExprs.length < 1) throw new Error(nomVar + ".supri(cle) attend au moins une cle");
+        for (let a of argExprs) dicoSupprimer(cibleEventuelle, await evalExpr(a, ctxExpr), nomVar);
+        return;
+      }
+      if (!METHODES_DICTIONNAI.has(methode)) throw new Error(messageMethodeDictionnaiInconnue(methode));
+      let argsDico = [];
+      for (let a of argExprs) argsDico.push(await evalExpr(a, ctxExpr));
+      printValeur(await formatPourAffichage(appliquerMethodeDictionnai(cibleEventuelle, methode, argsDico, nomVar)));
+      return;
+    }
+    // l.trier(decroiss~, cle~) : tri SUR PLACE d'une liste ou d'un vecteur (comme list.sort() en Python).
+    if (methode === "trier" && (estListe(cibleEventuelle) || estVecteur(cibleEventuelle))) {
+      let opt = await lireOptionsTri(argExprs, 0, nomVar + ".trier", ctxExpr);
+      let elTri = elementsTriables(cibleEventuelle, nomVar + ".trier");
+      let tries = await trierElements(elTri, opt, nomVar + ".trier");
+      for (let i = 0; i < tries.length; i++) elTri[i] = tries[i];
       return;
     }
 
@@ -11041,7 +11638,7 @@ async function executerCommandeSimple(ligne) {
         let elemTrim = elem.trim();
         if (elemTrim === "saulig") {
           parties.push("\n");
-        } else if (/^\|[\s\S]*\|$/.test(elemTrim)) {
+        } else if (estTexteLitteralComplet(elemTrim)) {
           parties.push(elemTrim.slice(1, -1));
         } else {
           verifierTexteLitteralFerme(elemTrim);
@@ -11049,7 +11646,7 @@ async function executerCommandeSimple(ligne) {
         }
       }
       valeur = parties.join(" ").replace(/ {2,}/g, " ").replace(/ *\n */g, "\n");
-    } else if (/^\|[\s\S]*\|$/.test(valeurExpr)) {
+    } else if (estTexteLitteralComplet(valeurExpr)) {
       valeur = valeurExpr.slice(1, -1);
     } else {
       verifierTexteLitteralFerme(valeurExpr);
@@ -11085,7 +11682,7 @@ async function executerCommandeSimple(ligne) {
         let elemTrim = elem.trim();
         if (elemTrim === "saulig") {
           parties.push("\n");
-        } else if (/^\|[\s\S]*\|$/.test(elemTrim)) {
+        } else if (estTexteLitteralComplet(elemTrim)) {
           parties.push(elemTrim.slice(1, -1));
         } else {
           verifierTexteLitteralFerme(elemTrim);
@@ -11095,7 +11692,7 @@ async function executerCommandeSimple(ligne) {
       setVar(nom, parties.join(" ").replace(/ {2,}/g, " ").replace(/ *\n */g, "\n"));
       return;
     }
-    if (/^\|[\s\S]*\|$/.test(valeur)) {
+    if (estTexteLitteralComplet(valeur)) {
       setVar(nom, valeur.slice(1, -1));
     } else {
       verifierTexteLitteralFerme(valeur);
@@ -11537,7 +12134,7 @@ function _verifierListeValeurs(str) {
   for (const p of _splitVirgulesHautNiveau(str)) {
     const s = p.trim();
     if (s === "saulig") continue;
-    if (/^\|[\s\S]*\|$/.test(s)) continue;
+    if (estTexteLitteralComplet(s)) continue;
     try { verifierSyntaxeExpression(s); } catch (e) { return e.message; }
   }
   return null;
@@ -11992,7 +12589,8 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
           let iterable;
           if (estVecteur(objetVal)) iterable = objetVal;
           else if (estListe(objetVal)) iterable = objetVal.elements;
-          else throw new ErreurTypeInvalide("pou(var dan objet) : objet doit etre un vecteur ou une liste");
+          else if (estDictionnai(objetVal)) iterable = Array.from(objetVal.entrees.values(), e => e.cle); // parcourt les CLES
+          else throw new ErreurTypeInvalide("pou(var dan objet) : objet doit etre un vecteur, une liste ou un dictionnai");
           for (let val of iterable) {
             await respirer();
             setVar(entete.varNom, val);
@@ -12096,7 +12694,7 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
               let elemTrim = elem.trim();
               if (elemTrim === "saulig") {
                 parties.push("\n");
-              } else if (/^\|[\s\S]*\|$/.test(elemTrim)) {
+              } else if (estTexteLitteralComplet(elemTrim)) {
                 parties.push(elemTrim.slice(1, -1));
               } else {
                 verifierTexteLitteralFerme(elemTrim);
