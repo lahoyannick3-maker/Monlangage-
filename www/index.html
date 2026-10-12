@@ -3942,7 +3942,7 @@ function verifierOperandesCalcul(g, d, op) {
       continue;
     }
     if (estListe(v)) {
-      throw new ErreurTypeInvalide("'" + op + "' : une liste ne se calcule pas directement. Convertis-la d'abord en vecteur (conver.liste.vecteu(...)) ou en matrice (conver.liste.matric(...)).");
+      throw new ErreurTypeInvalide("'" + op + "' : une liste ne se calcule pas (avec une liste, seuls + et * marchent : concatenation et repetition). Pour calculer dessus, convertis-la d'abord en vecteur (conver.liste.vecteu(...)) ou en matrice (conver.liste.matric(...)).");
     }
     throw new ErreurTypeInvalide("'" + op + "' : impossible de calculer avec " + typeOperande(v) + ". Pour le coller dans un texte, utilise texte(...).");
   }
@@ -3969,8 +3969,36 @@ function operandePourConcatenation(v) {
   if (typeof v === 'number' || typeof v === 'bigint' || typeof v === 'boolean' || v === undefined) return formatValeur(v);
   throw new ErreurTypeInvalide("'+' : impossible de concatener du texte avec " + typeOperande(v) + " (convertis-le d'abord avec texte(...))");
 }
+// Listes : une liste se comporte comme un texte (une sequence) : liste + liste concatene, liste + nombre / nombre + liste
+// ajoute le nombre a la fin / au debut, liste * nombre (ou nombre * liste) repete. Le resultat est une NOUVELLE liste,
+// entierement independante des operandes (copie profonde : rien n'est partage). Tout le reste : erreur claire.
+function operationListe(g, d, op) {
+  let gl = estListe(g), dl = estListe(d);
+  if (op === '+') {
+    // liste + liste : concatenation. liste + valeur seule (nombre, texte, VRAI/FAUX, vecteur, dictionnai...) : la valeur
+    // est ajoutee comme UN element (a la fin, ou au debut pour valeur + liste), en copie independante.
+    let copie = x => estListe(x) ? x.elements.map(e => copierValeur(e, true, new Map())) : [copierValeur(x, true, new Map())];
+    return { __type: "liste", elements: copie(g).concat(copie(d)) };
+  }
+  if (op === '*') {
+    if (gl && dl) throw new ErreurTypeInvalide("'*' : impossible de multiplier une liste par une liste. Pour repeter une liste, multiplie-la par un nombre : liste(1,2) * 3.");
+    let liste = gl ? g : d, n = gl ? d : g;
+    if (typeof n === 'bigint') n = Number(n);
+    if (typeof n !== 'number') throw new ErreurTypeInvalide("'*' : une liste ne se multiplie que par un nombre entier (recu : " + typeOperande(gl ? d : g) + ")");
+    if (!Number.isInteger(n) || n < 0) throw new ErreurTypeInvalide("'*' : pour repeter une liste, le nombre doit etre un entier positif ou nul (recu : " + formatValeur(n) + ")");
+    if (liste.elements.length * n > TAILLE_MAX_TEXTE_REPETE) throw new Error("'*' : la liste obtenue serait trop longue (plus de 10 000 000 elements)");
+    let res = [];
+    for (let r = 0; r < n; r++) for (let e of liste.elements) res.push(copierValeur(e, true, new Map()));
+    return { __type: "liste", elements: res };
+  }
+  let noms = { '-': "La soustraction", '/': "La division", '%': "Le reste de la division (%)", 'enti': "La division entiere" };
+  throw new ErreurTypeInvalide("'" + op + "' : impossible avec une liste (avec une liste, seuls + et * marchent : concatenation et repetition). " + (noms[op] || "Cette operation") + " ne marche qu'entre nombres, vecteurs ou matrices." + (op === '-' ? " Pour retirer un element d'une liste, utilise l.supri(...)." : ""));
+}
 function combinerAddition(g, d, op) {
-  if (!(typeof g === 'number' && typeof d === 'number')) verifierOperandesCalcul(g, d, op);
+  if (!(typeof g === 'number' && typeof d === 'number')) {
+    if (estListe(g) || estListe(d)) return operationListe(g, d, op);
+    verifierOperandesCalcul(g, d, op);
+  }
   function combiner2(a, b) {
     if (typeof a === 'string' || typeof b === 'string') {
       if (op === '-') {
@@ -4026,7 +4054,10 @@ function diviserEntierBigInt(a, b) {
 }
 const TAILLE_MAX_TEXTE_REPETE = 10000000;
 function combinerMultiplication(g, d, op) {
-  if (!(typeof g === 'number' && typeof d === 'number')) verifierOperandesCalcul(g, d, op);
+  if (!(typeof g === 'number' && typeof d === 'number')) {
+    if (estListe(g) || estListe(d)) return operationListe(g, d, op);
+    verifierOperandesCalcul(g, d, op);
+  }
   function combiner2(a, b) {
     if (typeof a === 'string' || typeof b === 'string') {
       let ta = typeof a === 'string', tb = typeof b === 'string';
@@ -4081,7 +4112,7 @@ function combinerMultiplication(g, d, op) {
       return { __type: "matrice", nlig: g.nlig, ncol: g.ncol, donnees: g.donnees.map((v, i) => combiner2(v, d.donnees[i])) };
     }
     if (estVecteur(g) || estVecteur(d)) throw new Error("'" + op + "' : impossible de combiner une matrice et un vecteur");
-    if (op === '/' && estMatrice(g)) throw new ErreurTypeInvalide("'/' : impossible de diviser une matrice par un nombre. Multiplie-la plutot par l'inverse du nombre : m * (1 / n).");
+    if (op === '/' && estMatrice(d)) throw new ErreurTypeInvalide("'/' : impossible de diviser un nombre par une matrice. Pour utiliser l'inverse d'une matrice, utilise inverse(m) (ex : 2 * inverse(m)).");
     let mat = estMatrice(g) ? g : d, scal = estMatrice(g) ? d : g;
     let donnees = mat.donnees.map(v => estMatrice(g) ? combiner2(v, scal) : combiner2(scal, v));
     return { __type: "matrice", nlig: mat.nlig, ncol: mat.ncol, donnees: donnees };
@@ -4184,8 +4215,8 @@ function produitVectoriel(g, d) {
 // '..' : produit matriciel classique (A est m x n, B doit etre n x p).
 function produitMatriciel(g, d) {
   verifierOperandesCalcul(g, d, '..');
-  if (estVecteur(g) && estVecteur(d)) return produitScalaire(g, d);   // vecteur .. vecteur : produit scalaire (comme '.')
-  if (!estMatrice(g) || !estMatrice(d)) throw new Error("'..' attend deux matrices (produit matriciel) ou deux vecteurs (produit scalaire)");
+  if (estVecteur(g) && estVecteur(d)) throw new ErreurTypeInvalide("'..' est le produit matriciel : il attend deux matrices. Pour le produit scalaire de deux vecteurs, utilise l'operateur '.' (v1 . v2).");
+  if (!estMatrice(g) || !estMatrice(d)) throw new Error("'..' (produit matriciel) attend deux matrices");
   if (g.ncol !== d.nlig) throw new Error("'..' : dimensions incompatibles (" + g.nlig + "x" + g.ncol + " et " + d.nlig + "x" + d.ncol + ")");
   let donnees = new Array(g.nlig * d.ncol);
   for (let i = 0; i < g.nlig; i++) {
@@ -6603,13 +6634,20 @@ let aideCommandes = [
       "Un ** a l'interieur d'un texte litteral |...| n'est pas traite comme un commentaire."
     ], exemple: "x ~ 5 ** on initialise x a 5\n** ceci est une ligne entierement en commentaire" },
 
-  { noms: ["pou"], categorie: "Controle", syntaxe: "pou(var, debut, fin, pas){ ... }  /  pou(var dan objet){ ... }", description: [
-      "Repete le bloc entre accolades. Deux syntaxes possibles.",
+  { noms: ["pou"], categorie: "Controle", syntaxe: "pou(var, debut, fin, pas){ ... }  /  pou(var dan objet){ ... }  /  pou(a, b dan objet){ ... }", description: [
+      "Repete le bloc entre accolades. Trois syntaxes possibles.",
       "1) pou(var, debut, fin, pas) : var prend d'abord la valeur debut, puis debut+pas, et ainsi de suite jusqu'a fin (fin incluse). pas est facultatif : vaut 1 par defaut, et peut etre negatif (pour compter a l'envers).",
       "debut, fin et pas peuvent etre des expressions complexes (avec des parentheses, ^, des appels de fonction, etc.), separees par des virgules.",
-      "2) pou(var dan objet) : var prend tour a tour chaque valeur de objet, qui doit etre un vecteur ou une liste() (chaque element de la liste, pas ses indices).",
+      "2) pou(var dan objet) : var prend tour a tour chaque valeur de objet : chaque element d'un vecteur ou d'une liste(), chaque lettre d'un texte, chaque CLE d'un dictionnai (pas les indices).",
+      "3) pou(a, b dan objet) : DEPAQUETE chaque element de objet dans plusieurs variables, comme for a, b in ... en Python. Chaque element doit etre une liste ou un vecteur contenant exactement autant de valeurs que de variables (2, 3 ou plus). Les noms doivent etre differents.",
+      "Pour avoir la position de chaque element : pou(i, x dan enumerer(objet)). Pour avoir les cles et les valeurs d'un dictionnai : pou(k, v dan paires(d)). Voir aide(enumerer).",
       "casse permet d'arreter la boucle avant la fin (voir aide(casse))."
-    ], exemple: "pou(i, 1, 5){ affi(i) }   ->   affiche 1 2 3 4 5\npou(i, 10, 1, -1){ affi(i) }   ->   compte a l'envers de 10 a 1\npou(x dan c(3,7,9)){ affi(x) }   ->   affiche 3 7 9" },
+    ], exemple: "pou(i, 1, 5){ affi(i) }   ->   affiche 1 2 3 4 5\npou(i, 10, 1, -1){ affi(i) }   ->   compte a l'envers de 10 a 1\npou(x dan c(3,7,9)){ affi(x) }   ->   affiche 3 7 9\npou(c dan |abc|){ affi(c) }   ->   affiche a b c\npou(a, b dan liste(liste(1,2), liste(3,4))){ affi(a, b) }   ->   1 2, puis 3 4\npou(i, c dan enumerer(|abc|)){ affi(i, c) }   ->   1 a, 2 b, 3 c\npou(k, v dan paires(d)){ affi(k, v) }   ->   chaque cle d'un dictionnai et sa valeur" },
+  { noms: ["enumerer", "paires"], categorie: "Controle", syntaxe: "enumerer(objet)  /  paires(d)", description: [
+      "enumerer(objet) renvoie une liste de paires liste(position, element), la position commencant a 1, pour un vecteur, une liste, un texte (chaque lettre) ou un dictionnai (chaque cle). paires(d) renvoie une liste de paires liste(cle, valeur) pour un dictionnai.",
+      "Ils servent avec pou(...) a deux variables : pou(i, x dan enumerer(l)) et pou(k, v dan paires(d)), comme enumerate(l) et d.items() en Python.",
+      "Ce sont des listes ordinaires : on peut aussi les trier, les parcourir avec une seule variable ou les ranger dans une variable."
+    ], exemple: "pou(i, x dan enumerer(liste(10,20))){ affi(i, x) }   ->   1 10, puis 2 20\nd ~ dictionnai(|nom|: |Awa|, |age|: 31)\npou(k, v dan paires(d)){ affi(k, v) }   ->   nom Awa, puis age 31" },
   { noms: ["casse"], categorie: "Controle", syntaxe: "casse", description: [
       "Arrete immediatement la boucle (pou ou tanqer) en cours, et continue l'execution juste apres cette boucle (comme break en Python).",
       "Ne sort que de la boucle la plus interne : pour sortir de plusieurs boucles imbriquees d'un coup, utilise quitte.",
@@ -6769,14 +6807,17 @@ let aideCommandes = [
       "valeurSiVrai et valeurSiFaux peuvent etre des scalaires ou des vecteurs (recycles si plus courts que condition, comme les autres operations vectorielles).",
       "Si condition est un simple scalaire, renvoie directement valeurSiVrai ou valeurSiFaux."
     ], exemple: "x ~ seq(-2,2,1)\naffi(sision(x>=0, x, x*-1))   ->   [1] 2 1 0 1 2" },
-  { noms: ["essai", "attrape"], categorie: "Controle", syntaxe: "essai{ ... } attrape(msg){ ... }  /  essai{ ... } attrape{ ... }", description: [
+  { noms: ["essai", "attrape", "finalement"], categorie: "Controle", syntaxe: "essai{ ... } attrape(msg){ ... }  /  essai{ ... } attrape{ ... }  /  essai{ ... } finalement{ ... }  /  essai{ ... } attrape{ ... } finalement{ ... }", description: [
       "Intercepte une erreur levee dans le bloc essai au lieu de planter tout le script.",
       "Si une erreur survient dans essai, l'execution du bloc s'arrete et le bloc attrape s'execute a la place.",
       "Si aucune erreur ne survient, le bloc attrape est entierement ignore.",
       "attrape(msg){...} recupere le message d'erreur (texte) dans la variable msg. attrape{...} (sans parametre) l'ignore.",
-      "Toujours place juste apres un essai{...}, jamais seul.",
+      "attrape se place juste apres un essai{...}, jamais seul. finalement{...} (facultatif) se place juste apres essai{...} ou apres attrape{...}.",
+      "finalement{...} s'execute TOUJOURS apres le bloc : que tout se soit bien passe, qu'une erreur ait ete rattrapee ou non, ou que le bloc se termine par retour, casse, continu ou quitte. Il sert a nettoyer (effacer des boutons, arreter un service, ecrire un journal).",
+      "Si une erreur n'est pas rattrapee, elle repart apres finalement. Une erreur levee dans finalement remplace l'ancienne ; un retour, casse ou continu dans finalement prend le pas sur celui en attente.",
+      "finalement ne s'execute pas apres un arret manuel du script (bouton Retour) : l'utilisateur veut arreter.",
       "Ne peut pas empecher un arret manuel du script (bouton Retour pendant l'execution) : cela remonte toujours en dehors de essai/attrape."
-    ], exemple: "essai {\n    ecrire.fichier(|/storage/emulated/0/Download/save.mld|, moi)\n} attrape(msg) {\n    affi(|Echec de sauvegarde :|, msg)\n}" },
+    ], exemple: "essai {\n    ecrire.fichier(|/storage/emulated/0/Download/save.mld|, moi)\n} attrape(msg) {\n    affi(|Echec de sauvegarde :|, msg)\n}\n\nessai {\n    ** jeu avec bouton(...) et touche() **\n} finalement {\n    bouton.efface()      ** s'execute meme apres une erreur ou quitte\n}" },
   { noms: ["limiteRecursion"], categorie: "Controle", syntaxe: "limiteRecursion()  /  limiteRecursion(n)", description: [
       "Lit ou change la limite d'appels de fonction imbriques autorises (protection contre une recursion infinie), comme sys.setrecursionlimit(...) en Python.",
       "limiteRecursion() sans argument : lecture seule, renvoie la limite actuelle (500 par defaut).",
@@ -6976,36 +7017,38 @@ let aideCommandes = [
       "Deux vecteurs de longueurs differentes : erreur claire (pas de repetition automatique).",
       "Si au moins un des deux cotes est du TEXTE (|23| ou | a|, meme s'il ressemble a un nombre), + CONCATENE : |a| + |b| donne ab, |n=| + 5 donne n=5, 1 + |a| donne 1a. Un nombre, VRAI/FAUX ou pasdefini est converti en texte.",
       "Sans aucun texte, c'est l'addition normale : |23| + 1 donne 231, mais 23 + 1 donne 24.",
-      "Erreur claire aussi pour : du texte avec un vecteur ou une matrice, un vecteur/une matrice qui contient du texte ou des elements imbriques, une liste (convertis-la avec conver.liste.vecteu(...) ou conver.liste.matric(...)), un dictionnai ou une instance (utilise texte(...) pour les coller dans un texte)."
-    ], exemple: "c(1,2,3) + c(10,20,30)   ->   [1] 11 22 33\nc(1,2,3) + 10   ->   [1] 11 12 13\n|trouve a | + 5   ->   trouve a 5\n|23| + 1   ->   231\n23 + 1   ->   24" },
+      "LISTES : liste + liste concatene (liste(1,2) + liste(3) donne liste(1,2,3)) ; liste + valeur seule (nombre, texte, VRAI/FAUX, vecteur, dictionnai...) ajoute la valeur comme UN element a la fin, valeur + liste l'ajoute au debut. Le resultat est une NOUVELLE liste, entierement independante des operandes (rien n'est partage).",
+      "Erreur claire aussi pour : du texte avec un vecteur ou une matrice, un vecteur/une matrice qui contient du texte ou des elements imbriques, un dictionnai ou une instance (utilise texte(...) pour les coller dans un texte)."
+    ], exemple: "c(1,2,3) + c(10,20,30)   ->   [1] 11 22 33\nc(1,2,3) + 10   ->   [1] 11 12 13\n|trouve a | + 5   ->   trouve a 5\n|23| + 1   ->   231\n23 + 1   ->   24\nliste(1,2) + liste(3)   ->   liste(1,2,3)\nliste(1,2) + 3   ->   liste(1,2,3)\n0 + liste(1,2)   ->   liste(0,1,2)\nliste(1) + |a|   ->   liste(1,a)\nliste(1) + c(5,6)   ->   la liste, puis le vecteur comme un seul element" },
   { noms: ["-"], categorie: "Operateurs", syntaxe: "a - b", description: [
       "Soustrait deux nombres, deux vecteurs de MEME longueur (element par element) ou deux matrices de memes dimensions.",
       "Nombre - vecteur ou vecteur - nombre : applique a chaque element. Nombre et matrice (dans un sens ou dans l'autre) : erreur claire.",
       "Avec du texte (texte - nombre, nombre - texte, texte - texte) : erreur claire. La soustraction ne marche qu'entre nombres.",
-      "Deux vecteurs de longueurs differentes, un vecteur/une matrice qui contient du texte, une liste : erreur claire (voir +)."
+      "Deux vecteurs de longueurs differentes, un vecteur/une matrice qui contient du texte, une liste : erreur claire (voir +). Pour retirer un element d'une liste, utilise l.supri(...)."
     ], exemple: "c(10,20,30) - c(1,2,3)   ->   [1] 9 18 27\n10 - c(1,2)   ->   [1] 9 8\n|a| - 1   ->   erreur : impossible de soustraire avec du texte" },
   { noms: ["*"], categorie: "Operateurs", syntaxe: "a * b", description: [
       "Multiplie deux nombres.",
       "Nombre * vecteur (ou vecteur * nombre) : chaque element est multiplie. Vecteur * vecteur : produit element par element (meme longueur obligatoire, sinon erreur claire).",
       "Nombre * matrice (ou matrice * nombre) : chaque element est multiplie.",
-      "Matrice * matrice : erreur claire. Il existe un operateur dedie, .. (produit matriciel). Pour le produit scalaire de deux vecteurs, utilise . ou ..",
+      "Matrice * matrice : erreur claire. Il existe un operateur dedie, .. (produit matriciel). Pour le produit scalaire de deux vecteurs, utilise l'operateur .",
       "texte * nombre (ou nombre * texte) REPETE le texte : |ab| * 3 donne ababab. Le nombre doit etre un entier positif ou nul (0 donne un texte vide). texte * texte : erreur claire.",
-      "Un vecteur/une matrice qui contient du texte ou des elements imbriques, une liste : erreur claire (voir +)."
-    ], exemple: "3 * 4   ->   12\nc(1,2,3) * 2   ->   [1] 2 4 6\nc(1,2) * c(3,4)   ->   [1] 3 8\n|ab| * 3   ->   ababab\n3 * |-|   ->   ---" },
+      "liste * nombre (ou nombre * liste) REPETE la liste : liste(1,2) * 2 donne liste(1,2,1,2). Meme regle pour le nombre ; chaque repetition est une copie independante. liste * liste : erreur claire.",
+      "Un vecteur/une matrice qui contient du texte ou des elements imbriques : erreur claire (voir +)."
+    ], exemple: "3 * 4   ->   12\nc(1,2,3) * 2   ->   [1] 2 4 6\nc(1,2) * c(3,4)   ->   [1] 3 8\n|ab| * 3   ->   ababab\n3 * |-|   ->   ---\nliste(1,2) * 2   ->   liste(1,2,1,2)" },
   { noms: ["/"], categorie: "Operateurs", syntaxe: "a / b", description: [
       "Divise deux nombres.",
-      "Nombre / vecteur, vecteur / nombre et vecteur / vecteur (meme longueur) : element par element. Nombre / matrice : le nombre est divise par chaque element.",
-      "Matrice / nombre et matrice / matrice : erreur claire. Pour une matrice, multiplie par un inverse : m * (1 / n), ou m1 .. inverse(m2).",
+      "Nombre / vecteur, vecteur / nombre et vecteur / vecteur (meme longueur) : element par element. Matrice / nombre : chaque element est divise par le nombre.",
+      "Nombre / matrice et matrice / matrice : erreur claire. Pour utiliser l'inverse d'une matrice, utilise inverse(m) : 2 * inverse(m), ou m1 .. inverse(m2).",
       "Avec du texte (nombre / texte, texte / nombre, texte / texte) : erreur claire. Il en va de meme pour % (reste), ENTI (division entiere) et ^ (puissance) : ils ne marchent qu'entre nombres.",
       "Un vecteur/une matrice qui contient du texte ou des elements imbriques, une liste : erreur claire (voir +)."
-    ], exemple: "10 / 4   ->   2.5\nc(2,4) / 2   ->   [1] 1 2\n8 / c(2,4)   ->   [1] 4 2" },
+    ], exemple: "10 / 4   ->   2.5\nc(2,4) / 2   ->   [1] 1 2\n8 / c(2,4)   ->   [1] 4 2\nm / 2   ->   chaque element de m divise par 2" },
   { noms: ["%"], categorie: "Operateurs", syntaxe: "a % b", description: [
       "Renvoie le reste de la division entiere de a par b."
     ], exemple: "7 % 2   ->   1" },
   { noms: ["."], categorie: "Operateurs", syntaxe: "v1 . v2", description: [
       "Calcule le produit scalaire entre deux vecteurs de meme taille.",
       "Multiplie les elements un par un puis additionne le tout : le resultat est un seul nombre.",
-      "Un vecteur qui contient du texte, une liste : erreur claire. L'operateur .. donne le meme resultat entre deux vecteurs."
+      "Un vecteur qui contient du texte, une liste : erreur claire. C'est l'operateur du produit scalaire : .. est reserve au produit matriciel entre matrices."
     ], exemple: "c(1,2,3) . c(4,5,6)   ->   32" },
   { noms: ["×"], categorie: "Operateurs", syntaxe: "v1 × v2", description: [
       "Calcule le produit vectoriel entre deux vecteurs.",
@@ -7014,7 +7057,7 @@ let aideCommandes = [
   { noms: [".."], categorie: "Operateurs", syntaxe: "m1 .. m2", description: [
       "Multiplie deux matrices selon les regles du produit matriciel (pas element par element).",
       "Le nombre de colonnes de m1 doit etre egal au nombre de lignes de m2.",
-      "Entre deux VECTEURS de meme longueur, .. calcule leur produit scalaire (comme l'operateur .). Une liste, ou un vecteur/une matrice qui contient du texte : erreur claire."
+      "Entre deux VECTEURS, .. donne une erreur claire : pour leur produit scalaire, utilise l'operateur . (v1 . v2). Une liste, ou une matrice qui contient du texte : erreur claire."
     ], exemple: "m1 .. m2" },
   { noms: ["^"], categorie: "Operateurs", syntaxe: "a ^ b", description: [
       "Puissance : a a la puissance b.",
@@ -7499,6 +7542,26 @@ function enregistrerFonctionsBase() {
     fonctionsBase["copier.profond"] = fonctionsExpression["copier.profond"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("copier.profond(x) attend exactement 1 argument");
         return copierValeur(await evaluerElementBrut(args[0], ctxExpr), true, new Map());
+    };
+
+    // enumerer(x) : liste de paires liste(position, element) (position a partir de 1) ; paires(d) : liste de paires liste(cle, valeur).
+    // Pour pou(i, x dan enumerer(l)) et pou(k, v dan paires(d)).
+    fonctionsBase["enumerer"] = fonctionsExpression["enumerer"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("enumerer(x) attend exactement 1 argument");
+        let v = await evaluerElementBrut(args[0], ctxExpr);
+        let seq;
+        if (estVecteur(v)) seq = v;
+        else if (estListe(v)) seq = v.elements;
+        else if (typeof v === 'string') seq = Array.from(v);
+        else if (estDictionnai(v)) seq = Array.from(v.entrees.values(), e => e.cle);
+        else throw new ErreurTypeInvalide("enumerer(...) attend un vecteur, une liste, un texte ou un dictionnai (recu : " + typeOperande(v) + ")");
+        return { __type: "liste", elements: seq.map((x, i) => ({ __type: "liste", elements: [i + 1, x] })) };
+    };
+    fonctionsBase["paires"] = fonctionsExpression["paires"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("paires(d) attend exactement 1 argument");
+        let d = await evaluerElementBrut(args[0], ctxExpr);
+        if (!estDictionnai(d)) throw new ErreurTypeInvalide("paires(...) attend un dictionnai (recu : " + typeOperande(d) + ")");
+        return { __type: "liste", elements: Array.from(d.entrees.values(), e => ({ __type: "liste", elements: [e.cle, e.valeur] })) };
     };
 
     // Texte : decoup, joindr, remplace, cherch, commence, termine.
@@ -11350,22 +11413,33 @@ function analyserEnTetePou(token) {
 
   if (parties.length === 1) {
     let mDan = parties[0].match(/^(\w+)\s+dan\s+(.+)$/);
-    if (!mDan) throw new Error("Syntaxe: pou(var, debut, fin, pas) ou pou(var dan objet)");
+    if (!mDan) throw new Error("Syntaxe: pou(var, debut, fin, pas), pou(var dan objet) ou pou(var1, var2 dan objet)");
     return { type: 'dan', varNom: mDan[1], objetExpr: mDan[2].trim() };
+  }
+
+  if (parties.length >= 2) {
+    // pou(a, b dan objet) : chaque element de objet est DEPAQUETE dans a, b (comme for a, b in ... en Python).
+    let mDanN = parties[parties.length - 1].match(/^([A-Za-z_]\w*)\s+dan\s+([\s\S]+)$/);
+    let premieres = parties.slice(0, -1).map(x => x.trim());
+    if (mDanN && premieres.every(x => /^[A-Za-z_]\w*$/.test(x))) {
+      let noms = premieres.concat([mDanN[1]]);
+      if (new Set(noms).size !== noms.length) throw new Error("pou(a, b dan objet) : les variables doivent avoir des noms differents");
+      return { type: 'danN', varNoms: noms, objetExpr: mDanN[2].trim() };
+    }
   }
 
   if (parties.length === 3 || parties.length === 4) {
     let varNom = parties[0].trim();
-    if (!/^\w+$/.test(varNom)) throw new Error("Syntaxe: pou(var, debut, fin, pas) ou pou(var dan objet)");
+    if (!/^\w+$/.test(varNom)) throw new Error("Syntaxe: pou(var, debut, fin, pas), pou(var dan objet) ou pou(var1, var2 dan objet)");
     let debutExpr = parties[1].trim();
     let finExpr = parties[2].trim();
-    if (debutExpr === "" || finExpr === "") throw new Error("Syntaxe: pou(var, debut, fin, pas) ou pou(var dan objet)");
+    if (debutExpr === "" || finExpr === "") throw new Error("Syntaxe: pou(var, debut, fin, pas), pou(var dan objet) ou pou(var1, var2 dan objet)");
     let parExpr = parties.length === 4 ? parties[3].trim() : null;
-    if (parExpr === "") throw new Error("Syntaxe: pou(var, debut, fin, pas) ou pou(var dan objet)");
+    if (parExpr === "") throw new Error("Syntaxe: pou(var, debut, fin, pas), pou(var dan objet) ou pou(var1, var2 dan objet)");
     return { type: 'plage', varNom, debutExpr, finExpr, parExpr };
   }
 
-  throw new Error("Syntaxe: pou(var, debut, fin, pas) ou pou(var dan objet)");
+  throw new Error("Syntaxe: pou(var, debut, fin, pas), pou(var dan objet) ou pou(var1, var2 dan objet)");
 }
 
 /* ===================== INSTRUCTIONS SIMPLES ===================== */
@@ -12195,7 +12269,7 @@ function verifierSyntaxeProgramme(code, tokens) {
     let m;
 
     if (t === '{') {
-      fatal(l, "Accolade { inattendue : elle doit suivre une instruction de bloc (si, sinon, pou, tanqer, fonc, classe, essai, attrape)");
+      fatal(l, "Accolade { inattendue : elle doit suivre une instruction de bloc (si, sinon, pou, tanqer, fonc, classe, essai, attrape, finalement)");
       break;
     }
     if (t === '}') {
@@ -12204,8 +12278,8 @@ function verifierSyntaxeProgramme(code, tokens) {
       fermes[i] = bloc.kind;
       if (bloc.kind === 'essai') {
         const suivant = tokens[i + 1];
-        if (!suivant || !_RE_ATTRAPE.test(suivant.texte)) {
-          err(bloc.ligne, "essai{...} doit etre suivi directement de attrape{...}, attrape(msg){...} ou attrape(msg, code){...}, sans instruction entre les deux");
+        if (!suivant || !(_RE_ATTRAPE.test(suivant.texte) || suivant.texte === 'finalement')) {
+          err(bloc.ligne, "essai{...} doit etre suivi directement de attrape{...}, attrape(msg){...}, attrape(msg, code){...} ou finalement{...}, sans instruction entre les deux");
         }
       }
       i++;
@@ -12263,10 +12337,15 @@ function verifierSyntaxeProgramme(code, tokens) {
       i = ouvrirBloc('attrape', "attrape", i, l, erreurs.length > nbAvant);
       continue;
     }
+    if (t === 'finalement') {
+      if (!(i > 0 && (fermes[i - 1] === 'essai' || fermes[i - 1] === 'attrape'))) err(l, "finalement doit suivre directement un bloc essai{...} ou attrape{...}, sans instruction entre les deux");
+      i = ouvrirBloc('finalement', "finalement", i, l, erreurs.length > nbAvant);
+      continue;
+    }
     if (t.startsWith('pou(') && t.endsWith(')')) {
       try {
         const e = analyserEnTetePou(t);
-        if (e.type === 'dan') {
+        if (e.type === 'dan' || e.type === 'danN') {
           testExpr(e.objetExpr, l, "objet de pou(... dan ...)");
         } else {
           testExpr(e.debutExpr, l, "debut de pou(...)");
@@ -12520,12 +12599,25 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
         let curseurAttrape = finBlocEssai;
         let tokAttrape = tokens[curseurAttrape];
         let mAttrape = tokAttrape ? tokAttrape.texte.match(/^attrape(?:\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:,\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*)?\))?$/) : null;
-        if (!mAttrape) throw new Error("essai{...} doit etre suivi directement de attrape{...}, attrape(msg){...} ou attrape(msg, code){...}, sans instruction entre les deux");
-        if (!tokens[curseurAttrape+1] || tokens[curseurAttrape+1].texte !== "{") throw new Error("Manque { apres attrape");
-        let finBlocAttrape = trouverFinBloc(tokens, curseurAttrape + 2, ligneActuelle);
+        // finalement{...} : facultatif, apres essai{...} (sans attrape) ou apres attrape{...}
+        let finBlocAttrape = finBlocEssai;
+        if (mAttrape) {
+          if (!tokens[curseurAttrape+1] || tokens[curseurAttrape+1].texte !== "{") throw new Error("Manque { apres attrape");
+          finBlocAttrape = trouverFinBloc(tokens, curseurAttrape + 2, ligneActuelle);
+        }
+        let curseurFinal = finBlocAttrape;
+        let aFinal = !!(tokens[curseurFinal] && tokens[curseurFinal].texte === 'finalement');
+        let finBlocFinal = curseurFinal;
+        if (aFinal) {
+          if (!tokens[curseurFinal+1] || tokens[curseurFinal+1].texte !== "{") throw new Error("Manque { apres finalement");
+          finBlocFinal = trouverFinBloc(tokens, curseurFinal + 2, ligneActuelle);
+        }
+        if (!mAttrape && !aFinal) throw new Error("essai{...} doit etre suivi directement de attrape{...}, attrape(msg){...}, attrape(msg, code){...} ou finalement{...}, sans instruction entre les deux");
         let nomVarErreur = null;
         let nomVarCode = null;
-        if (mAttrape[2]) {
+        if (!mAttrape) {
+          // essai + finalement, sans attrape : rien a recuperer
+        } else if (mAttrape[2]) {
           nomVarErreur = mAttrape[1];
           nomVarCode = mAttrape[2];
         } else if (mAttrape[1] === "code") {
@@ -12535,30 +12627,57 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
         }
 
         let messageErreur = null, codeErreur = null, resEssai = null;
+        let erreurEnAttente = null;   // erreur a relancer APRES le bloc finalement
+        let resPrincipal = null;      // retour / casse / continu a faire suivre APRES le bloc finalement
         try {
           resEssai = await executerTokens(tokens, index + 2, finBlocEssai - 1);
         } catch (e) {
-          if (e instanceof ExecutionInterrompue) throw e;
-          messageErreur = e.message;
-          // e.code peut venir soit d'une ErreurCode levee directement, soit d'une ErreurLangage
-          // qui l'a recopie en remontant la pile (voir le catch de executerTokens plus haut) --
-          // dans les deux cas, e.code est la source de verite ici, pas la classe exacte de e.
-          codeErreur = e.code || "SYNTAXE";
+          // Arret force (bouton Retour) : jamais intercepte, et finalement ne s'execute PAS (l'utilisateur veut arreter).
+          if (e instanceof ExecutionInterrompue && !(e instanceof QuitteScript)) throw e;
+          if (e instanceof QuitteScript || !mAttrape) {
+            // quitte n'est pas rattrape par attrape ; sans attrape, l'erreur attend la fin de finalement.
+            if (!aFinal) throw e;
+            erreurEnAttente = e;
+          } else {
+            messageErreur = e.message;
+            // e.code peut venir soit d'une ErreurCode levee directement, soit d'une ErreurLangage
+            // qui l'a recopie en remontant la pile (voir le catch de executerTokens plus haut) --
+            // dans les deux cas, e.code est la source de verite ici, pas la classe exacte de e.
+            codeErreur = e.code || "SYNTAXE";
+          }
         }
 
-        if (messageErreur === null) {
-          // Pas d'erreur : le bloc attrape est saute integralement.
-          if (resEssai && resEssai.signal) return resEssai;
-          index = finBlocAttrape;
-          continue;
+        if (erreurEnAttente === null) {
+          if (messageErreur === null) {
+            // Pas d'erreur : le bloc attrape est saute integralement.
+            if (resEssai && resEssai.signal) resPrincipal = resEssai;
+          } else {
+            if (nomVarErreur) setVar(nomVarErreur, messageErreur);
+            if (nomVarCode) setVar(nomVarCode, codeErreur);
+            try {
+              let resAttrape = await executerTokens(tokens, curseurAttrape + 2, finBlocAttrape - 1);
+              if (resAttrape.signal) resPrincipal = resAttrape;
+            } catch (e) {
+              if (!aFinal || (e instanceof ExecutionInterrompue && !(e instanceof QuitteScript))) throw e;
+              erreurEnAttente = e;
+            }
+          }
         }
 
-        if (nomVarErreur) setVar(nomVarErreur, messageErreur);
-        if (nomVarCode) setVar(nomVarCode, codeErreur);
-        let resAttrape = await executerTokens(tokens, curseurAttrape + 2, finBlocAttrape - 1);
-        if (resAttrape.signal) return resAttrape;
-        index = finBlocAttrape;
+        if (aFinal) {
+          // finalement s'execute TOUJOURS (erreur rattrapee ou non, retour, casse, continu, quitte). Une erreur levee
+          // dedans remplace l'ancienne ; un retour/casse/continu dedans prend le pas sur celui en attente.
+          let resFinal = await executerTokens(tokens, curseurFinal + 2, finBlocFinal - 1);
+          if (resFinal.signal) return resFinal;
+        }
+        if (erreurEnAttente !== null) throw erreurEnAttente;
+        if (resPrincipal) return resPrincipal;
+        index = finBlocFinal;
         continue;
+      }
+
+      if (token === 'finalement') {
+        throw new Error("finalement doit suivre directement un bloc essai{...} ou attrape{...}, sans instruction entre les deux");
       }
 
       if (token === 'stop') {
@@ -12584,13 +12703,40 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
         if (!tokens[index+1] || tokens[index+1].texte !== "{") throw new Error("Manque { apres pou");
         let finBloc = trouverFinBloc(tokens, index + 2, ligneActuelle);
 
-        if (entete.type === 'dan') {
+        if (entete.type === 'danN') {
+          // pou(a, b, ... dan objet) : chaque element de objet (une liste ou un vecteur de n valeurs) est depaquete dans les n variables.
+          let objetVal = await evalExpr(entete.objetExpr, ctxExpr);
+          let sequence;
+          if (estVecteur(objetVal)) sequence = objetVal;
+          else if (estListe(objetVal)) sequence = objetVal.elements;
+          else if (typeof objetVal === 'string') sequence = Array.from(objetVal);
+          else if (estDictionnai(objetVal)) sequence = Array.from(objetVal.entrees.values(), e => e.cle);
+          else throw new ErreurTypeInvalide("pou(" + entete.varNoms.join(", ") + " dan objet) : objet doit etre un vecteur, une liste, un texte ou un dictionnai");
+          let nbVars = entete.varNoms.length, enTetePou = "pou(" + entete.varNoms.join(", ") + " dan ...)";
+          for (let k = 0; k < sequence.length; k++) {
+            await respirer();
+            let elt = sequence[k];
+            let valeurs = estListe(elt) ? elt.elements : (estVecteur(elt) ? elt : null);
+            if (valeurs === null) {
+              throw new ErreurTypeInvalide(enTetePou + " : l'element " + (k + 1) + " doit etre une liste ou un vecteur de " + nbVars + " valeurs (recu : " + typeOperande(elt) + "). Pour avoir la position de chaque element, utilise pou(i, x dan enumerer(objet)) ; pour les cles et les valeurs d'un dictionnai, pou(k, v dan paires(d)).");
+            }
+            if (valeurs.length !== nbVars) throw new Error(enTetePou + " : l'element " + (k + 1) + " contient " + valeurs.length + " valeur(s), mais " + nbVars + " variables sont attendues");
+            for (let v = 0; v < nbVars; v++) setVar(entete.varNoms[v], valeurs[v]);
+            let res = await executerTokens(tokens, index + 2, finBloc - 1);
+            if (res.signal) {
+              if (res.signal.type === 'casse') break;
+              if (res.signal.type === 'continu') continue;
+              return res;
+            }
+          }
+        } else if (entete.type === 'dan') {
           let objetVal = await evalExpr(entete.objetExpr, ctxExpr);
           let iterable;
           if (estVecteur(objetVal)) iterable = objetVal;
           else if (estListe(objetVal)) iterable = objetVal.elements;
+          else if (typeof objetVal === 'string') iterable = Array.from(objetVal); // chaque lettre
           else if (estDictionnai(objetVal)) iterable = Array.from(objetVal.entrees.values(), e => e.cle); // parcourt les CLES
-          else throw new ErreurTypeInvalide("pou(var dan objet) : objet doit etre un vecteur, une liste ou un dictionnai");
+          else throw new ErreurTypeInvalide("pou(var dan objet) : objet doit etre un vecteur, une liste, un texte ou un dictionnai");
           for (let val of iterable) {
             await respirer();
             setVar(entete.varNom, val);
