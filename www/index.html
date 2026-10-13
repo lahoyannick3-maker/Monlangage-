@@ -1654,11 +1654,21 @@ class ErreurRecursionMax extends ErreurCode {
 class ErreurPermissionRefusee extends ErreurCode {
   constructor(message) { super(message, "PERMISSION_REFUSEE"); }
 }
+// Erreur levee par le programme MLG lui-meme avec lever.erreur valeur. La valeur levee est gardee telle quelle
+// (texte, nombre, dictionnai, instance de classe...) : attrape(e) la recoit sans conversion. Le message
+// affiche si personne n'attrape est cette valeur ecrite comme le ferait affi().
+class ErreurLevee extends ErreurCode {
+  constructor(valeur) {
+    super(String(formatValeur(valeur)), "ERREUR_UTILISATEUR");
+    this.aValeurLevee = true;
+    this.valeurLevee = valeur;
+  }
+}
 class ErreurIndisponibleHorsApp extends ErreurCode {
   constructor(message) { super(message, "INDISPONIBLE_HORS_APP"); }
 }
 
-// Les 13 codes d'erreur sont aussi des CONSTANTES reconnues du langage (comme VRAI/FAUX) :
+// Les 14 codes d'erreur sont aussi des CONSTANTES reconnues du langage (comme VRAI/FAUX) :
 // on peut ecrire si(code==DIVISION_ZERO) directement, sans les guillemets |...|. La valeur
 // de chaque constante est simplement son propre nom (texte), pour rester coherente avec
 // e.code cote interpreteur (voir la hierarchie de classes ci-dessus et essai/attrape plus
@@ -1668,13 +1678,23 @@ const CODES_ERREUR_RECONNUS = new Set([
   "DIVISION_ZERO", "FICHIER_INTROUVABLE", "FICHIER_DEJA_EXISTANT", "FICHIER_INVALIDE",
   "CLE_INTROUVABLE", "VARIABLE_INCONNUE", "FONCTION_INCONNUE", "ATTRIBUT_INCONNU",
   "INDEX_HORS_LIMITE", "TYPE_INVALIDE", "RECURSION_MAX", "PERMISSION_REFUSEE",
-  "INDISPONIBLE_HORS_APP", "SYNTAXE"
+  "INDISPONIBLE_HORS_APP", "ERREUR_UTILISATEUR", "SYNTAXE"
 ]);
 
 /* ===================== EXECUTION "EN DIRECT" (comme R) ===================== */
 // L'executeur est asynchrone mais, sans point de cession explicite, le navigateur
 let executionEnCours = false;
 let demandeArret = false;
+// Erreur en cours de traitement dans un bloc attrape (celle que "lever.erreur" seul relance), sinon null.
+let erreurEnCoursAttrape = null;
+// PORTEE DES VARIABLES (comme Python) : dans une fonction, "~" cree TOUJOURS une variable locale, sauf si le nom
+// a ete declare avec "global" (variable du programme) ou "englobant" (variable de la fonction englobante).
+// baseLocale = position, dans la pile "scopes", de la portee locale de la fonction en cours (0 = programme).
+// declsFrame = {nom: portee-cible} des noms declares global/englobant dans la fonction en cours (ou null).
+let baseLocale = 0;
+let declsFrame = null;
+// PILE D'APPELS : une entree {nom, ligne} par fonction en cours d'execution (ligne = ligne ou elle a ete appelee).
+let pileAppels = [];
 // Timer unique utilise par attendre(). Il est global afin que l'arret d'urgence puisse
 // annuler une attente meme lorsque le moteur execute le script dans la WebView du service.
 let attenteEnCoursMLG = null;
@@ -1725,9 +1745,14 @@ function estValeurFonction(v) {
 }
 function valeurFonctionDepuisNom(nom) {
   let f = fonctions[nom];
-  return { __fonction: true, nom: nom, params: f.params, corps: f.corps };
+  return { __fonction: true, nom: nom, params: f.params, corps: f.corps, environnement: f.environnement };
 }
 function getVar(nom) {
+  if (declsFrame !== null && Object.prototype.hasOwnProperty.call(declsFrame, nom)) {
+    const portee = declsFrame[nom];   // nom declare global/englobant : on lit directement la bonne portee
+    if (Object.prototype.hasOwnProperty.call(portee, nom)) return portee[nom];
+    throw new ErreurVariableInconnue("Variable non definie: " + nom);
+  }
   for (let i = scopes.length - 1; i >= 0; i--) {
     if (Object.prototype.hasOwnProperty.call(scopes[i], nom)) return scopes[i][nom];
   }
@@ -1756,16 +1781,54 @@ function getVar(nom) {
 // jamais d'erreur : sert a appelerFonction() pour savoir si "nom(...)" designe une variable qui
 // contient une valeur-fonction (prioritaire) avant de retomber sur une fonction/classe nommee.
 function chercherVariable(nom) {
+  if (declsFrame !== null && Object.prototype.hasOwnProperty.call(declsFrame, nom)) {
+    const portee = declsFrame[nom];
+    return Object.prototype.hasOwnProperty.call(portee, nom) ? { trouve: true, valeur: portee[nom] } : { trouve: false };
+  }
   for (let i = scopes.length - 1; i >= 0; i--) {
     if (Object.prototype.hasOwnProperty.call(scopes[i], nom)) return { trouve: true, valeur: scopes[i][nom] };
   }
   return { trouve: false };
 }
 function setVar(nom, valeur) {
-  for (let i = scopes.length - 1; i >= 0; i--) {
+  // Nom declare "global" ou "englobant" dans cette fonction : on ecrit dans la portee designee.
+  if (declsFrame !== null && Object.prototype.hasOwnProperty.call(declsFrame, nom)) {
+    declsFrame[nom][nom] = valeur;
+    return;
+  }
+  // Sinon on ne regarde QUE la fonction en cours (de baseLocale jusqu'en haut de la pile, y compris les portees
+  // temporaires des boucles) : une variable de l'exterieur n'est jamais modifiee par accident, "~" cree une
+  // variable locale. Au niveau du programme (baseLocale = 0) c'est comme avant.
+  for (let i = scopes.length - 1; i >= baseLocale; i--) {
     if (Object.prototype.hasOwnProperty.call(scopes[i], nom)) { scopes[i][nom] = valeur; return; }
   }
   scopes[scopes.length - 1][nom] = valeur;
+}
+
+// Libelle d'un appel de fonction pour la pile d'appels, a partir de nomPourErreur (voir executerCorpsFonction).
+function etiquetteAppel(n) {
+  if (!n) return "fonction anonyme";
+  let m;
+  if ((m = n.match(/^La fonction passee a (.+)$/))) return "fonction passee a " + m[1];
+  if ((m = n.match(/^La fonction (.+)$/))) return m[1] + "()";
+  if ((m = n.match(/^Le constructeur de (.+)$/))) return m[1] + "() (constructeur)";
+  return n.replace(/\(\.\.\.\)$/, "()");
+}
+function instantanePileAppels() { return pileAppels.map(f => ({ nom: f.nom, ligne: f.ligne })); }
+// Lignes a afficher SOUS "Erreur ligne N: ..." quand l'erreur n'est pas attrapee : le chemin des appels (vide hors fonction).
+function lignesPileAppels(e) {
+  const pile = e && e.pile;
+  if (!pile || pile.length === 0) return [];
+  const MAX = 10;
+  const lignes = [];
+  let ligneDans = e.ligne;
+  for (let k = pile.length - 1, n = 0; k >= 0; k--, n++) {
+    if (n === MAX) { lignes.push("  ... et " + (pile.length - MAX) + " autre(s) appel(s) plus haut"); return lignes; }
+    lignes.push((n === 0 ? "  dans " : "  appelee par ") + pile[k].nom + " (ligne " + ligneDans + ")");
+    ligneDans = pile[k].ligne;
+  }
+  lignes.push("  appelee depuis le programme (ligne " + ligneDans + ")");
+  return lignes;
 }
 // Resout un chemin d'attributs chaine du style "moi.comptes" ou "a.b.c" (au moins 1 segment,
 // sans limite de profondeur) en suivant les instances de classe une a une, et renvoie la
@@ -4935,6 +4998,10 @@ async function executerCorpsFonction(params, corps, argsVals, nomPourErreur, cla
   // de rajouter pilePrecedente[0] separement. Une fonction normale (fonc nom(...) au niveau
   // global, sans closure) n'a pas cet environnement : comportement inchange, global + local.
   scopes = environnementCapture ? [...environnementCapture, scope] : [pilePrecedente[0], scope];
+  const baseAvant = baseLocale, declAvant = declsFrame;
+  baseLocale = scopes.length - 1;   // la portee locale de CETTE fonction est la derniere
+  declsFrame = null;
+  pileAppels.push({ nom: etiquetteAppel(nomPourErreur), ligne: ligneExpressionCourante });
   let resultat;
   try {
     // Valeurs par defaut pour tout parametre (positionnel OU *nomSeul) encore non rempli.
@@ -4953,6 +5020,9 @@ async function executerCorpsFonction(params, corps, argsVals, nomPourErreur, cla
     resultat = (res.signal && res.signal.type === 'retour') ? res.signal.valeur : undefined;
   } finally {
     scopes = pilePrecedente;
+    baseLocale = baseAvant;
+    declsFrame = declAvant;
+    pileAppels.pop();
     profondeurAppel--;
   }
   return resultat;
@@ -4997,7 +5067,7 @@ async function appelerFonction(nom, argsVals) {
       fonctions = fonctionsPrec; classes = classesPrec;
     }
   }
-  return await executerCorpsFonction(f.params, f.corps, argsVals, "La fonction " + nom);
+  return await executerCorpsFonction(f.params, f.corps, argsVals, "La fonction " + nom, undefined, f.environnement);
 }
 
 // Cree une instance d'une classe declaree avec "classe NomClasse [herite NomParent] { ... }",
@@ -5090,6 +5160,58 @@ async function appelerFonctionPourSuchaq(argExpr, valeur, ctxExpr) {
   return await executerCorpsFonction(f.params, f.corps, [valeur], "La fonction passee a suchaq", undefined, f.environnement);
 }
 
+
+// Vrai si TOUT le texte est une seule paire de parentheses englobantes : "(a+b)" oui, "(a)+(b)" non.
+// Les textes litteraux |...| sont ignores (ils peuvent contenir des parentheses).
+function _estEntreParenthesesEnglobantes(t) {
+  if (t.length < 2 || t[0] !== "(" || t[t.length - 1] !== ")") return false;
+  let prof = 0, dansTexte = false;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (c === "|") { dansTexte = !dansTexte; continue; }
+    if (dansTexte) continue;
+    if (c === "(") prof++;
+    else if (c === ")") { prof--; if (prof === 0 && i < t.length - 1) return false; }
+  }
+  return prof === 0;
+}
+
+// Execute "global nom" / "englobant nom" dans la fonction en cours (voir executerTokens).
+function declarerVariableExterieure(genre, nom) {
+  const locale = scopes[baseLocale];
+  if (Object.prototype.hasOwnProperty.call(locale, nom)) {
+    throw new ErreurCode(nom + " est deja une variable locale (ou un parametre) de cette fonction : ecris \"" + genre + " " + nom + "\" avant de l'utiliser");
+  }
+  let cible = null;
+  if (genre === 'global') {
+    cible = scopes[0];
+  } else {
+    for (let i = baseLocale - 1; i >= 1; i--) {
+      if (Object.prototype.hasOwnProperty.call(scopes[i], nom)) { cible = scopes[i]; break; }
+    }
+    if (cible === null) throw new ErreurCode("englobant " + nom + " : aucune fonction englobante n'a de variable " + nom);
+  }
+  if (declsFrame === null) declsFrame = {};
+  if (Object.prototype.hasOwnProperty.call(declsFrame, nom) && declsFrame[nom] !== cible) {
+    throw new ErreurCode(nom + " est declare a la fois global et englobant dans cette fonction");
+  }
+  declsFrame[nom] = cible;
+}
+
+// Valeur d'un lever.erreur : un seul element = la valeur telle quelle (type conserve) ; plusieurs elements
+// separes par des virgules = un seul texte, comme les arguments de affi()/retour (avec |texte| et saulig).
+async function evaluerValeurLevee(reste, ctxExpr) {
+  let elements = splitTopLevelComma(reste);
+  if (elements.length === 1) return await evalExpr(reste, ctxExpr);
+  let parties = [];
+  for (let elem of elements) {
+    let e = elem.trim();
+    if (e === "saulig") parties.push("\n");
+    else if (estTexteLitteralComplet(e)) parties.push(e.slice(1, -1));
+    else { verifierTexteLitteralFerme(e); parties.push(formatValeur(await evalExpr(e, ctxExpr))); }
+  }
+  return parties.join(" ").replace(/ {2,}/g, " ").replace(/ *\n */g, "\n");
+}
 
 // Vrai si ce texte de token est un "retour" sans valeur (bare), ex: "retour" seul, ou
 // "retour()"/"retour( )" (parentheses vides). Sert a detecter, dans le corps d'une
@@ -5491,6 +5613,8 @@ async function chargerModule(resolu, alias, ligneErreur) {
     throw new ErreurLangage("import(...) : erreur dans le module '" + chemin + "' : " + e.message, ligneErreur);
   }
   let fonctionsPrec = fonctions, classesPrec = classes, scopesPrec = scopes;
+  const baseModPrec = baseLocale, declModPrec = declsFrame;
+  baseLocale = 0; declsFrame = null;   // le code du module s'execute au niveau de SON programme
   pileImportEnCours.push(chemin);
   fonctions = {};
   classes = {};
@@ -5511,6 +5635,8 @@ async function chargerModule(resolu, alias, ligneErreur) {
     fonctions = fonctionsPrec;
     classes = classesPrec;
     scopes = scopesPrec;
+    baseLocale = baseModPrec;
+    declsFrame = declModPrec;
     pileImportEnCours.pop();
   }
 
@@ -6811,7 +6937,7 @@ let aideCommandes = [
       "Intercepte une erreur levee dans le bloc essai au lieu de planter tout le script.",
       "Si une erreur survient dans essai, l'execution du bloc s'arrete et le bloc attrape s'execute a la place.",
       "Si aucune erreur ne survient, le bloc attrape est entierement ignore.",
-      "attrape(msg){...} recupere le message d'erreur (texte) dans la variable msg. attrape{...} (sans parametre) l'ignore.",
+      "attrape(msg){...} recupere le message d'erreur (texte) dans la variable msg, ou la valeur donnee a lever.erreur (n'importe quel type). attrape{...} (sans parametre) l'ignore.",
       "attrape se place juste apres un essai{...}, jamais seul. finalement{...} (facultatif) se place juste apres essai{...} ou apres attrape{...}.",
       "finalement{...} s'execute TOUJOURS apres le bloc : que tout se soit bien passe, qu'une erreur ait ete rattrapee ou non, ou que le bloc se termine par retour, casse, continu ou quitte. Il sert a nettoyer (effacer des boutons, arreter un service, ecrire un journal).",
       "Si une erreur n'est pas rattrapee, elle repart apres finalement. Une erreur levee dans finalement remplace l'ancienne ; un retour, casse ou continu dans finalement prend le pas sur celui en attente.",
@@ -6827,8 +6953,34 @@ let aideCommandes = [
     ], exemple: "ancienne ~ limiteRecursion(2000)\n** ... code qui a besoin de plus de profondeur ... **\nlimiteRecursion(ancienne)" },
   { noms: ["fonc"], categorie: "Controle", syntaxe: "fonc nom(param1, param2){ ... }", description: [
       "Definit une fonction reutilisable, avec un nom et des parametres.",
-      "Le bloc entre accolades s'execute a chaque appel de la fonction."
+      "Le bloc entre accolades s'execute a chaque appel de la fonction.",
+      "VARIABLES : dans une fonction, nom ~ valeur cree toujours une variable LOCALE (comme Python). Lire une variable de l'exterieur marche sans rien ecrire ; pour la MODIFIER, utilise global (variable du programme) ou englobant (variable de la fonction qui contient la tienne).",
+      "Une fonction definie dans une autre garde l'acces aux variables de celle-ci (fermeture), comme une fonction anonyme."
     ], exemple: "fonc carre(x){ retour x*x }\naffi(carre(5))   ->   25" },
+  { noms: ["global"], categorie: "Controle", syntaxe: "global nom1, nom2", description: [
+      "A ecrire au DEBUT d'une fonction : dit que ces noms designent des variables du PROGRAMME (le niveau tout en haut), pas des variables locales.",
+      "REGLE (comme Python) : dans une fonction, nom ~ valeur cree TOUJOURS une variable locale. Sans global, la variable du programme n'est donc jamais modifiee. Lire une variable du programme marche sans rien ecrire.",
+      "Avec global score, score ~ score + 1 modifie le score du programme. Si score n'existe pas encore, il est cree au programme a la premiere affectation.",
+      "Ecrire global apres avoir deja utilise le nom (ou si c'est un parametre) est une erreur claire. Hors d'une fonction, global n'a pas de sens (erreur de syntaxe).",
+      "Pour modifier une variable de la fonction qui CONTIENT la tienne (fonction imbriquee), utilise englobant."
+    ], exemple: "score ~ 0\nfonc gagner(){\n    global score\n    score ~ score + 1\n}\nfonc essai(){\n    score ~ 100        ** variable LOCALE : le score du programme ne change pas **\n}\ngagner()\nessai()\naffi(score)   ->   1" },
+  { noms: ["englobant"], categorie: "Controle", syntaxe: "englobant nom1, nom2", description: [
+      "A ecrire au DEBUT d'une fonction definie a l'interieur d'une autre : dit que ces noms designent des variables de la fonction englobante (la plus proche qui les possede).",
+      "Les fonctions nommees imbriquees gardent une reference vers les variables de la fonction qui les a creees (fermeture) : chaque appel de la fonction englobante a ses propres variables.",
+      "Lire une variable de la fonction englobante marche sans rien ecrire ; pour la MODIFIER, il faut englobant (sinon nom ~ valeur cree une variable locale).",
+      "Erreur claire si aucune fonction englobante n'a cette variable. Pour une variable du programme, utilise global."
+    ], exemple: "fonc compteur(){\n    n ~ 0\n    fonc suivant(){\n        englobant n\n        n ~ n + 1\n        retour n\n    }\n    retour suivant\n}\na ~ compteur()\nb ~ compteur()\naffi(a(), a(), b())   ->   1 2 1" },
+  { noms: ["lever.erreur"], categorie: "Controle", syntaxe: "lever.erreur valeur", description: [
+      "Ecritures acceptees (comme retour) : lever.erreur valeur  /  lever.erreur(valeur)  /  lever.erreur (seul, voir plus bas).",
+      "Leve une erreur depuis ton programme (comme raise en Python) : l'execution s'arrete et remonte jusqu'au premier essai{...} attrape(...){...} qui l'entoure.",
+      "La valeur peut etre de n'importe quel type : texte, nombre, dictionnai, instance de classe... attrape(e) la recoit telle quelle. Les erreurs du langage (division par zero...) restent du texte.",
+      "Plusieurs elements separes par des virgules sont assembles en un seul texte, comme affi() : lever.erreur |age invalide :|, age.",
+      "Si personne n'attrape l'erreur, le script s'arrete avec : Erreur ligne N: suivi de la valeur ecrite comme affi() le ferait.",
+      "Avec attrape(e, code), code vaut ERREUR_UTILISATEUR. Pour reagir selon le TYPE d'erreur, leve une instance de classe et teste-la avec est.instance(e, MaClasse).",
+      "lever.erreur seul (ou lever.erreur()), dans un bloc attrape, RELANCE l'erreur en cours (ex : noter le probleme puis le laisser remonter). En dehors d'un attrape : erreur claire \"rien a relancer\".",
+      "finalement{...} s'execute toujours, meme quand l'erreur n'est pas attrapee."
+    ], exemple: "fonc retirer(solde, montant){\n    si(montant > solde){\n        lever.erreur |Solde insuffisant|\n    }\n    retour solde - montant\n}\nessai {\n    retirer(10, 50)\n} attrape(msg) {\n    affi(|Echec :|, msg)\n}\n\nclasse ErreurSolde { }\nessai {\n    lever.erreur ErreurSolde()\n} attrape(e) {\n    si(est.instance(e, ErreurSolde)){ affi(|solde trop bas|) }\n}" },
+
   { noms: ["retour"], categorie: "Controle", syntaxe: "retour valeur", description: [
       "Arrete l'execution de la fonction et renvoie la valeur donnee comme resultat de l'appel.",
       "La valeur renvoyee peut etre un nombre, mais aussi un vecteur ou une matrice (comme en R).",
@@ -7140,13 +7292,14 @@ let aideCommandes = [
   { noms: ["DIVISION_ZERO", "FICHIER_INTROUVABLE", "FICHIER_DEJA_EXISTANT", "FICHIER_INVALIDE",
       "CLE_INTROUVABLE", "VARIABLE_INCONNUE", "FONCTION_INCONNUE", "ATTRIBUT_INCONNU",
       "INDEX_HORS_LIMITE", "TYPE_INVALIDE", "RECURSION_MAX", "PERMISSION_REFUSEE",
-      "INDISPONIBLE_HORS_APP", "SYNTAXE"], categorie: "Constantes",
+      "INDISPONIBLE_HORS_APP", "ERREUR_UTILISATEUR", "SYNTAXE"], categorie: "Constantes",
     syntaxe: "DIVISION_ZERO / FICHIER_INTROUVABLE / ... (voir description)", description: [
       "Les codes d'erreur du langage (comme VRAI/FAUX) : s'ecrivent sans guillemets |...|.",
       "Utilises avec essai{...} attrape(msg, code){...} pour reagir differemment selon la cause d'une erreur interceptee, sans comparer le texte du message.",
       "Chaque constante vaut son propre nom en texte : code==DIVISION_ZERO compare deux textes identiques.",
       "Combinables avec l'operateur ou : si(code==FICHIER_INTROUVABLE ou code==CLE_INTROUVABLE){ ... }.",
-      "SYNTAXE est le code generique recu pour toute erreur non couverte par les 13 autres (syntaxe, mauvais nombre/type d'argument...)."
+      "SYNTAXE est le code generique recu pour toute erreur non couverte par les 14 autres (syntaxe, mauvais nombre/type d'argument...).",
+      "ERREUR_UTILISATEUR est le code recu quand l'erreur vient de lever.erreur."
     ], exemple: "essai { x ~ 10 / 0 }\nattrape(msg, code) {\n    si(code == DIVISION_ZERO){ affi(|Division par zero evitee|) }\n}" },
 
   { noms: ["saulig"], categorie: "Constantes", syntaxe: "affi(..., saulig, ...)  /  ecrire.cle(cle, ..., saulig, ...)  /  c(..., saulig, ...)", description: [
@@ -12386,6 +12539,29 @@ function verifierSyntaxeProgramme(code, tokens) {
       i++; // utilisable partout (hors ou dans une boucle/fonction) : termine tout le script
       continue;
     }
+    if (/^(global|englobant)\s+[A-Za-z_]/.test(t)) {
+      const genreDecl = t.startsWith('global') ? 'global' : 'englobant';
+      if (!/^(global|englobant)\s+[A-Za-z_]\w*(\s*,\s*[A-Za-z_]\w*)*$/.test(t)) {
+        err(l, genreDecl + " attend des noms de variables separes par des virgules (ex : " + genreDecl + " score, niveau)");
+      } else if (!dansFonction()) {
+        err(l, genreDecl + " n'a de sens qu'a l'interieur d'une fonction (fonc)");
+      } else if (genreDecl === 'englobant' && pile.filter(b => b.kind === 'fonc').length < 2) {
+        err(l, "englobant n'a de sens que dans une fonction DEFINIE a l'interieur d'une autre fonction (celle-ci n'a pas de fonction englobante)");
+      }
+      i++;
+      continue;
+    }
+    if (t === 'lever.erreur' || /^lever\.erreur[\s(]/.test(t)) {
+      // utilisable partout ; sans valeur = relance l'erreur en cours (verifie a l'execution)
+      let reste = t.slice(12).trim();
+      if (_estEntreParenthesesEnglobantes(reste)) reste = reste.slice(1, -1).trim();
+      if (reste !== "") {
+        const msg = _verifierListeValeurs(reste);
+        if (msg !== null) err(l, "valeur de lever.erreur : " + msg);
+      }
+      i++;
+      continue;
+    }
     if (t === 'retour' || /^retour[\s(]/.test(t)) {
       if (!dansFonction()) err(l, "retour n'est utilisable qu'a l'interieur d'une fonction (fonc)");
       const reste = t.slice(6).trim();
@@ -12523,7 +12699,10 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
         if (!tokens[index+1] || tokens[index+1].texte !== "{") throw new ErreurLangage("Manque { apres la definition de fonction " + nomFoncImbrique, ligneActuelle);
         let finBloc = trouverFinBloc(tokens, index + 2, ligneActuelle);
         let corpsFoncImbrique = tokens.slice(index + 2, finBloc - 1);
-        fonctions[nomFoncImbrique] = { params: paramsFoncImbrique, corps: corpsFoncImbrique, aRetourVide: estRetourVideDansCorps(corpsFoncImbrique) };
+        fonctions[nomFoncImbrique] = { params: paramsFoncImbrique, corps: corpsFoncImbrique, aRetourVide: estRetourVideDansCorps(corpsFoncImbrique),
+          // FERMETURE : dans une fonction, elle garde une reference vers les variables de l'endroit ou elle est creee
+          // (comme une fonction anonyme). Chaque appel de la fonction englobante fabrique donc ses propres variables.
+          environnement: (baseLocale > 0 ? scopes.slice() : undefined) };
         index = finBloc;
         continue;
       }
@@ -12627,6 +12806,7 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
         }
 
         let messageErreur = null, codeErreur = null, resEssai = null;
+        let erreurAttrapee = false, valeurErreur = null, exceptionAttrapee = null;
         let erreurEnAttente = null;   // erreur a relancer APRES le bloc finalement
         let resPrincipal = null;      // retour / casse / continu a faire suivre APRES le bloc finalement
         try {
@@ -12640,6 +12820,10 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
             erreurEnAttente = e;
           } else {
             messageErreur = e.message;
+            erreurAttrapee = true;
+            exceptionAttrapee = e;
+            // lever.erreur valeur : attrape recoit la valeur levee telle quelle ; sinon le message (texte).
+            valeurErreur = e.aValeurLevee ? e.valeurLevee : e.message;
             // e.code peut venir soit d'une ErreurCode levee directement, soit d'une ErreurLangage
             // qui l'a recopie en remontant la pile (voir le catch de executerTokens plus haut) --
             // dans les deux cas, e.code est la source de verite ici, pas la classe exacte de e.
@@ -12648,18 +12832,22 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
         }
 
         if (erreurEnAttente === null) {
-          if (messageErreur === null) {
+          if (!erreurAttrapee) {
             // Pas d'erreur : le bloc attrape est saute integralement.
             if (resEssai && resEssai.signal) resPrincipal = resEssai;
           } else {
-            if (nomVarErreur) setVar(nomVarErreur, messageErreur);
+            if (nomVarErreur) setVar(nomVarErreur, valeurErreur);
             if (nomVarCode) setVar(nomVarCode, codeErreur);
+            const erreurAvantAttrape = erreurEnCoursAttrape;
+            erreurEnCoursAttrape = exceptionAttrapee;   // pour "lever.erreur" seul (relance)
             try {
               let resAttrape = await executerTokens(tokens, curseurAttrape + 2, finBlocAttrape - 1);
               if (resAttrape.signal) resPrincipal = resAttrape;
             } catch (e) {
               if (!aFinal || (e instanceof ExecutionInterrompue && !(e instanceof QuitteScript))) throw e;
               erreurEnAttente = e;
+            } finally {
+              erreurEnCoursAttrape = erreurAvantAttrape;
             }
           }
         }
@@ -12818,6 +13006,28 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
         continue;
       }
 
+      // global a, b  /  englobant n : declare, au debut d'une fonction, que ces noms designent des variables de
+      // l'EXTERIEUR (du programme, ou de la fonction englobante) : "~" les modifie au lieu de creer une variable locale.
+      if (/^(global|englobant)\s+[A-Za-z_]\w*(\s*,\s*[A-Za-z_]\w*)*$/.test(token)) {
+        let genre = token.startsWith('global') ? 'global' : 'englobant';
+        if (baseLocale === 0) throw new ErreurCode(genre + " n'a de sens qu'a l'interieur d'une fonction");
+        for (let nomDecl of token.slice(genre.length).split(',').map(x => x.trim())) declarerVariableExterieure(genre, nomDecl);
+        index++;
+        continue;
+      }
+
+      // lever.erreur valeur : leve une erreur que essai/attrape peut attraper (comme raise en Python).
+      // lever.erreur seul (ou lever.erreur()) : relance l'erreur en cours de traitement dans un attrape.
+      if (token === 'lever.erreur' || /^lever\.erreur[\s(]/.test(token)) {
+        let reste = token.slice(12).trim();
+        if (_estEntreParenthesesEnglobantes(reste)) reste = reste.slice(1, -1).trim();
+        if (reste === "") {
+          if (erreurEnCoursAttrape === null) throw new ErreurCode("lever.erreur seul : rien a relancer (il faut etre dans un bloc attrape)");
+          throw erreurEnCoursAttrape;
+        }
+        throw new ErreurLevee(await evaluerValeurLevee(reste, ctxExpr));
+      }
+
       if (token === 'retour' || /^retour[\s(]/.test(token)) {
         let reste = token.slice(6).trim(); // tout ce qui suit "retour"
         // Si l'expression est entierement entre parentheses (retour(...)), on les retire ;
@@ -12856,7 +13066,7 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
       await executerCommandeSimple(token);
       index++;
     } catch (e) {
-      if (e instanceof ErreurLangage) throw e;
+      if (e instanceof ErreurLangage) { if (!e.pile) e.pile = instantanePileAppels(); throw e; }
       // Un arret (bouton d'arret, quitte) n'est PAS une erreur du langage : on le laisse
       // remonter tel quel jusqu'au niveau superieur au lieu de l'emballer avec un numero de ligne.
       if (e instanceof ExecutionInterrompue) throw e;
@@ -12869,6 +13079,8 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
       // a chaque rethrow alors qu'il vient tout juste d'etre leve plus bas dans la pile.
       let erreurLigne = new ErreurLangage(e.message, ligneActuelle);
       if (e instanceof ErreurCode) erreurLigne.code = e.code;
+      if (e && e.aValeurLevee) { erreurLigne.aValeurLevee = true; erreurLigne.valeurLevee = e.valeurLevee; }
+      erreurLigne.pile = instantanePileAppels();   // chemin des appels au moment de l'erreur (affiche si non attrapee)
       throw erreurLigne;
     }
   }
@@ -13723,6 +13935,10 @@ async function executerScriptLocal(script, options = {}) {
   const afficherInviteExecution = options.afficherInviteExecution !== false;
 
   scopes = [{}];
+  baseLocale = 0;
+  declsFrame = null;
+  pileAppels = [];
+  erreurEnCoursAttrape = null;
   profondeurAppel = 0;
   PROFONDEUR_APPEL_MAX = PROFONDEUR_APPEL_MAX_DEFAUT;
   fonctions = {};
@@ -13767,7 +13983,7 @@ async function executerScriptLocal(script, options = {}) {
       if (e.erreurs.length > MAX_ERREURS_AFFICHEES) print("... et " + (e.erreurs.length - MAX_ERREURS_AFFICHEES) + " autre(s) erreur(s) de syntaxe", "erreur");
       print("Le script n'a pas ete execute : aucune instruction n'a ete lancee.", "erreur");
     }
-    else if (e instanceof ErreurLangage) print("Erreur ligne " + e.ligne + ": " + e.message, "erreur");
+    else if (e instanceof ErreurLangage) { print("Erreur ligne " + e.ligne + ": " + e.message, "erreur"); for (const lp of lignesPileAppels(e)) print(lp, "erreur"); }
     else print("Erreur: " + e.message, "erreur");
   }
   arreterIndicateurAttente();
@@ -13914,7 +14130,7 @@ outputDiv.addEventListener("keydown", async function(e) {
       } catch (e) {
         if (e instanceof QuitteScript) { /* fin normale : rien a afficher */ }
         else if (e instanceof ExecutionInterrompue) print("=== EXECUTION ARRETEE ===", "erreur");
-        else if (e instanceof ErreurLangage) print("Erreur ligne " + e.ligne + ": " + e.message, "erreur");
+        else if (e instanceof ErreurLangage) { print("Erreur ligne " + e.ligne + ": " + e.message, "erreur"); for (const lp of lignesPileAppels(e)) print(lp, "erreur"); }
         else print("Erreur: " + e.message, "erreur");
       } finally {
         arreterIndicateurAttente();
