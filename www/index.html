@@ -1875,8 +1875,9 @@ let __cacheTokenizerExpr = new Map();
 //   rf|...| / fr|...|  les deux.
 // Dans un texte normal ou f : \| barre, \\ antislash, \n saut de ligne, \t tabulation, \r retour chariot,
 // \s espace insecable, \uXXXX et \u{...} caractere Unicode. Un antislash suivi d'autre chose reste tel quel.
-// Dans f|...| : {{ ou \{ donnent { ; }} ou \} donnent } ; {} vide interdit ; un | non echappe est interdit
-// dans les accolades (donc pas de texte |...| dedans) ; \| n'y est admis qu'au tout debut ou a la fin.
+// Dans f|...| : {{ ou \{ donnent { ; }} ou \} donnent } ; {} vide interdit ; un texte |...| SEUL est interdit
+// dans les accolades ({|e|}) mais permis en argument d'une fonction ({compte(|bob|)}) ; \| n'y est admis
+// qu'au tout debut ou a la fin des accolades.
 // Dans TOUS les cas un \ protege le caractere suivant pour trouver la barre fermante (\| ne ferme pas).
 
 // Si un texte litteral commence en s[i] (avec prefixe eventuel), renvoie { brut, interp, debutBarre }, sinon null.
@@ -1890,12 +1891,62 @@ function prefixeTexteEn(s, i) {
 }
 // Index de la barre FERMANTE du texte dont la barre ouvrante est en debutBarre (-1 si non ferme).
 function finTexteLitteral(s, debutBarre) {
+  // Dans un f|...| (f, rf, fr), les accolades {expr} peuvent contenir des textes |...| imbriques
+  // (ex: f|{compte(|bob|)}|) : on saute alors toute l'accolade, sans prendre leurs barres pour la fermeture.
+  let interp = barreOuvreTexteF(s, debutBarre);
+  let brut = interp && (s[debutBarre - 1] === 'r' || s[debutBarre - 2] === 'r');
   for (let k = debutBarre + 1; k < s.length; k++) {
     let c = s[k];
-    if (c === '\\') { k++; continue; }
+    if (c === '\\') { if (brut && s[k + 1] === '{') continue; k++; continue; }   // rf|C:\{dossier}| : l'antislash ne protege pas l'accolade
+    if (interp && c === '{') {
+      if (s[k + 1] === '{') { k++; continue; }
+      let j = finAccoladeF(s, k + 1);
+      if (j !== -1) { k = j; continue; }   // accolade mal formee : ancien comportement (le texte finit a la 1re barre), l'erreur est signalee a l'analyse
+      continue;
+    }
     if (c === '|') return k;
   }
   return -1;
+}
+// Vrai si la barre s[k] OUVRE un texte f|...| / rf|...| / fr|...| (prefixe colle a la barre, pas colle a un identifiant).
+function barreOuvreTexteF(s, k) {
+  if (s[k] !== '|') return false;
+  let a = s[k - 1], b = s[k - 2], d;
+  if (a === 'f') d = (b === 'r') ? k - 2 : k - 1;
+  else if (a === 'r' && b === 'f') d = k - 2;
+  else return false;
+  return !(d > 0 && /[a-zA-Z0-9_]/.test(s[d - 1]));
+}
+// Index de l'accolade FERMANTE } de l'expression commencant en debut (juste apres le {), en sautant les textes
+// |...| imbriques (qui peuvent contenir } ou |). -1 si elle n'est pas fermee sur la meme ligne.
+function finAccoladeF(s, debut) {
+  for (let k = debut; k < s.length; k++) {
+    let c = s[k];
+    if (c === '\n') return -1;
+    if (c === '\\' && s[k + 1] === '|') { k++; continue; }   // \| au bord des accolades : simple barre
+    let p = prefixeTexteEn(s, k);
+    if (p) {
+      let f = finTexteLitteral(s, p.debutBarre);
+      if (f === -1) return -1;
+      k = f; continue;
+    }
+    if (c === '}') return k;
+  }
+  return -1;
+}
+// Remplace chaque texte |...| imbrique d'une expression par 0 (pour verifier ce qui reste autour).
+function retirerTextesDansExpr(e) {
+  let out = '';
+  for (let k = 0; k < e.length; k++) {
+    if (e[k] === '\\' && e[k + 1] === '|') { out += '\\|'; k++; continue; }
+    let p = prefixeTexteEn(e, k);
+    if (p) {
+      let f = finTexteLitteral(e, p.debutBarre);
+      if (f !== -1) { out += '0'; k = f; continue; }
+    }
+    out += e[k];
+  }
+  return out;
 }
 // Decode UNE sequence d'echappement commencant par \ en s[i]. Renvoie { texte, len }.
 function decoderUneSequence(s, i) {
@@ -1941,15 +1992,17 @@ function analyserTexteF(contenu, brut) {
     let c = contenu[i];
     if (c === '{') {
       if (contenu[i + 1] === '{') { lit += '{'; i += 2; continue; }
-      let j = contenu.indexOf('}', i + 1);
-      if (j === -1) throw new Error("Texte f|...| : accolade { jamais fermee (pour une accolade ecrite telle quelle, ecris {{ ou \\{ ; attention, un | non echappe ferme le texte : pour une barre, ecris \\|)");
+      let j = finAccoladeF(contenu, i + 1);
+      if (j === -1) throw new Error("Texte f|...| : accolade { jamais fermee (pour une accolade ecrite telle quelle, ecris {{ ou \\{ ; attention, hors des accolades un | non echappe ferme le texte : pour une barre, ecris \\|)");
       let e = contenu.slice(i + 1, j).trim(), gauche = '', droite = '';
       while (e.startsWith('\\|')) { gauche += '\\|'; e = e.slice(2).trim(); }
-      while (e.endsWith('\\|')) { droite = '\\|' + droite; e = e.slice(0, -2).trim(); }
+      while (e.endsWith('\\|') && (e.length - 1 - e.slice(0, -1).replace(/\\+$/, '').length) % 2 === 1) { droite = '\\|' + droite; e = e.slice(0, -2).trim(); }
       if (e === '') throw new Error("Texte f|...| : accolade vide {} (il faut une expression ; pour une accolade ecrite telle quelle, ecris {{ ou \\{)");
-      if (e.includes('\\|')) throw new Error("Texte f|...| : \\| n'est accepte qu'au tout debut ou a la toute fin des accolades, pas au milieu : {" + e + "}");
-      if (e.includes('|')) throw new Error("Texte f|...| : un | non echappe est interdit dans les accolades (pas de texte |...| dedans) : {" + e + "} ; pour afficher une barre, ecris \\| au debut ou a la fin des accolades, ou en dehors");
-      if (e.includes('{')) throw new Error("Texte f|...| : accolade { inattendue dans l'expression : {" + e + "}");
+      if (estTexteLitteralComplet(e)) throw new Error("Texte f|...| : un texte |...| seul n'a pas sa place dans les accolades (elles servent a inserer une variable ou le resultat d'une expression) : {" + e + "} ; un texte reste permis en argument d'une fonction, ex : {compte(|bob|)}");
+      let sans = retirerTextesDansExpr(e);
+      if (sans.includes('\\|')) throw new Error("Texte f|...| : \\| n'est accepte qu'au tout debut ou a la toute fin des accolades, pas au milieu : {" + e + "}");
+      if (sans.includes('|')) throw new Error("Texte f|...| : un | non echappe est interdit dans les accolades hors d'un texte |...| bien ferme : {" + e + "} ; pour afficher une barre, ecris \\| au debut ou a la fin des accolades, ou en dehors");
+      if (sans.includes('{')) throw new Error("Texte f|...| : accolade { inattendue dans l'expression : {" + e + "}");
       lit += bords(gauche); poserLit();
       parts.push({ expr: e });
       lit += bords(droite);
@@ -2674,6 +2727,7 @@ function _analyserSegmentsExpression(str) {
       while (j < n && depth > 0) {
         let c2 = str[j];
         if (dansTexteLocal && c2 === '\\') { j += 2; continue; }
+        if (c2 === '|' && !dansTexteLocal && barreOuvreTexteF(str, j)) { const fF = finTexteLitteral(str, j); if (fF !== -1) { j = fF + 1; continue; } }
         if (c2 === '|') dansTexteLocal = !dansTexteLocal;
         if (!dansTexteLocal) {
           if (c2 === '(') depth++;
@@ -2686,6 +2740,7 @@ function _analyserSegmentsExpression(str) {
       while (j < n) {
         let c2 = str[j];
         if (dansTexteLocal && c2 === '\\') { j += 2; continue; }
+        if (c2 === '|' && !dansTexteLocal && barreOuvreTexteF(str, j)) { const fF = finTexteLitteral(str, j); if (fF !== -1) { j = fF + 1; continue; } }
         if (c2 === '|') { dansTexteLocal = !dansTexteLocal; j++; continue; }
         if (!dansTexteLocal) {
           if (c2 === '(') { depthParens++; }
@@ -3780,6 +3835,7 @@ function trouverDeuxPointsHautNiveau(str) {
   for (let i = 0; i < str.length; i++) {
     let ch = str[i];
     if (dansTexte && ch === '\\') { i++; continue; }
+    if (ch === '|' && !dansTexte && barreOuvreTexteF(str, i)) { const fF = finTexteLitteral(str, i); if (fF !== -1) { i = fF; continue; } }
     if (ch === '|') { dansTexte = !dansTexte; continue; }
     if (dansTexte) continue;
     if (ch === '(' || ch === '[') depth++;
@@ -4310,6 +4366,7 @@ function contenuAppelCouleur(elem) {
   for (let i = debut; i < elem.length; i++) {
     let c = elem[i];
     if (dansTexte && c === '\\') { i++; continue; }
+    if (c === '|' && !dansTexte && barreOuvreTexteF(elem, i)) { const fF = finTexteLitteral(elem, i); if (fF !== -1) { i = fF; continue; } }
     if (c === '|') { dansTexte = !dansTexte; continue; }
     if (dansTexte) continue;
     if (c === '(') prof++;
@@ -5662,6 +5719,7 @@ function _estEntreParenthesesEnglobantes(t) {
   for (let i = 0; i < t.length; i++) {
     const c = t[i];
     if (dansTexte && c === "\\") { i++; continue; }
+    if (c === "|" && !dansTexte && barreOuvreTexteF(t, i)) { const fF = finTexteLitteral(t, i); if (fF !== -1) { i = fF; continue; } }
     if (c === "|") { dansTexte = !dansTexte; continue; }
     if (dansTexte) continue;
     if (c === "(") prof++;
@@ -7858,7 +7916,7 @@ let aideCommandes = [
       "Dans un texte |...|, l'antislash \\ introduit une sequence : \\| une barre |, \\\\ un antislash, \\n saut de ligne, \\t tabulation, \\r retour chariot, \\s espace insecable, \\uXXXX et \\u{...} un caractere Unicode (\\u00e9 donne e accent aigu, \\u{1F600} donne un emoji).",
       "Un antislash suivi d'un autre caractere (ex: \\b) reste tel quel, sans avertissement. Le texte se ferme a la premiere barre NON echappee : un texte ne peut donc pas finir par un seul antislash, ecris \\\\ (|C:\\\\dossier\\\\|).",
       "r|...| : texte BRUT, rien n'est interprete (\\n reste \\ puis n). Pratique pour un chemin : r|C:\\nouveau\\texte|. La barre \\| ne ferme pas le texte mais garde ses deux caracteres.",
-      "f|...| : insere des valeurs. {expression} est remplace par sa valeur, affichee comme dans affi() : f|Total : {prix*qte} euros|. Toute expression est permise SAUF un texte |...| (un | non echappe ferme le texte, donc f|{|e|}| est une erreur).",
+      "f|...| : insere des valeurs. {expression} est remplace par sa valeur, affichee comme dans affi() : f|Total : {prix*qte} euros|. Toute expression est permise, y compris un appel de fonction avec des textes en arguments : f|{compte(|bob|)}|. Seul un texte |...| SEUL dans les accolades est une erreur : f|{|e|}| (les accolades servent a inserer une variable ou un resultat, pas un texte).",
       "Accolade ecrite telle quelle dans un f|...| : {{ ou \\{ pour {, }} ou \\} pour }. Une accolade vide {} ou jamais fermee est une erreur, signalee avant l'execution.",
       "Dans les accolades, \\| n'est accepte qu'au tout debut ou a la toute fin ; il s'affiche tel quel autour de la valeur : f|{\\|e\\|}| affiche |5| si e vaut 5 (comme f|\\|{e}\\||). Au milieu (f|{a\\|+b}|) c'est une erreur.",
       "rf|...| et fr|...| combinent les deux : rf|C:\\{dossier}\\a.txt| garde les antislash et insere {dossier}. r, f, rf et fr doivent etre colles a la barre ouvrante ; une variable nommee r ou f reste utilisable (r ~ 5).",
@@ -12036,35 +12094,6 @@ function rendreGraphiqueVersCanvas(graphique, largeur, hauteur, resolution, them
 }
 // ===== THEMES ET RENDU HORS ECRAN DES GRAPHIQUES (fin) =====
 
-/* ===================== DECOUPAGE DES ELEMENTS DE affi(...) ===================== */
-// Chaque element est separe par une virgule (hors parentheses / hors texte litteral |...|)
-function splitAffiElements(str) {
-  let elems = [], i = 0, n = str.length, buffer = "", depth = 0;
-  while (i < n) {
-    let c = str[i];
-    let pref0 = (depth === 0 && buffer.trim() === "") ? prefixeTexteEn(str, i) : null;
-    if (pref0) {
-      let fin = finTexteLitteral(str, pref0.debutBarre);
-      if (fin === -1) { elems.push(str.slice(i)); i = n; }
-      else { elems.push(str.slice(i, fin + 1)); i = fin + 1; }
-      buffer = "";
-      continue;
-    }
-    if (c === '(') depth++;
-    if (c === ')') depth--;
-    if (c === ',' && depth === 0) {
-      if (buffer.trim() !== "") elems.push(buffer);
-      buffer = "";
-      i++;
-      continue;
-    }
-    buffer += c;
-    i++;
-  }
-  if (buffer.trim() !== "") elems.push(buffer);
-  return elems.map(s => s.trim());
-}
-
 // Decoupe une liste d'arguments separes par des virgules, en ignorant les virgules
 // (et les parentheses) qui se trouvent A L'INTERIEUR d'un texte litteral |...|.
 // Sans ca, un argument comme |i vaut |  ou  | (special)|  pouvait etre coupe au
@@ -12088,9 +12117,14 @@ async function evaluerArgumentAppelStmt(argStr, ctxExpr) {
 function splitTopLevelComma(str) {
   let parts = [], depth = 0, buf = "", dansTexte = false;
   let echappe = false;
-  for (let ch of str) {
+  for (let ix = 0; ix < str.length; ix++) {
+    let ch = str[ix];
     if (echappe) { echappe = false; buf += ch; continue; }
     if (dansTexte && ch === '\\') { echappe = true; buf += ch; continue; }
+    if (ch === '|' && !dansTexte && barreOuvreTexteF(str, ix)) {
+      const fF = finTexteLitteral(str, ix);
+      if (fF !== -1) { buf += str.slice(ix, fF + 1); ix = fF; continue; }
+    }
     if (ch === '|') { dansTexte = !dansTexte; buf += ch; continue; }
     if (!dansTexte) {
       // Les crochets [...] (indexation m[i,j]) comptent aussi comme profondeur : sans ca,
@@ -12176,6 +12210,7 @@ async function executerCommandeSimple(ligne) {
       while (j < ligne.length && depth > 0) {
         let ch = ligne[j];
         if (dansTexteIdx && ch === '\\') { j += 2; continue; }
+        if (ch === '|' && !dansTexteIdx && barreOuvreTexteF(ligne, j)) { const fF = finTexteLitteral(ligne, j); if (fF !== -1) { j = fF + 1; continue; } }
         if (ch === '|') dansTexteIdx = !dansTexteIdx;
         else if (!dansTexteIdx) {
           if (ch === '[') depth++;
@@ -12492,6 +12527,7 @@ async function executerCommandeSimple(ligne) {
       while (k < ligne.length && depth > 0) {
         let c = ligne[k];
         if (dansTexte && c === '\\') { k += 2; continue; }
+        if (c === '|' && !dansTexte && barreOuvreTexteF(ligne, k)) { const fF = finTexteLitteral(ligne, k); if (fF !== -1) { k = fF + 1; continue; } }
         if (c === '|') dansTexte = !dansTexte;
         if (!dansTexte) {
           if (c === '(') depth++;
@@ -12626,6 +12662,10 @@ function retirerCommentaires(code) {
   while (i < n) {
     let c = code[i];
     const esc = ignorerBarre; ignorerBarre = false;
+    if (c === '|' && !esc && !dansTexte && barreOuvreTexteF(code, i)) {
+      let fF = finTexteLitteral(code, i);
+      if (fF !== -1) { resultat += code.slice(i, fF + 1); i = fF + 1; continue; }   // f|...{g(|x|)}...| copie d'un bloc
+    }
     if (c === '|' && !esc) { dansTexte = !dansTexte; resultat += c; i++; continue; }
     if (c === '\\' && dansTexte && !esc) ignorerBarre = true;
     if (!dansTexte && c === '*' && code[i + 1] === '*') {
@@ -12659,10 +12699,15 @@ function parser(code) {
   let sauterEspaces = false;
   let ligneFinBuffer = 1;   // ligne du dernier caractere non blanc de l'instruction en cours
   let ignorerBarre = false;
+  let finF = -1;   // fin d'un texte f|...| en cours (ses accolades peuvent contenir des textes |...| imbriques)
   for (let i = 0; i < code.length; i++) {
     let c = code[i];
     const esc = ignorerBarre; ignorerBarre = false;
-    if (c === '|' && !esc) dansTexte = !dansTexte;
+    if (finF !== -1) { if (i === finF) { finF = -1; dansTexte = false; } }
+    else if (c === '|' && !esc) {
+      dansTexte = !dansTexte;
+      if (dansTexte && barreOuvreTexteF(code, i)) { let fF = finTexteLitteral(code, i); if (fF !== -1) finF = fF; }
+    }
     else if (c === '\\' && dansTexte && !esc) ignorerBarre = true;
     if (!dansTexte && profondeur > 0) {
       if (c === '\r') continue;
@@ -12871,6 +12916,10 @@ function _trouverTexteNonFerme(code) {
     const ch = c[k];
     const esc = ignorerBarre; ignorerBarre = false;
     if (ch === '\n') { ligne++; continue; }
+    if (ch === '|' && !esc && !dansTexte && barreOuvreTexteF(c, k)) {
+      const fF = finTexteLitteral(c, k);
+      if (fF !== -1) { for (let q = k; q < fF; q++) if (c[q] === '\n') ligne++; k = fF; continue; }
+    }
     if (ch === '|' && !esc) { dansTexte = !dansTexte; if (dansTexte) ligneOuverture = ligne; }
     else if (ch === '\\' && dansTexte && !esc) ignorerBarre = true;
   }
@@ -12884,6 +12933,10 @@ function _splitVirgulesHautNiveau(str) {
   for (let k = 0; k < str.length; k++) {
     const c = str[k];
     if (dansTexte && c === '\\') { buf += c + (str[k + 1] || ""); k++; continue; }
+    if (c === '|' && !dansTexte && barreOuvreTexteF(str, k)) {
+      const fF = finTexteLitteral(str, k);
+      if (fF !== -1) { buf += str.slice(k, fF + 1); k = fF; continue; }
+    }
     if (c === '|') { dansTexte = !dansTexte; buf += c; continue; }
     if (!dansTexte) {
       if (c === '(' || c === '[') prof++;
