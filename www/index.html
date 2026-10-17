@@ -1868,6 +1868,130 @@ function estVrai(v) {
 
 /* ===================== EVALUATEUR D'EXPRESSIONS (remplace eval, 100% sûr) ===================== */
 let __cacheTokenizerExpr = new Map();
+// ===================== TEXTES LITTERAUX : prefixes r / f, echappements avec \ =====================
+// Un texte s'ecrit |...|. Prefixes (juste devant la 1re barre, sans espace) :
+//   r|...|  texte BRUT : rien n'est interprete (\n reste \ puis n).
+//   f|...|  insertion de variables : {expression} est remplace par sa valeur.
+//   rf|...| / fr|...|  les deux.
+// Dans un texte normal ou f : \| barre, \\ antislash, \n saut de ligne, \t tabulation, \r retour chariot,
+// \s espace insecable, \uXXXX et \u{...} caractere Unicode. Un antislash suivi d'autre chose reste tel quel.
+// Dans f|...| : {{ ou \{ donnent { ; }} ou \} donnent } ; {} vide interdit ; un | non echappe est interdit
+// dans les accolades (donc pas de texte |...| dedans) ; \| n'y est admis qu'au tout debut ou a la fin.
+// Dans TOUS les cas un \ protege le caractere suivant pour trouver la barre fermante (\| ne ferme pas).
+
+// Si un texte litteral commence en s[i] (avec prefixe eventuel), renvoie { brut, interp, debutBarre }, sinon null.
+function prefixeTexteEn(s, i) {
+  if (s[i] === '|') return { brut: false, interp: false, debutBarre: i };
+  if (s[i] !== 'r' && s[i] !== 'f') return null;
+  let m = /^(rf|fr|r|f)\|/.exec(s.slice(i, i + 3));
+  if (!m) return null;
+  if (i > 0 && /[a-zA-Z0-9_]/.test(s[i - 1])) return null;   // colle a un identifiant : ce n'est pas un prefixe
+  return { brut: m[1].includes('r'), interp: m[1].includes('f'), debutBarre: i + m[1].length };
+}
+// Index de la barre FERMANTE du texte dont la barre ouvrante est en debutBarre (-1 si non ferme).
+function finTexteLitteral(s, debutBarre) {
+  for (let k = debutBarre + 1; k < s.length; k++) {
+    let c = s[k];
+    if (c === '\\') { k++; continue; }
+    if (c === '|') return k;
+  }
+  return -1;
+}
+// Decode UNE sequence d'echappement commencant par \ en s[i]. Renvoie { texte, len }.
+function decoderUneSequence(s, i) {
+  let d = s[i + 1];
+  if (d === undefined) return { texte: '\\', len: 1 };
+  switch (d) {
+    case '|': return { texte: '|', len: 2 };
+    case '\\': return { texte: '\\', len: 2 };
+    case 'n': return { texte: '\n', len: 2 };
+    case 't': return { texte: '\t', len: 2 };
+    case 'r': return { texte: '\r', len: 2 };
+    case 's': return { texte: '\u00A0', len: 2 };
+    case 'u': {
+      let m = /^\\u\{([0-9a-fA-F]{1,6})\}/.exec(s.slice(i, i + 10));
+      if (m) {
+        let cp = parseInt(m[1], 16);
+        if (cp <= 0x10FFFF && !(cp >= 0xD800 && cp <= 0xDFFF)) return { texte: String.fromCodePoint(cp), len: m[0].length };
+        return { texte: '\\', len: 1 };
+      }
+      m = /^\\u([0-9a-fA-F]{4})/.exec(s.slice(i, i + 6));
+      if (m) return { texte: String.fromCharCode(parseInt(m[1], 16)), len: 6 };
+      return { texte: '\\', len: 1 };
+    }
+    default: return { texte: '\\', len: 1 };   // sequence inconnue : gardee telle quelle
+  }
+}
+function decoderEchappements(contenu) {
+  if (contenu.indexOf('\\') === -1) return contenu;
+  let out = '', i = 0;
+  while (i < contenu.length) {
+    if (contenu[i] !== '\\') { out += contenu[i]; i++; continue; }
+    let r = decoderUneSequence(contenu, i);
+    out += r.texte; i += r.len;
+  }
+  return out;
+}
+// Analyse (statique, sans evaluer) le contenu d'un f|...| : renvoie une liste de { lit } et { expr }.
+function analyserTexteF(contenu, brut) {
+  let parts = [], lit = '', i = 0, n = contenu.length;
+  const poserLit = () => { if (lit !== '') { parts.push({ lit: lit }); lit = ''; } };
+  const bords = (b) => brut ? b : b.replace(/\\\|/g, '|');   // \| au bord des accolades : une barre (texte normal) ou tel quel (brut)
+  while (i < n) {
+    let c = contenu[i];
+    if (c === '{') {
+      if (contenu[i + 1] === '{') { lit += '{'; i += 2; continue; }
+      let j = contenu.indexOf('}', i + 1);
+      if (j === -1) throw new Error("Texte f|...| : accolade { jamais fermee (pour une accolade ecrite telle quelle, ecris {{ ou \\{ ; attention, un | non echappe ferme le texte : pour une barre, ecris \\|)");
+      let e = contenu.slice(i + 1, j).trim(), gauche = '', droite = '';
+      while (e.startsWith('\\|')) { gauche += '\\|'; e = e.slice(2).trim(); }
+      while (e.endsWith('\\|')) { droite = '\\|' + droite; e = e.slice(0, -2).trim(); }
+      if (e === '') throw new Error("Texte f|...| : accolade vide {} (il faut une expression ; pour une accolade ecrite telle quelle, ecris {{ ou \\{)");
+      if (e.includes('\\|')) throw new Error("Texte f|...| : \\| n'est accepte qu'au tout debut ou a la toute fin des accolades, pas au milieu : {" + e + "}");
+      if (e.includes('|')) throw new Error("Texte f|...| : un | non echappe est interdit dans les accolades (pas de texte |...| dedans) : {" + e + "} ; pour afficher une barre, ecris \\| au debut ou a la fin des accolades, ou en dehors");
+      if (e.includes('{')) throw new Error("Texte f|...| : accolade { inattendue dans l'expression : {" + e + "}");
+      lit += bords(gauche); poserLit();
+      parts.push({ expr: e });
+      lit += bords(droite);
+      i = j + 1; continue;
+    }
+    if (c === '}') { lit += '}'; i += (contenu[i + 1] === '}') ? 2 : 1; continue; }
+    if (!brut && c === '\\') {
+      let d = contenu[i + 1];
+      if (d === '{' || d === '}') { lit += d; i += 2; continue; }
+      let r = decoderUneSequence(contenu, i);
+      lit += r.texte; i += r.len; continue;
+    }
+    lit += c; i++;
+  }
+  poserLit();
+  return parts;
+}
+async function evaluerTexteF(parts, ctx) {
+  let out = '';
+  for (let p of parts) {
+    if (p.lit !== undefined) out += p.lit;
+    else out += await formatPourAffichage(await evalExpr(p.expr, ctx));
+  }
+  return out;
+}
+// Valeur d'un texte litteral COMPLET s (voir estTexteLitteralComplet) : prefixes, echappements, insertions.
+async function valeurTexteLitteral(s, ctx) {
+  let p = prefixeTexteEn(s, 0);
+  let contenu = s.slice(p.debutBarre + 1, -1);
+  if (p.interp) return await evaluerTexteF(analyserTexteF(contenu, p.brut), ctx);
+  return p.brut ? contenu : decoderEchappements(contenu);
+}
+// Version sans evaluation (sites synchrones) : refuse f|...| avec un message clair.
+function valeurTexteLitteralSimple(s) {
+  let p = prefixeTexteEn(s, 0);
+  let contenu = s.slice(p.debutBarre + 1, -1);
+  if (p.interp) throw new Error("f|...| n'est pas utilisable ici");
+  return p.brut ? contenu : decoderEchappements(contenu);
+}
+// Ecrit une valeur texte comme texte MLG litteral equivalent (pour fabriquer du code) : \ et | proteges.
+function texteMlgLitteral(v) { return "|" + String(v).replace(/\\/g, "\\\\").replace(/\|/g, "\\|") + "|"; }
+
 function tokenizerExpr(str) {
   // La tokenization est purement syntaxique (ne depend jamais des valeurs des
   // variables), donc on peut mettre en cache le resultat par chaine source.
@@ -1902,7 +2026,7 @@ function tokenizerExpr(str) {
       tokens.push({ type: 'num', v: parseFloat(str.slice(i, j)) });
       i = j; continue;
     }
-    if (/[a-zA-Z_]/.test(c)) {
+    if (/[a-zA-Z_]/.test(c) && !((c === 'r' || c === 'f') && prefixeTexteEn(str, i))) {
       // MOD et ENTI sont des mots-operateurs : on les reconnait meme colles a des
       // chiffres (3mod4, 3MOD4, 3enti4, 3ENTI4) sans obliger a mettre des espaces.
       // On ne les reconnait pas si c'est le debut d'un identifiant plus long
@@ -1931,12 +2055,16 @@ function tokenizerExpr(str) {
       else tokens.push({ type: 'ident', v: mot });
       i = j; continue;
     }
-    if (c === '|') {
-      let j = i + 1;
-      while (j < n && str[j] !== '|') j++;
-      if (j >= n) throw new Error("Texte litteral |...| non ferme dans l'expression : \"" + str + "\"");
-      tokens.push({ type: 'str', v: str.slice(i + 1, j) });
-      i = j + 1; continue;
+    if (c === '|' || ((c === 'r' || c === 'f') && prefixeTexteEn(str, i))) {
+      let pref = prefixeTexteEn(str, i);
+      let fin = finTexteLitteral(str, pref.debutBarre);
+      if (fin < 0) throw new Error("Texte litteral |...| non ferme dans l'expression : \"" + str + "\"");
+      let contenu = str.slice(pref.debutBarre + 1, fin);
+      let tok = { type: 'str', raw: str.slice(i, fin + 1) };
+      if (pref.interp) { tok.f = analyserTexteF(contenu, pref.brut); tok.v = contenu; }
+      else tok.v = pref.brut ? contenu : decoderEchappements(contenu);
+      tokens.push(tok);
+      i = fin + 1; continue;
     }
     throw new Error("Caractere inattendu '" + c + "' a la position " + (i + 1) + " dans l'expression : \"" + str + "\"");
   }
@@ -1966,7 +2094,7 @@ function detokeniserExpr(tokens) {
       case 'or': return 'ou';
       case 'not': return 'non';
       case 'dan': return 'dan';
-      case 'str': return '|' + t.v + '|';
+      case 'str': return t.raw !== undefined ? t.raw : '|' + t.v + '|';
       default: throw new Error("Corps de fonction anonyme invalide : \"" + _decrireJetonExpr(t) + "\" n'est pas autorise ici (une fonction anonyme fonc(...){...} ne contient qu'une seule expression)");
     }
   });
@@ -2228,7 +2356,8 @@ function demanderSaisieConsole(message) {
     ligne.className = "ligneCommande";
     let msg = document.createElement("span");
     msg.className = "invite";
-    msg.textContent = message ? message + " " : "";
+    // message peut contenir des marqueurs de couleur (couleur(...) dans entr(...)) : un <span> par couleur
+    if (message) remplirTexteColore(msg, message + " ", null); else msg.textContent = "";
     msg.contentEditable = "false";
     let input = document.createElement("span");
     input.className = "entrInput";
@@ -2301,7 +2430,8 @@ function demanderSaisieConsoleSecrete(message, styleChar) {
     ligne.className = "ligneCommande";
     let msg = document.createElement("span");
     msg.className = "invite";
-    msg.textContent = message ? message + " " : "";
+    // message peut contenir des marqueurs de couleur (couleur(...) dans entr(...)) : un <span> par couleur
+    if (message) remplirTexteColore(msg, message + " ", null); else msg.textContent = "";
     msg.contentEditable = "false";
     let input = document.createElement("span");
     input.className = "entrInput";
@@ -2494,6 +2624,12 @@ function _analyserSegmentsExpression(str) {
     if (texteAccum !== "") { segments.push({ type: 'texte', valeur: texteAccum }); texteAccum = ""; }
   }
   while (i < n) {
+    // Un texte litteral (avec prefixe r/f eventuel) est copie tel quel : rien n'y est extrait comme appel de fonction.
+    let prefT = prefixeTexteEn(str, i);
+    if (prefT) {
+      let finT = finTexteLitteral(str, prefT.debutBarre);
+      if (finT !== -1) { texteAccum += str.slice(i, finT + 1); i = finT + 1; continue; }
+    }
     let precedent = i > 0 ? str[i-1] : "";
     let nomTrouve = null, mRacine = null, mFonc = null, forceNatif = false, decalage = 0;
     if (!/[a-zA-Z0-9_]/.test(precedent)) {
@@ -2521,6 +2657,14 @@ function _analyserSegmentsExpression(str) {
       }
     }
     if (nomTrouve === "trier" && precedent === ".") nomTrouve = null; // l.trier(...) = methode, pas la fonction trier(...)
+    if (nomTrouve !== null && METHODES_TEXTE.has(nomTrouve) && !forceNatif) {
+      // texte.decoup(...), l.joindr(...)... = methodes (evaluees par le parseur), pas les fonctions decoup(...), joindr(...)...
+      // Les espaces entre le '.' et le nom sont permis. Pour lon : seulement .lon() sans argument
+      // (u.lon(v) reste un produit scalaire avec lon(v)).
+      let k = i - 1;
+      while (k >= 0 && /\s/.test(str[k])) k--;
+      if (k >= 0 && str[k] === "." && (nomTrouve !== "lon" || /^lon\(\s*\)/.test(str.slice(i)))) nomTrouve = null;
+    }
     if (mFonc) {
       // Fonction anonyme fonc(params) corps : voir commentaire original -- on saute tout le
       // bloc (parametres + corps) SANS y toucher, en suivant la profondeur de parentheses/
@@ -2529,6 +2673,7 @@ function _analyserSegmentsExpression(str) {
       let depth = 1, dansTexteLocal = false;
       while (j < n && depth > 0) {
         let c2 = str[j];
+        if (dansTexteLocal && c2 === '\\') { j += 2; continue; }
         if (c2 === '|') dansTexteLocal = !dansTexteLocal;
         if (!dansTexteLocal) {
           if (c2 === '(') depth++;
@@ -2540,6 +2685,7 @@ function _analyserSegmentsExpression(str) {
       dansTexteLocal = false;
       while (j < n) {
         let c2 = str[j];
+        if (dansTexteLocal && c2 === '\\') { j += 2; continue; }
         if (c2 === '|') { dansTexteLocal = !dansTexteLocal; j++; continue; }
         if (!dansTexteLocal) {
           if (c2 === '(') { depthParens++; }
@@ -2561,6 +2707,8 @@ function _analyserSegmentsExpression(str) {
       let debutArgs = i + decalage + longueurNom + 1;
       let depth = 1, j = debutArgs;
       while (j < n && depth > 0) {
+        let pT = prefixeTexteEn(str, j);   // un texte (|...|, f|...|...) peut contenir des parentheses : on le saute
+        if (pT) { let fT = finTexteLitteral(str, pT.debutBarre); if (fT !== -1) { j = fT + 1; continue; } }
         if (str[j] === '(') depth++;
         if (str[j] === ')') depth--;
         j++;
@@ -2583,6 +2731,8 @@ function _analyserSegmentsExpression(str) {
       let debutArgs = i + decalage + nomTrouve.length + 1;
       let depth = 1, j = debutArgs;
       while (j < n && depth > 0) {
+        let pT = prefixeTexteEn(str, j);   // un texte (|...|, f|...|...) peut contenir des parentheses : on le saute
+        if (pT) { let fT = finTexteLitteral(str, pT.debutBarre); if (fT !== -1) { j = fT + 1; continue; } }
         if (str[j] === '(') depth++;
         if (str[j] === ')') depth--;
         j++;
@@ -2878,7 +3028,7 @@ function _construireArbreRapide(tokens) {
     let t = peek();
     if (!t) return DECLINE;
     if (t.type === 'num') { next(); return { t: 'num', v: t.v }; }
-    if (t.type === 'str') { next(); return { t: 'str', v: t.v }; }
+    if (t.type === 'str') { if (t.f) return DECLINE; next(); return { t: 'str', v: t.v }; }
     if (t.type === '(') {
       next();
       let v = or_();
@@ -3046,15 +3196,19 @@ function evalExprSansEntreeSync(str, ctx) {
     // rencontree ici (a.methode(...)) a besoin d'executer un corps entier : on delegue au
     // parseur lent.
     while (true) {
+      // Methodes a nom pointe (avant.dernier, apres.dernier, garder.contenant, enlever.contenant) : parseur lent.
+      if (nomMethodePointee(tokens, pos) !== null && methodeTexteApplicable(valeur)) throw new __BesoinAsync();
       // Methodes d'un dictionnai (d.lire/cles/valeurs) : evaluees par le parseur lent (arguments a evaluer).
       if (peek() && peek().type === 'op' && peek().v === '.' &&
           tokens[pos + 1] && tokens[pos + 1].type === 'ident' &&
           tokens[pos + 2] && tokens[pos + 2].type === '(') {
         if (estDictionnai(valeur)) {
-          if (!METHODES_DICTIONNAI.has(tokens[pos + 1].v)) throw new Error(messageMethodeDictionnaiInconnue(tokens[pos + 1].v));
+          if (!METHODES_DICTIONNAI.has(tokens[pos + 1].v) && !METHODES_TEXTE.has(tokens[pos + 1].v)) throw new Error(messageMethodeDictionnaiInconnue(tokens[pos + 1].v));
           throw new __BesoinAsync();
         }
         if (tokens[pos + 1].v === 'trier' && (estListe(valeur) || estVecteur(valeur))) throw new Error(MSG_TRIER_EXPRESSION);
+        // Methodes de texte/liste (decoup, joindr, remplace, cherch, commence, termine, lon) : arguments a evaluer -> parseur lent.
+        if (METHODES_TEXTE.has(tokens[pos + 1].v) && methodeTexteApplicable(valeur)) throw new __BesoinAsync();
       }
       // Attribut/methode d'une instance de classe : a.nom (lecture), a.methode(...) (appel).
       if (peek() && peek().type === 'op' && peek().v === '.' &&
@@ -3096,11 +3250,7 @@ function evalExprSansEntreeSync(str, ctx) {
         next(); // '.'
         let methode = next().v; // miniscul / majuscul / suprespac
         next(); next(); // '(' ')'
-        if (typeof valeur === 'number') continue; // rien a convertir : ignore silencieusement
-        if (typeof valeur !== 'string') throw new ErreurTypeInvalide("." + methode + "() attend du texte");
-        if (methode === 'miniscul') valeur = valeur.toLowerCase();
-        else if (methode === 'majuscul') valeur = valeur.toUpperCase();
-        else if (methode === 'suprespac') valeur = valeur.trim();
+        valeur = appliquerNettoyageTexte(valeur, methode); // texte, liste ou vecteur (un nombre est laisse tel quel)
         continue;
       }
       // Indexation sur le resultat d'un attribut/appel precedent : moi.comptes[i], f()[1]...
@@ -3129,7 +3279,7 @@ function evalExprSansEntreeSync(str, ctx) {
     let t = peek();
     if (!t) throw new Error("Expression incomplete");
     if (t.type === 'num') { next(); return t.v; }
-    if (t.type === 'str') { next(); return t.v; }
+    if (t.type === 'str') { if (t.f) throw new __BesoinAsync(); next(); return t.v; }
     if (t.type === '(') {
       next(); let v = parseOr();
       if (!peek() || peek().type !== ')') throw new Error("Parenthese fermante manquante");
@@ -3218,6 +3368,22 @@ async function evalExprSansEntreeAsync(str, ctx) {
   // meme ~ que les affectations), soit une expression normale. On ne consomme le nom+tilde
   // que si ce motif EXACT est present juste ici, pour ne jamais gener un identifiant qui serait
   // simplement une variable normale passee en argument positionnel.
+  // Lit les arguments d'une methode de texte jusqu'a ')' (la '(' est deja consommee). saulig (saut de ligne) est
+  // accepte comme argument, comme dans decoup(texte, saulig).
+  async function lireArgsMethodeTexte(nomMeth) {
+    let argsM = [];
+    let lireUn = async () => {
+      if (peek() && peek().type === 'ident' && peek().v === 'saulig' && tokens[pos + 1] && (tokens[pos + 1].type === ',' || tokens[pos + 1].type === ')')) { next(); return "\n"; }
+      return await lireArgument();
+    };
+    if (!(peek() && peek().type === ')')) {
+      argsM.push(await lireUn());
+      while (peek() && peek().type === ',') { next(); argsM.push(await lireUn()); }
+    }
+    if (!peek() || peek().type !== ')') throw new Error("Parenthese fermante manquante pour l'appel de " + nomMeth);
+    next();
+    return argsM;
+  }
   async function lireArgument() {
     if (peek() && peek().type === 'ident' && tokens[pos + 1] && tokens[pos + 1].type === 'tilde') {
       let nomArg = next().v; // ident
@@ -3305,11 +3471,19 @@ async function evalExprSansEntreeAsync(str, ctx) {
     // enchaines sur le resultat, dans n'importe quel ordre : moi.comptes[i].nom,
     // moi.comptes[i].verifier(pin), v[i].texte(), etc.
     while (true) {
+      // Methodes a nom pointe : t.avant.dernier(sep), t.apres.dernier(sep), l.garder.contenant(x), l.enlever.contenant(x).
+      let nomPointe = methodeTexteApplicable(valeur) ? nomMethodePointee(tokens, pos) : null;
+      if (nomPointe !== null) {
+        next(); next(); next(); next(); next(); // '.' nom '.' suffixe '('
+        let argsP = await lireArgsMethodeTexte(nomPointe);
+        valeur = appliquerMethodeTexte(valeur, nomPointe, argsP);
+        continue;
+      }
       // Methodes d'un dictionnai dans une expression : d.lire(cle, defaut), d.cles(), d.valeurs().
       if (peek() && peek().type === 'op' && peek().v === '.' &&
           tokens[pos + 1] && tokens[pos + 1].type === 'ident' &&
           tokens[pos + 2] && tokens[pos + 2].type === '(') {
-        if (estDictionnai(valeur)) {
+        if (estDictionnai(valeur) && (METHODES_DICTIONNAI.has(tokens[pos + 1].v) || !METHODES_TEXTE.has(tokens[pos + 1].v))) {
           let nomMeth = tokens[pos + 1].v;
           if (!METHODES_DICTIONNAI.has(nomMeth)) throw new Error(messageMethodeDictionnaiInconnue(nomMeth));
           next(); next(); next(); // '.' nomMethode '('
@@ -3324,6 +3498,14 @@ async function evalExprSansEntreeAsync(str, ctx) {
           continue;
         }
         if (tokens[pos + 1].v === 'trier' && (estListe(valeur) || estVecteur(valeur))) throw new Error(MSG_TRIER_EXPRESSION);
+        // Methodes de texte/liste : texte.decoup(sep), l.joindr(sep), t.avant(sep, n), t.entre(a, b), l.garder(x), x.lon()...
+        if (METHODES_TEXTE.has(tokens[pos + 1].v) && methodeTexteApplicable(valeur)) {
+          let nomMeth = tokens[pos + 1].v;
+          next(); next(); next(); // '.' nomMethode '('
+          let argsM = await lireArgsMethodeTexte(nomMeth);
+          valeur = appliquerMethodeTexte(valeur, nomMeth, argsM);
+          continue;
+        }
       }
       // Attribut/methode d'une instance de classe : a.nom (lecture), a.methode(...) (appel,
       // execute reellement le corps de la methode, moi = l'instance elle-meme).
@@ -3373,11 +3555,7 @@ async function evalExprSansEntreeAsync(str, ctx) {
         next(); // '.'
         let methode = next().v; // miniscul / majuscul / suprespac
         next(); next(); // '(' ')'
-        if (typeof valeur === 'number') continue;
-        if (typeof valeur !== 'string') throw new ErreurTypeInvalide("." + methode + "() attend du texte");
-        if (methode === 'miniscul') valeur = valeur.toLowerCase();
-        else if (methode === 'majuscul') valeur = valeur.toUpperCase();
-        else if (methode === 'suprespac') valeur = valeur.trim();
+        valeur = appliquerNettoyageTexte(valeur, methode); // texte, liste ou vecteur (un nombre est laisse tel quel)
         continue;
       }
       // Indexation sur le resultat d'un attribut/appel precedent : moi.comptes[i], f()[1]...
@@ -3406,7 +3584,7 @@ async function evalExprSansEntreeAsync(str, ctx) {
     let t = peek();
     if (!t) throw new Error("Expression incomplete");
     if (t.type === 'num') { next(); return t.v; }
-    if (t.type === 'str') { next(); return t.v; }
+    if (t.type === 'str') { next(); return t.f ? await evaluerTexteF(t.f, ctx) : t.v; }
     if (t.type === '(') {
       next(); let v = await parseOr();
       if (!peek() || peek().type !== ')') throw new Error("Parenthese fermante manquante");
@@ -3515,7 +3693,7 @@ function estListe(v) { return v !== null && typeof v === 'object' && v.__type ==
 /* ===================== DICTIONNAI (cle -> valeur) ===================== */
 // Un dictionnai est { __type:"dictionnai", entrees: Map(cleNormalisee -> {cle, valeur}) } : l'ordre
 // d'insertion est conserve. Les cles sont du TEXTE ou des NOMBRES (1 et entier(1) designent la meme cle).
-const METHODES_DICTIONNAI = new Set(["lire", "cles", "valeurs"]);
+const METHODES_DICTIONNAI = new Set(["lire", "cles", "valeurs", "lon"]);
 const MSG_TRIER_EXPRESSION = ".trier() modifie la liste sur place et ne renvoie rien : ecris-le seul sur sa ligne (l.trier()), ou utilise trier(l) pour obtenir une nouvelle liste triee";
 function estDictionnai(v) { return v !== null && typeof v === 'object' && v.__type === 'dictionnai'; }
 function descriptionCleDico(cle) { return typeof cle === 'string' ? "|" + cle + "|" : String(cle); }
@@ -3573,7 +3751,7 @@ function formatDictionnai(d) {
 }
 function messageMethodeDictionnaiInconnue(nom) {
   if (nom === "supri") return ".supri(...) modifie le dictionnai et ne renvoie rien : ecris-le seul sur sa ligne (d.supri(cle))";
-  return "Methode inconnue pour un dictionnai : " + nom + " (methodes : lire, cles, valeurs, supri)";
+  return "Methode inconnue pour un dictionnai : " + nom + " (methodes : lire, cles, valeurs, lon, supri)";
 }
 // d.lire(cle, defaut) / d.cles() / d.valeurs() : args = valeurs DEJA evaluees.
 function appliquerMethodeDictionnai(d, methode, args, nom) {
@@ -3590,6 +3768,10 @@ function appliquerMethodeDictionnai(d, methode, args, nom) {
     if (args.length !== 0) throw new Error(nom + "." + methode + "() n'accepte aucun argument");
     return methode === "cles" ? dicoCles(d) : dicoValeurs(d);
   }
+  if (methode === "lon") {
+    if (args.length !== 0) throw new Error(nom + ".lon() n'accepte aucun argument");
+    return d.entrees.size;
+  }
   throw new Error(messageMethodeDictionnaiInconnue(methode));
 }
 // Position du premier ':' de HAUT NIVEAU (hors texte |...|, parentheses, crochets) : cle: valeur.
@@ -3597,6 +3779,7 @@ function trouverDeuxPointsHautNiveau(str) {
   let depth = 0, dansTexte = false;
   for (let i = 0; i < str.length; i++) {
     let ch = str[i];
+    if (dansTexte && ch === '\\') { i++; continue; }
     if (ch === '|') { dansTexte = !dansTexte; continue; }
     if (dansTexte) continue;
     if (ch === '(' || ch === '[') depth++;
@@ -3776,6 +3959,261 @@ function exigerTexte(v, nomCmd, quoi) {
   if (typeof v !== 'string') throw new ErreurTypeInvalide(nomCmd + " : " + quoi + " doit etre du texte (recu : " + nomNature(v) + ")");
   return v;
 }
+
+/* ===================== METHODES DE TEXTE : texte.decoup(...), l.joindr(...), t.avant(...), l.garder(...)... =====================
+   Chaque commande existe en methode enchainable : texte.suprespac().majuscul().decoup().joindr(|-|).lon()
+   Les six commandes decoup, joindr, remplace, cherch, commence, termine existent AUSSI en fonction (ancienne forme,
+   plus documentee) ; les deux formes partagent le meme code (les fonctions coeur ci-dessous).
+   Methodes a nom pointe : avant.dernier, apres.dernier, garder.contenant, enlever.contenant. */
+const METHODES_TEXTE = new Set(["decoup", "joindr", "remplace", "cherch", "commence", "termine", "lon",
+                                "avant", "apres", "entre", "garder", "enlever"]);
+const METHODES_POINTEES = new Map([["avant", "dernier"], ["apres", "dernier"], ["garder", "contenant"], ["enlever", "contenant"]]);
+function egalValeursSimples(a, b) {
+  if (a === b) return true;
+  if ((typeof a === 'number' || typeof a === 'bigint') && (typeof b === 'number' || typeof b === 'bigint')) return Number(a) === Number(b);
+  if (a !== null && b !== null && typeof a === 'object' && typeof b === 'object') return formatValeur(a) === formatValeur(b);
+  return false;
+}
+function estNombreArg(v) { return typeof v === 'number' || typeof v === 'bigint'; }
+// Nombre ENTIER exige (limite de decoup, position de avant/apres) : sinon erreur claire.
+function exigerEntier(v, nomCmd, quoi) {
+  if (typeof v === 'bigint') return Number(v);
+  if (typeof v !== 'number' || !Number.isInteger(v)) {
+    throw new ErreurTypeInvalide(nomCmd + " : " + quoi + " doit etre un nombre entier (recu : " + (typeof v === 'number' ? String(v) : nomNature(v)) + ")");
+  }
+  return v;
+}
+// Arguments (), (sep), (nombre) ou (sep, nombre) : un nombre SEUL est la limite/position (separateur par defaut = les
+// espaces) ; pour couper sur un chiffre il faut l'ecrire en texte : |1|.
+function analyserSepEtNombre(args, nomCmd, libelleNombre) {
+  if (args.length > 2) throw new Error(nomCmd + " : 2 arguments au plus (separateur, " + libelleNombre.replace(/^la /, "") + ")");
+  let sep, nombre;
+  if (args.length === 1) {
+    if (estNombreArg(args[0])) nombre = exigerEntier(args[0], nomCmd, libelleNombre);
+    else sep = exigerTexte(args[0], nomCmd, "le separateur");
+  } else if (args.length === 2) {
+    sep = exigerTexte(args[0], nomCmd, "le separateur");
+    nombre = exigerEntier(args[1], nomCmd, libelleNombre);
+  }
+  return { sep: sep, n: nombre };
+}
+// decoup : sep === undefined -> coupe sur les espaces ; limite === undefined -> pas de limite.
+// limite = nombre de morceaux AU PLUS, le dernier garde le reste ; limite <= 0 -> liste vide.
+function coreDecoup(t, sep, limite) {
+  if (limite !== undefined && limite < 1) return { __type: "liste", elements: [] };
+  let morceaux;
+  if (sep === undefined) {
+    let reste = t.trim();
+    morceaux = [];
+    while (reste !== "") {
+      if (limite !== undefined && morceaux.length === limite - 1) { morceaux.push(reste); reste = ""; break; }
+      let m = /\s+/.exec(reste);
+      if (!m) { morceaux.push(reste); reste = ""; break; }
+      morceaux.push(reste.slice(0, m.index));
+      reste = reste.slice(m.index + m[0].length);
+    }
+  } else if (sep === "") {
+    let lettres = Array.from(t);
+    morceaux = (limite !== undefined && lettres.length > limite) ? lettres.slice(0, limite - 1).concat([lettres.slice(limite - 1).join("")]) : lettres;
+  } else {
+    morceaux = t.split(sep);
+    if (limite !== undefined && morceaux.length > limite) morceaux = morceaux.slice(0, limite - 1).concat([morceaux.slice(limite - 1).join(sep)]);
+  }
+  return { __type: "liste", elements: morceaux };
+}
+function coreJoindr(l, sep, nomCmd) {
+  let elements = estListe(l) ? l.elements : (estVecteur(l) ? l : null);
+  if (elements === null) throw new ErreurTypeInvalide(nomCmd + " : la valeur doit etre une liste ou un vecteur (recu : " + nomNature(l) + ")");
+  return elements.map(e => formatValeur(e)).join(sep === undefined ? "" : sep);
+}
+function coreRemplace(t, ancien, nouveau) {
+  if (ancien === "") throw new Error("remplace : le texte a remplacer ('ancien') ne peut pas etre vide");
+  return t.split(ancien).join(nouveau);
+}
+// cherch : position (a partir de 1) du morceau dans un texte, ou d'une valeur dans une liste/un vecteur ; 0 si absent.
+function coreCherch(cible, m, nomCmd) {
+  if (typeof cible === 'string') return cible.indexOf(exigerTexte(m, nomCmd, "le morceau cherche")) + 1;
+  let elements = estListe(cible) ? cible.elements : (estVecteur(cible) ? cible : null);
+  if (elements === null) throw new ErreurTypeInvalide(nomCmd + " : la valeur doit etre un texte, une liste ou un vecteur (recu : " + nomNature(cible) + ")");
+  return elements.findIndex(e => egalValeursSimples(e, m)) + 1;
+}
+function coreLon(v) {
+  if (estListe(v)) return v.elements.length;
+  if (estDictionnai(v)) return v.entrees.size;
+  if (estVecteur(v)) return v.length;
+  if (estMatrice(v)) return v.donnees.length;
+  if (typeof v === 'string') return v.length; // nombre de caracteres, coherent avec texte[i]
+  return 1;
+}
+// Applique f a un texte ; a CHAQUE element texte d'une liste/d'un vecteur (un seul niveau, les autres elements restent
+// tels quels) ; un nombre est laisse tel quel si ignorerNombre ; tout le reste -> erreur claire.
+function surTexteOuElements(v, f, msgErreur, ignorerNombre) {
+  if (typeof v === 'string') return f(v);
+  if (estListe(v)) return { __type: "liste", elements: v.elements.map(e => typeof e === 'string' ? f(e) : e) };
+  if (estVecteur(v)) return v.map(e => typeof e === 'string' ? f(e) : e);
+  if (ignorerNombre && typeof v === 'number') return v; // rien a convertir : ignore silencieusement
+  throw new ErreurTypeInvalide(msgErreur);
+}
+// miniscul / majuscul / suprespac sur un texte, une liste ou un vecteur.
+function appliquerNettoyageTexte(v, methode) {
+  let f = methode === 'miniscul' ? (t => t.toLowerCase()) : methode === 'majuscul' ? (t => t.toUpperCase()) : (t => t.trim());
+  return surTexteOuElements(v, f, "." + methode + "() attend du texte, une liste ou un vecteur", true);
+}
+// Occurrences du separateur, de gauche a droite SANS chevauchement. sep === undefined : suites d'espaces.
+function occurrencesSep(t, sep) {
+  let occ = [];
+  if (sep === undefined) {
+    let re = /\s+/g, m;
+    while ((m = re.exec(t)) !== null) occ.push({ debut: m.index, fin: m.index + m[0].length });
+  } else {
+    let i = 0;
+    while (true) {
+      let a = t.indexOf(sep, i);
+      if (a < 0) break;
+      occ.push({ debut: a, fin: a + sep.length });
+      i = a + sep.length;
+    }
+  }
+  return occ;
+}
+// avant/apres : coupe au n-ieme separateur (position, defaut 1) ou au DERNIER. Separateur absent (ou position trop
+// grande) : avant = tout le texte, apres = texte vide. position <= 0 : texte vide. Sans separateur : espaces, ignores
+// au debut et a la fin comme decoup().
+function coreAvantApres(t, sens, sep, position, dernier) {
+  let s = sep === undefined ? t.trim() : t;
+  let occ = occurrencesSep(s, sep);
+  let o;
+  if (dernier) o = occ.length > 0 ? occ[occ.length - 1] : null;
+  else {
+    let pos = position === undefined ? 1 : position;
+    if (pos < 1) return "";
+    o = pos <= occ.length ? occ[pos - 1] : null;
+  }
+  if (sens === "avant") return o === null ? s : s.slice(0, o.debut);
+  return o === null ? "" : s.slice(o.fin);
+}
+// entre : TOUS les morceaux compris entre un debut et le fin suivant (liste, vide si rien).
+function coreEntre(t, debut, fin) {
+  let morceaux = [], i = 0;
+  while (true) {
+    let a = t.indexOf(debut, i);
+    if (a < 0) break;
+    let b = t.indexOf(fin, a + debut.length);
+    if (b < 0) break;
+    morceaux.push(t.slice(a + debut.length, b));
+    i = b + fin.length;
+  }
+  return { __type: "liste", elements: morceaux };
+}
+// Un element "contient" x : texte -> morceau de texte ; liste/vecteur -> un de ses elements est egal a x ; dictionnai ->
+// a la cle x ; nombre ou autre -> ne contient rien. Un seul niveau (jamais plus profond).
+function elementContient(e, valeurs) {
+  if (typeof e === 'string') return valeurs.some(x => (typeof x === 'string' || estNombreArg(x)) && e.includes(String(x)));
+  if (estListe(e)) return valeurs.some(x => e.elements.some(y => egalValeursSimples(y, x)));
+  if (estVecteur(e)) return valeurs.some(x => e.some(y => egalValeursSimples(y, x)));
+  if (estDictionnai(e)) return valeurs.some(x => dicoAvoirCle(e, x));
+  return false;
+}
+// garder / enlever (garder = true/false) et leur version .contenant. Renvoie le MEME type qu'au depart.
+// Liste/vecteur : egalite (ou "contient"). Texte : lettres des valeurs. Dictionnai : cles.
+function coreFiltrer(v, valeurs, garder, contenant, nomCmd) {
+  if (valeurs.length === 0) throw new Error(nomCmd + " : il faut au moins une valeur");
+  if (contenant && valeurs.some(x => x === "")) throw new Error(nomCmd + " : le texte cherche ne peut pas etre vide");
+  if (typeof v === 'string') {
+    if (contenant) throw new ErreurTypeInvalide(nomCmd + " s'applique a une liste, un vecteur ou un dictionnai (pas a un texte)");
+    let lettres = new Set();
+    for (let x of valeurs) for (let c of Array.from(exigerTexte(x, nomCmd, "la valeur"))) lettres.add(c);
+    return Array.from(v).filter(c => lettres.has(c) === garder).join("");
+  }
+  if (estDictionnai(v)) {
+    let cles = null;
+    if (!contenant) { cles = new Set(); for (let x of valeurs) cles.add(normaliserCleDico(x, nomCmd)); }
+    let m = new Map();
+    for (let [k, e] of v.entrees) {
+      let ok = contenant
+        ? valeurs.some(x => typeof e.cle === 'string' && (typeof x === 'string' || estNombreArg(x)) && e.cle.includes(String(x)))
+        : cles.has(k);
+      if (ok === garder) m.set(k, { cle: e.cle, valeur: e.valeur });
+    }
+    return { __type: "dictionnai", entrees: m };
+  }
+  let elements = estListe(v) ? v.elements : (estVecteur(v) ? v : null);
+  if (elements === null) throw new ErreurTypeInvalide(nomCmd + " s'applique a une liste, un vecteur, un dictionnai ou un texte (recu : " + nomNature(v) + ")");
+  let gardes = elements.filter(e => (contenant ? elementContient(e, valeurs) : valeurs.some(x => egalValeursSimples(e, x))) === garder);
+  return estListe(v) ? { __type: "liste", elements: gardes } : gardes;
+}
+// Si les tokens a pos forment '.' nom '.' suffixe '(' pour une methode a nom pointe (avant.dernier, garder.contenant...),
+// renvoie son nom complet ("avant.dernier") ; sinon null.
+function nomMethodePointee(tokens, pos) {
+  let t0 = tokens[pos], t1 = tokens[pos + 1], t2 = tokens[pos + 2], t3 = tokens[pos + 3], t4 = tokens[pos + 4];
+  if (!t0 || t0.type !== 'op' || t0.v !== '.' || !t1 || t1.type !== 'ident' || !METHODES_POINTEES.has(t1.v)) return null;
+  if (!t2 || t2.type !== 'op' || t2.v !== '.' || !t3 || t3.type !== 'ident' || t3.v !== METHODES_POINTEES.get(t1.v)) return null;
+  if (!t4 || t4.type !== '(') return null;
+  return t1.v + "." + t3.v;
+}
+// Instruction seule var.majuscul() : seule la variable DONNEE recoit le resultat (texte, liste ou vecteur). Si une autre
+// variable designait la meme liste (w ~ q), elle n'est PAS modifiee : q.majuscul() ne change pas w, et inversement.
+function ecrireNettoyageTexte(chemin, cible, valeur) {
+  assignerCheminValeur(chemin, valeur);
+}
+// Vrai si .nom(...) s'applique a cette valeur : ni une instance de classe, ni un module (qui ont leurs propres methodes).
+function methodeTexteApplicable(valeur) {
+  return valeur === null || typeof valeur !== 'object' || (valeur.__classe === undefined && valeur.__module === undefined);
+}
+// valeur.methode(args) : args = valeurs DEJA evaluees. m peut etre pointe : "avant.dernier", "garder.contenant"...
+function appliquerMethodeTexte(v, m, args) {
+  if (args.some(a => a !== null && typeof a === 'object' && a.__argNomme !== undefined)) {
+    throw new Error("." + m + "(...) n'accepte pas d'argument nomme");
+  }
+  let n = args.length;
+  function attend(min, max, forme) {
+    if (n < min || n > max) throw new Error("." + forme + " : mauvais nombre d'arguments (recu : " + n + ")");
+  }
+  if (m === "lon") { attend(0, 0, "lon()"); return coreLon(v); }
+  if (m === "joindr") {
+    attend(0, 1, "joindr(separateur)");
+    return coreJoindr(v, n === 1 ? exigerTexte(args[0], "joindr", "le separateur") : undefined, "joindr");
+  }
+  if (m === "cherch") { attend(1, 1, "cherch(morceau)"); return coreCherch(v, args[0], "cherch"); }
+  if (m === "garder" || m === "enlever" || m === "garder.contenant" || m === "enlever.contenant") {
+    return coreFiltrer(v, args, m.startsWith("garder"), m.endsWith(".contenant"), m);
+  }
+  if (m === "avant" || m === "apres" || m === "avant.dernier" || m === "apres.dernier") {
+    let sens = m.startsWith("avant") ? "avant" : "apres", dernier = m.endsWith(".dernier"), sep, position;
+    if (dernier) {
+      attend(0, 1, m + "(separateur)");
+      if (n === 1) sep = exigerTexte(args[0], m, "le separateur");
+    } else {
+      let r = analyserSepEtNombre(args, m, "la position");
+      sep = r.sep; position = r.n;
+    }
+    if (sep === "") throw new Error(m + " : le separateur ne peut pas etre vide");
+    return surTexteOuElements(v, t => coreAvantApres(t, sens, sep, position, dernier),
+      m + " : la valeur avant le point doit etre du texte, une liste ou un vecteur (recu : " + nomNature(v) + ")", false);
+  }
+  if (m === "remplace") {
+    attend(2, 2, "remplace(ancien, nouveau)");
+    let ancien = exigerTexte(args[0], "remplace", "'ancien'"), nouveau = exigerTexte(args[1], "remplace", "'nouveau'");
+    if (ancien === "") throw new Error("remplace : le texte a remplacer ('ancien') ne peut pas etre vide");
+    return surTexteOuElements(v, t => coreRemplace(t, ancien, nouveau),
+      "remplace : la valeur avant le point doit etre du texte, une liste ou un vecteur (recu : " + nomNature(v) + ")", false);
+  }
+  // decoup / entre / commence / termine : s'appliquent a un TEXTE
+  if (typeof v !== 'string') throw new ErreurTypeInvalide(m + " : la valeur avant le point doit etre du texte (recu : " + nomNature(v) + ")");
+  if (m === "decoup") {
+    let r = analyserSepEtNombre(args, "decoup", "la limite");
+    return coreDecoup(v, r.sep, r.n);
+  }
+  if (m === "entre") {
+    attend(2, 2, "entre(debut, fin)");
+    let debut = exigerTexte(args[0], "entre", "le debut"), fin = exigerTexte(args[1], "entre", "la fin");
+    if (debut === "" || fin === "") throw new Error("entre : le debut et la fin ne peuvent pas etre vides");
+    return coreEntre(v, debut, fin);
+  }
+  if (m === "commence") { attend(1, 1, "commence(debut)"); return v.startsWith(exigerTexte(args[0], "commence", "le debut")); }
+  if (m === "termine") { attend(1, 1, "termine(fin)"); return v.endsWith(exigerTexte(args[0], "termine", "la fin")); }
+  throw new Error("Methode de texte inconnue : " + m);
+}
 // Nom (texte) de la nature d'une valeur : "texte", "nombre", "booleen", "vecteur", "matrice" ou "inconnu".
 // Utilise par natu() et par les messages d'erreur de conver.*/est.*.
 function nomNature(v) {
@@ -3841,19 +4279,74 @@ function appliquerRacineN(n, v) {
 // ce sont des expressions (concatenation avec +, repetition avec *...), evaluees normalement.
 // Un nombre IMPAIR de | (ex. |a|b|) reste lu comme un texte contenant un | (ancien comportement).
 function estTexteLitteralComplet(s) {
-  if (s.length < 2 || s[0] !== '|' || s[s.length - 1] !== '|') return false;
-  let parties = s.split('|');                 // ['', texte1, entre, texte2, ..., '']
-  let nbBarres = parties.length - 1;
-  if (nbBarres === 2 || nbBarres % 2 === 1) return true;
-  for (let i = 2; i < parties.length - 1; i += 2) {   // ce qui se trouve ENTRE deux textes
-    if (!/^[\s\w.()\[\]]*[+\-*\/][\s\w.()\[\]+\-*\/]*$/.test(parties[i])) return true;   // pas un operateur : texte contenant des |
-  }
-  return false;
+  let p = prefixeTexteEn(s, 0);
+  if (!p) return false;
+  return finTexteLitteral(s, p.debutBarre) === s.length - 1;
 }
 function verifierTexteLitteralFerme(s) {
-  if (s.length > 0 && s[0] === '|' && !estTexteLitteralComplet(s) && (s.split('|').length - 1) % 2 === 1) {
+  let p = prefixeTexteEn(s, 0);
+  if (p && finTexteLitteral(s, p.debutBarre) === -1) {
     throw new Error("Texte litteral non ferme (il manque le '|' final) : " + s);
   }
+}
+
+// ===================== couleur(...) EN LIGNE dans affi(...) / entr(...) =====================
+// affi(couleur(|vert|), |orange|, couleur(), |blanc|) : un element qui est exactement un appel
+// couleur(...) ne s'affiche pas, il change la couleur du texte QUI SUIT (dans le meme affi/entr),
+// comme la commande couleur(...) seule. Le changement dure ensuite, comme couleur(...) seule
+// (jusqu'au prochain couleur(...) ou la fin du script).
+// Pour que la couleur survive au assemblage des parties en UN texte, on glisse dans le texte un
+// marqueur auto-suffisant : MARQ_DEB + couleurCSS + MARQ_FIN (couleur vide = couleur normale).
+// Ces caracteres (zone privee Unicode) ne servent qu'entre l'assemblage et l'affichage.
+const MARQ_COUL_DEB = "\uE000", MARQ_COUL_FIN = "\uE001";
+const RE_MARQ_COUL = /\uE000([^\uE000\uE001]*)\uE001/g;
+function retirerMarqueursCouleur(t) { return String(t).replace(RE_MARQ_COUL, ""); }
+// Si elem est EXACTEMENT un appel couleur(...) : renvoie son contenu (texte entre parentheses, "" si
+// vide). Sinon null.
+function contenuAppelCouleur(elem) {
+  let m = /^couleur\s*\(/.exec(elem);
+  if (!m) return null;
+  let debut = m[0].length - 1, prof = 0, dansTexte = false;
+  for (let i = debut; i < elem.length; i++) {
+    let c = elem[i];
+    if (dansTexte && c === '\\') { i++; continue; }
+    if (c === '|') { dansTexte = !dansTexte; continue; }
+    if (dansTexte) continue;
+    if (c === '(') prof++;
+    else if (c === ')') {
+      prof--;
+      if (prof === 0) return i === elem.length - 1 ? elem.slice(debut + 1, i).trim() : null;
+    }
+  }
+  return null;
+}
+// Execute un element couleur(...) d'une liste d'arguments (change couleurConsole) et renvoie le
+// marqueur a placer devant le texte suivant, ou null si elem n'est pas un appel couleur(...).
+async function marqueurCouleurEnLigne(elem, ctxExpr) {
+  let inner = contenuAppelCouleur(elem);
+  if (inner === null) return null;
+  if (inner === "") couleurConsole = null;
+  else couleurConsole = zoneCouleur(await evalExpr(inner, ctxExpr), "couleur()");
+  return MARQ_COUL_DEB + (couleurConsole || "") + MARQ_COUL_FIN;
+}
+// Remplit un element DOM avec un texte pouvant contenir des marqueurs de couleur : un <span>
+// par morceau de couleur differente. couleurDepart : couleur CSS (ou null) valable jusqu'au 1er marqueur.
+function remplirTexteColore(parent, texte, couleurDepart) {
+  let dernier = 0, couleur = couleurDepart, m;
+  const ajouter = (morceau, coul) => {
+    if (morceau === "") return;
+    let sp = document.createElement("span");
+    if (coul) sp.style.color = coul;
+    sp.textContent = morceau;
+    parent.appendChild(sp);
+  };
+  RE_MARQ_COUL.lastIndex = 0;
+  while ((m = RE_MARQ_COUL.exec(texte)) !== null) {
+    ajouter(texte.slice(dernier, m.index), couleur);
+    couleur = m[1] || null;
+    dernier = m.index + m[0].length;
+  }
+  ajouter(texte.slice(dernier), couleur);
 }
 
 // Evalue un argument brut en une valeur (utilise partout ou une liste d'arguments peut
@@ -3865,7 +4358,7 @@ function verifierTexteLitteralFerme(s) {
 async function evaluerElementBrut(argStr, ctxExpr) {
   let s = (argStr || "").trim();
   if (s === "saulig") return "\n";
-  if (estTexteLitteralComplet(s)) return s.slice(1, -1);
+  if (estTexteLitteralComplet(s)) return (await valeurTexteLitteral(s, ctxExpr));
   verifierTexteLitteralFerme(s);
   return await evalExpr(s, ctxExpr);
 }
@@ -5168,6 +5661,7 @@ function _estEntreParenthesesEnglobantes(t) {
   let prof = 0, dansTexte = false;
   for (let i = 0; i < t.length; i++) {
     const c = t[i];
+    if (dansTexte && c === "\\") { i++; continue; }
     if (c === "|") { dansTexte = !dansTexte; continue; }
     if (dansTexte) continue;
     if (c === "(") prof++;
@@ -5207,7 +5701,7 @@ async function evaluerValeurLevee(reste, ctxExpr) {
   for (let elem of elements) {
     let e = elem.trim();
     if (e === "saulig") parties.push("\n");
-    else if (estTexteLitteralComplet(e)) parties.push(e.slice(1, -1));
+    else if (estTexteLitteralComplet(e)) parties.push((await valeurTexteLitteral(e, ctxExpr)));
     else { verifierTexteLitteralFerme(e); parties.push(formatValeur(await evalExpr(e, ctxExpr))); }
   }
   return parties.join(" ").replace(/ {2,}/g, " ").replace(/ *\n */g, "\n");
@@ -5352,7 +5846,7 @@ async function extraireAttributsPartages(tokens, debut, fin, ctxExpr) {
     if (mAttr) {
       let nomAttr = mAttr[1], valeurExpr = mAttr[2].trim();
       let valeur;
-      if (estTexteLitteralComplet(valeurExpr)) valeur = valeurExpr.slice(1, -1);
+      if (estTexteLitteralComplet(valeurExpr)) valeur = (await valeurTexteLitteral(valeurExpr, ctxExpr));
       else valeur = await evalExpr(valeurExpr, ctxExpr);
       attrs[nomAttr] = valeur;
     }
@@ -6584,19 +7078,21 @@ let aideCommandes = [
   { noms: ["affi"], categorie: "Base", syntaxe: "affi(...)", description: [
       "Affiche du texte litteral lorsque le texte est entre |...|.",
       "Affiche aussi la valeur d'une expression (variable, calcul, vecteur, matrice...).",
-      "Dans affi(), chaque element a afficher est separe par une virgule (,)."
+      "Dans affi(), chaque element a afficher est separe par une virgule (,).",
+      "Un element couleur(...) place dans affi(...) ne s'affiche pas : il colore le texte qui le suit (voir couleur). Exemple : affi(couleur(|vert|), |OK|, couleur(), |fin|)."
     ], exemple: "affi(|Resultat :|, 2+2)   ->   affiche : Resultat : 4" },
   { noms: ["entr"], categorie: "Base", syntaxe: "entr(...)", description: [
       "Affiche le message entre |...| puis attend que l'utilisateur tape une reponse.",
       "Comme affi(), plusieurs elements separes par une virgule (,) peuvent etre combines dans le message.",
       "Renvoie ce que l'utilisateur a tape.",
-      "Convertit automatiquement en nombre si possible, sinon renvoie du texte."
+      "Renvoie toujours du texte brut, tel que tape -- jamais converti en nombre (ex: -5, 12, 2.5 ou 2+3 restent tous du texte). Utiliser entr.nombr() si un nombre est necessaire.",
+      "Le message peut contenir des couleur(...) : entr(couleur(|jaune|), |Ton nom :|, couleur()) (voir couleur)."
     ], exemple: "age ~ entr(|Quel age as-tu, |, prenom, |?|)" },
   { noms: ["entr.secret"], categorie: "Base", syntaxe: "entr.secret(|texte|, sty~|*|)", description: [
       "Comme entr(), mais la frappe n'est jamais affichee en clair (utile pour un mot de passe ou un code PIN).",
       "Sans sty~... : rien n'est affiche du tout pendant la frappe (pas meme un caractere de masquage).",
       "Avec sty~... : affiche ce caractere (choisi par le codeur, ex: |*| ou |.|) autant de fois que de caracteres deja tapes.",
-      "Convertit automatiquement en nombre si possible, sinon renvoie du texte (comme entr())."
+      "Convertit automatiquement en nombre si possible, sinon renvoie du texte."
     ], exemple: "pin ~ entr.secret(|Code secret:|, sty~|*|)\nsecret ~ entr.secret(|Mot de passe:|)   ** rien affiche du tout **" },
   { noms: ["entr.nombr"], categorie: "Base", syntaxe: "entr.nombr(...)", description: [
       "Comme entr(), mais sans masquer la frappe : redemande automatiquement en boucle tant que la saisie n'est pas un nombre valide.",
@@ -6848,8 +7344,9 @@ let aideCommandes = [
     ], exemple: "vibre(80)\nvibre(liste(0, 200, 100, 200))" },
   { noms: ["couleur"], categorie: "Console", syntaxe: "couleur(nom)   ou   couleur()", description: [
       "Change la couleur du texte des prochains affi(...), jusqu'au prochain couleur(...). nom : rouge, vert, bleu, jaune, orange, violet, rose, cyan, blanc, noir, gris, marron, ou |#rrggbb| (les memes que dans la zone de dessin).",
-      "couleur() sans argument revient a la couleur normale. effa() ne la change pas, et elle est remise a zero au debut et a la fin de chaque script. Ne change que le texte affiche apres l'appel : ce qui est deja a l'ecran garde sa couleur."
-    ], exemple: "couleur(|vert|)\naffi(|Bravo !|)\ncouleur(|#ff8800|)\naffi(|Attention|)\ncouleur()\naffi(|Texte normal|)" },
+      "couleur() sans argument revient a la couleur normale. effa() ne la change pas, et elle est remise a zero au debut et a la fin de chaque script. Ne change que le texte affiche apres l'appel : ce qui est deja a l'ecran garde sa couleur.",
+      "couleur(...) peut aussi se mettre DANS affi(...) et entr(...) (et toutes les variantes d'entr) : il ne s'affiche pas et colore ce qui le suit, jusqu'au prochain couleur(...). Il agit comme la commande seule : la couleur reste ensuite en vigueur apres l'affi/entr (remets couleur() pour revenir a la normale). Dans entr(...), sans couleur(...) en ligne, le message prend la couleur fixee par une commande couleur(...) precedente."
+    ], exemple: "couleur(|vert|)\naffi(|Bravo !|)\ncouleur(|#ff8800|)\naffi(|Attention|)\ncouleur()\naffi(|Texte normal|)\n\naffi(couleur(|vert|), |orange|, couleur(), |blanc|)   ** 1er mot vert, 2e mot normal **\nnom ~ entr(couleur(|jaune|), |Ton nom :|, couleur())" },
   { noms: ["zone"], categorie: "Console", syntaxe: "zone(largeur, hauteur)   ou   zone(largeur, hauteur, couleur)", description: [
       "Cree une zone de dessin, posee par-dessus l'affichage texte de la console. Sans zone.cadre(...), elle couvre tout l'espace libre (entre l'en-tete et les boutons) ; avec, elle n'en occupe qu'une partie et les affi(...) restent visibles autour. largeur et hauteur sont des unites a toi (pas des pixels) : la zone est etiree pour remplir l'ecran en gardant ses proportions, donc ton jeu a les memes proportions sur tous les telephones. Le point (0, 0) est en haut a gauche et y augmente vers le bas.",
       "couleur (facultative) : le fond de la zone, un nom, |#rrggbb| ou |transparent| (le texte de la console se voit alors a travers). Noir par defaut. C'est le fond du rectangle de dessin lui-meme ; les bandes autour, quand les proportions different de celles du cadre, se colorent avec zone.cadre(..., couleur).",
@@ -7050,13 +7547,38 @@ let aideCommandes = [
       "copier(x) copie la liste, le vecteur, la matrice, le dictionnai ou l'instance, mais les listes/dictionnai places A L'INTERIEUR restent partages avec l'original.",
       "copier.profond(x) copie tout, a tous les niveaux : plus aucun element n'est partage avec l'original."
     ], exemple: "a ~ liste(liste(1,2), 3)\nb ~ copier(a)\nb[2] ~ 7                  ** a[2] reste 3\nb[1][1] ~ 99              ** a[1][1] devient aussi 99 (liste interne partagee)\nc ~ copier.profond(a)\nc[1][1] ~ 5               ** a n'est pas touche" },
-  { noms: ["decoup", "joindr", "remplace", "cherch", "commence", "termine"], categorie: "Texte", syntaxe: "decoup(texte, separateur)  /  joindr(liste, separateur)  /  remplace(texte, ancien, nouveau)  /  cherch(texte, morceau)  /  commence(texte, debut)  /  termine(texte, fin)", description: [
-      "decoup(texte, sep) coupe le texte a chaque sep (n'importe quel texte, de n'importe quelle longueur) et renvoie une liste. Sans sep : coupe sur les espaces. Avec sep vide || : coupe lettre par lettre.",
-      "joindr(liste, sep) colle les elements avec sep entre chaque (sans sep : colles sans rien entre eux). Les nombres sont convertis en texte.",
-      "remplace(texte, ancien, nouveau) remplace TOUTES les occurrences de ancien par nouveau (ancien ne peut pas etre vide).",
-      "cherch(texte, morceau) donne la position (a partir de 1, comme texte[i]) de la premiere occurrence, ou 0 si le morceau est absent.",
-      "commence(texte, debut) et termine(texte, fin) renvoient VRAI ou FAUX. Majuscules et minuscules comptent comme des lettres differentes."
-    ], exemple: "decoup(|a, b, c|, |, |)         ->   liste(|a|, |b|, |c|)\ndecoup(|un deux  trois|)         ->   liste(|un|, |deux|, |trois|)\njoindr(liste(|a|,|b|), | et |)   ->   a et b\nremplace(|le chat|, |chat|, |chien|)   ->   le chien\ncherch(|bonjour|, |jou|)         ->   4\ncommence(|bonjour|, |bon|)       ->   VRAI" },
+  { noms: ["decoup", "joindr", "remplace", "cherch", "commence", "termine"], categorie: "Texte", syntaxe: "texte.decoup(separateur)  /  texte.decoup(separateur, limite)  /  texte.decoup(limite)  /  liste.joindr(separateur)  /  texte.remplace(ancien, nouveau)  /  x.cherch(morceau)  /  texte.commence(debut)  /  texte.termine(fin)", description: [
+      "texte.decoup(sep) coupe le texte a chaque sep (n'importe quel texte, de n'importe quelle longueur) et renvoie une liste. Sans sep : coupe sur les espaces (plusieurs espaces de suite comptent pour un seul, ceux du debut et de la fin sont ignores). Avec sep vide || : coupe lettre par lettre. saulig est accepte comme argument : texte.decoup(saulig) coupe a chaque saut de ligne, liste.joindr(saulig) colle avec des sauts de ligne, texte.remplace(saulig, | |) enleve les sauts de ligne.",
+      "texte.decoup(sep, limite) fait au plus limite morceaux : le dernier garde tout le reste. texte.decoup(limite) fait pareil en coupant sur les espaces. Limite 0 ou negative : liste vide. Limite plus grande que le nombre de morceaux possibles : meme resultat que decoup(sep). Limite non entiere (2.5) : erreur claire. Un nombre seul est toujours la limite : pour couper sur un chiffre, l'ecrire en texte : decoup(|1|).",
+      "liste.joindr(sep) colle les elements d'une liste ou d'un vecteur avec sep entre chaque (sans sep : colles sans rien entre eux). Les nombres sont convertis en texte.",
+      "texte.remplace(ancien, nouveau) remplace TOUTES les occurrences de ancien par nouveau (ancien ne peut pas etre vide). Sur une liste ou un vecteur, remplace s'applique a chaque element texte et renvoie une liste.",
+      "x.cherch(morceau) donne la position (a partir de 1, comme texte[i]) de la premiere occurrence, ou 0 si le morceau est absent. x peut etre un texte (on cherche un morceau de texte) ou une liste/un vecteur (on cherche une valeur : l.cherch(5)).",
+      "texte.commence(debut) et texte.termine(fin) renvoient VRAI ou FAUX. Majuscules et minuscules comptent comme des lettres differentes.",
+      "Toutes ces commandes s'enchainent avec miniscul(), majuscul(), suprespac(), lon(), avant, apres, entre, garder et enlever : texte.suprespac().majuscul().decoup().joindr(|-|). Les anciennes ecritures decoup(texte, sep), joindr(liste, sep)... marchent toujours."
+    ], exemple: "|a, b, c|.decoup(|, |)         ->   liste(|a|, |b|, |c|)\n|un deux  trois|.decoup()         ->   liste(|un|, |deux|, |trois|)\n|un deux trois|.decoup(2)       ->   liste(|un|, |deux trois|)\n|a,b,c,d|.decoup(|,|, 3)        ->   liste(|a|, |b|, |c,d|)\ntexte(|a|, saulig, |b|).decoup(saulig)   ->   liste(|a|, |b|)\nliste(|a|,|b|).joindr(| et |)   ->   a et b\n|le chat|.remplace(|chat|, |chien|)   ->   le chien\n|bonjour|.cherch(|jou|)         ->   4\nliste(|a|, 5).cherch(5)         ->   2\n|bonjour|.commence(|bon|)       ->   VRAI\n|  un deux  |.suprespac().decoup().joindr(|-|)   ->   un-deux" },
+  { noms: ["avant", "apres", "avant.dernier", "apres.dernier"], categorie: "Texte", syntaxe: "texte.avant(sep)  /  texte.avant(sep, position)  /  texte.avant(position)  /  texte.avant.dernier(sep)  /  texte.apres(sep)  /  texte.apres(sep, position)  /  texte.apres(position)  /  texte.apres.dernier(sep)", description: [
+      "texte.avant(sep) renvoie tout ce qui est avant le PREMIER sep ; texte.apres(sep) renvoie tout ce qui est apres.",
+      "texte.avant(sep, n) et texte.apres(sep, n) coupent au n-ieme sep (n entier, a partir de 1, compte de gauche a droite sans chevauchement). Un nombre seul est la position : pour couper sur un chiffre, l'ecrire en texte : avant(|1|). Position non entiere : erreur claire.",
+      "texte.avant.dernier(sep) et texte.apres.dernier(sep) coupent au DERNIER sep. Pas de position : « dernier » la fixe (avant.dernier(sep) donne la meme chose que avant(sep, N) quand il y a N sep).",
+      "Sans sep (avant(n), avant.dernier()...), le separateur est les espaces, comme decoup() : ceux du debut et de la fin sont ignores, plusieurs espaces de suite comptent pour un seul.",
+      "Sep absent (ou position trop grande) : avant renvoie tout le texte, apres renvoie un texte vide. Position 0 ou negative : texte vide. Sep vide || : erreur claire.",
+      "Sur une liste ou un vecteur, elles s'appliquent a chaque element texte et renvoient une liste (un seul niveau, les autres elements restent tels quels)."
+    ], exemple: "|a/b/c/d|.avant(|/|)              ->   a\n|a/b/c/d|.avant(|/|, 2)          ->   a/b\n|a/b/c/d|.apres(|/|)             ->   b/c/d\n|a/b/c/d|.apres(|/|, 2)          ->   c/d\n|a/b/c/d|.avant.dernier(|/|)     ->   a/b/c\n|photo.final.jpg|.apres.dernier(|.|)   ->   jpg\n|un deux trois|.apres(2)         ->   trois\nliste(|a/b|, |c/d|).avant(|/|)   ->   liste(|a|, |c|)" },
+  { noms: ["entre"], categorie: "Texte", syntaxe: "texte.entre(debut, fin)", description: [
+      "Renvoie la LISTE de tous les morceaux de texte compris entre un debut et le fin qui le suit, lus de gauche a droite.",
+      "Rien trouve : liste vide (pas d'erreur). Un debut sans fin apres lui est ignore. Le debut et la fin peuvent etre le meme texte : |a ! b ! c|.entre(|!|, |!|) donne liste(| b |).",
+      "Pour recuperer seulement le premier morceau : texte.entre(|[|, |]|)[1] (verifier avec .lon() qu'il y en a au moins un).",
+      "Debut ou fin vide : erreur claire. S'applique a un texte."
+    ], exemple: "|x [a] y [b] z|.entre(|[|, |]|)   ->   liste(|a|, |b|)\n|rien|.entre(|[|, |]|)   ->   liste vide\n|<b>1</b> et <b>2</b>|.entre(|<b>|, |</b>|).joindr(|+|)   ->   1+2" },
+  { noms: ["garder", "enlever", "garder.contenant", "enlever.contenant"], categorie: "Texte", syntaxe: "x.garder(valeur, ...)  /  x.enlever(valeur, ...)  /  x.garder.contenant(valeur, ...)  /  x.enlever.contenant(valeur, ...)", description: [
+      "garder garde seulement ce qui correspond, enlever retire ce qui correspond. Plusieurs valeurs possibles : l.garder(|a|, |b|) garde les elements egaux a a OU a b. Le resultat est du MEME type que x (texte, liste, vecteur ou dictionnai) ; x n'est pas modifie.",
+      "Liste ou vecteur : un element correspond s'il est EGAL a la valeur. liste(|a|, |ab|, |a|).garder(|a|) donne liste(|a|, |a|).",
+      "Texte : on garde ou on retire les LETTRES presentes dans les valeurs. |a1b22c|.garder(|0123456789|) donne 122, |banane|.enlever(|a|) donne bnne.",
+      "Dictionnai : on agit sur les CLES. d.garder(|nom|, |age|) garde seulement les entrees de ces cles.",
+      "garder.contenant et enlever.contenant : un element correspond s'il CONTIENT la valeur. Un texte la contient comme morceau de texte, une liste ou un vecteur si un de ses elements lui est egal, un dictionnai s'il a cette cle ; un nombre ne contient rien (garder.contenant ne le garde pas, enlever.contenant le garde). Sur un dictionnai, on regarde ses cles (texte contenant la valeur).",
+      "Un seul niveau : les listes imbriquees ne sont jamais fouillees plus profond (une sous-liste est un seul element).",
+      "Erreurs claires : aucune valeur donnee, valeur vide dans .contenant, .contenant sur un texte (pas de sens)."
+    ], exemple: "liste(|a|, |ab|, |b|).garder(|a|)              ->   liste(|a|)\nliste(|a|, |ab|, |b|).garder.contenant(|a|)    ->   liste(|a|, |ab|)\nliste(|a|, |ab|, |b|).enlever.contenant(|a|)   ->   liste(|b|)\nc(1, 2, 1, 3).enlever(1)                       ->   c(2, 3)\n|a1b22c|.garder(|0123456789|)                  ->   122" },
   { noms: ["seq"], categorie: "Creer un vecteur/une matrice", syntaxe: "seq(debut, fin, pas)", description: [
       "Construit une suite de nombres, de debut a fin.",
       "pas est facultatif : +1 par defaut (ou -1 si fin est plus petit que debut)."
@@ -7101,10 +7623,11 @@ let aideCommandes = [
       "Erreur si la matrice n'est pas inversible (determinant nul, comme det(m)==0)."
     ], exemple: "m ~ matrice(c(4,2,7,6), nlig~2, ncol~2)\ninverse(m)   ->   une matrice 2x2\nm..inverse(m)   ->   la matrice identite" },
 
-  { noms: ["lon"], categorie: "Infos sur un vecteur/une matrice", syntaxe: "lon(v)", description: [
-      "Renvoie le nombre d'elements d'un vecteur ou d'une matrice.",
-      "Renvoie 1 pour une simple valeur (pas un vecteur)."
-    ], exemple: "lon(c(1,2,3))   ->   3" },
+  { noms: ["lon"], categorie: "Infos sur un vecteur/une matrice", syntaxe: "lon(v)  /  v.lon()", description: [
+      "Renvoie le nombre d'elements d'un vecteur, d'une matrice, d'une liste ou d'un dictionnai, ou le nombre de caracteres d'un texte.",
+      "Renvoie 1 pour une simple valeur (un nombre).",
+      "lon(v) et v.lon() sont equivalents ; la forme methode s'enchaine : texte.suprespac().lon()."
+    ], exemple: "lon(c(1,2,3))   ->   3\n|bonjour|.lon()   ->   7\n|  salut  |.suprespac().lon()   ->   5" },
   { noms: ["dim"], categorie: "Infos sur un vecteur/une matrice", syntaxe: "dim(m)", description: [
       "Renvoie les dimensions d'une matrice.",
       "Le resultat est un vecteur c(nombre de lignes, nombre de colonnes)."
@@ -7145,6 +7668,8 @@ let aideCommandes = [
 
   { noms: ["[", "]"], categorie: "Acceder / modifier un element", syntaxe: "v[i]  /  m[ligne,colonne]", description: [
       "Lit un ou plusieurs elements d'un vecteur (v[i]) ou d'une matrice (m[ligne,colonne]).",
+      "Fonctionne aussi sur un texte, en lecture et en ecriture : t[1] est le premier caractere, t[1]~|B| le remplace.",
+      "Crochets enchaines pour ecrire a l'interieur d'une liste : l[i][j] ~ valeur (liste de listes), l[2][1] ~ 99 (liste de vecteurs), moi.grille[i][j] ~ v. Chaque indice avant le dernier doit designer un element existant d'une liste (erreur claire sinon).",
       "Les indices commencent a 1 (pas a 0).",
       "Un indice laisse vide signifie 'tout' : m[,2] = toute la colonne 2, m[3,] = toute la ligne 3.",
       "L'indice peut aussi etre un vecteur d'indices (c(2,5) ou 2:4) pour en selectionner plusieurs a la fois.",
@@ -7213,8 +7738,9 @@ let aideCommandes = [
     ], exemple: "m1 .. m2" },
   { noms: ["^"], categorie: "Operateurs", syntaxe: "a ^ b", description: [
       "Puissance : a a la puissance b.",
-      "Fonctionne aussi element par element sur les vecteurs et les matrices, avec recyclage comme + et -."
-    ], exemple: "2 ^ 3   ->   8\nc(1,2,3) ^ 2   ->   [1] 1 4 9" },
+      "Fonctionne aussi element par element sur les vecteurs, avec recyclage comme + et -.",
+      "Sur une matrice carree, avec un exposant entier positif ou nul : vraie puissance matricielle (m^3 = m..m..m, m^0 = matrice identite). Exposant negatif ou non entier, matrice non carree ou matrice^matrice : erreur claire (utilise inverse(m) pour l'inverse)."
+    ], exemple: "2 ^ 3   ->   8\nc(1,2,3) ^ 2   ->   [1] 1 4 9\nm ^ 2   ->   m .. m   (m carree)" },
 
   { noms: ["ENTI"], categorie: "Operateurs", syntaxe: "a ENTI b", description: [
       "Division entiere : divise a par b et ne garde que la partie entiere (arrondi vers le bas).",
@@ -7307,6 +7833,7 @@ let aideCommandes = [
       "Dans affi()/entr(), insere un retour a la ligne a cet endroit dans le message affiche/demande.",
       "Utilisable aussi comme valeur ordinaire partout ou une valeur brute est attendue : ecrire.cle(...), ecrire.fichier(...), ajout.cle(...), ajout.fichier(...), c(...), liste(...), matrice(...).",
       "Doit toujours apparaitre SEUL comme argument (jamais colle a l'interieur d'un |texte|, sinon ce n'est plus reconnu -- ce serait alors juste le mot 'saulig' litteral).",
+      "Pour un saut de ligne a l'interieur d'un texte, on peut aussi ecrire \\n (voir echappement).",
       "Pour une ligne vide toute seule dans affi(), on peut aussi ecrire affi(||) ou affi( | |)."
     ], exemple: "affi(|Programme de calcul|, saulig, |----------|)\necrire.cle(|notes|, |Titre|, saulig, |Sous-titre|)   ** liste() : \"Titre\", \"\\n\", \"Sous-titre\" **" },
 
@@ -7327,12 +7854,24 @@ let aideCommandes = [
       "Utile pour construire un texte a passer en UN SEUL argument a ecrire.cle(...), ecrire.fichier(...) ou ajout.cle(...) -- qui, eux, rangent chaque argument separe par une virgule comme un element distinct d'une liste() plutot que de les coller ensemble."
     ], exemple: "ligne ~ texte(|+ Depot: |, montant, | F|, saulig)\necrire.fichier(|/sdcard/historique.mld|, h + ligne)" },
 
+  { noms: ["echappement", "antislash", "r|...|", "f|...|", "rf|...|", "fr|...|"], categorie: "Base", syntaxe: "|texte\\n|    r|texte brut|    f|texte {expression}|    rf|...|", description: [
+      "Dans un texte |...|, l'antislash \\ introduit une sequence : \\| une barre |, \\\\ un antislash, \\n saut de ligne, \\t tabulation, \\r retour chariot, \\s espace insecable, \\uXXXX et \\u{...} un caractere Unicode (\\u00e9 donne e accent aigu, \\u{1F600} donne un emoji).",
+      "Un antislash suivi d'un autre caractere (ex: \\b) reste tel quel, sans avertissement. Le texte se ferme a la premiere barre NON echappee : un texte ne peut donc pas finir par un seul antislash, ecris \\\\ (|C:\\\\dossier\\\\|).",
+      "r|...| : texte BRUT, rien n'est interprete (\\n reste \\ puis n). Pratique pour un chemin : r|C:\\nouveau\\texte|. La barre \\| ne ferme pas le texte mais garde ses deux caracteres.",
+      "f|...| : insere des valeurs. {expression} est remplace par sa valeur, affichee comme dans affi() : f|Total : {prix*qte} euros|. Toute expression est permise SAUF un texte |...| (un | non echappe ferme le texte, donc f|{|e|}| est une erreur).",
+      "Accolade ecrite telle quelle dans un f|...| : {{ ou \\{ pour {, }} ou \\} pour }. Une accolade vide {} ou jamais fermee est une erreur, signalee avant l'execution.",
+      "Dans les accolades, \\| n'est accepte qu'au tout debut ou a la toute fin ; il s'affiche tel quel autour de la valeur : f|{\\|e\\|}| affiche |5| si e vaut 5 (comme f|\\|{e}\\||). Au milieu (f|{a\\|+b}|) c'est une erreur.",
+      "rf|...| et fr|...| combinent les deux : rf|C:\\{dossier}\\a.txt| garde les antislash et insere {dossier}. r, f, rf et fr doivent etre colles a la barre ouvrante ; une variable nommee r ou f reste utilisable (r ~ 5).",
+      "saulig reste valable : affi(|a|, saulig, |b|) revient a affi(|a\\nb|)."
+    ], exemple: "affi(|Ligne 1\\nLigne 2|)\naffi(|Il a dit : \\|oui\\||)\nnom ~ |Yan|\nage ~ 20\naffi(f|{nom} a {age+1} ans|)\naffi(r|C:\\nouveau\\texte|)\naffi(f|{{x}} vaut {age}|)" },
   { noms: ["miniscul", "majuscul", "suprespac"], categorie: "Texte", syntaxe: "var.miniscul()  /  var.majuscul()  /  var.suprespac()", description: [
       "miniscul() convertit le texte contenu dans var en minuscules.",
       "majuscul() convertit le texte contenu dans var en majuscules.",
       "suprespac() supprime les espaces au debut et a la fin du texte.",
       "Les parentheses peuvent contenir un espace : var.miniscul( ), var.majuscul( ) ou var.suprespac( ).",
-      "Les commandes peuvent etre enchainees dans l'ordre : var.miniscul().suprespac() ou var.majuscul().suprespac()."
+      "Les commandes peuvent etre enchainees dans l'ordre : var.miniscul().suprespac() ou var.majuscul().suprespac().",
+      "Elles s'enchainent aussi avec decoup, joindr, remplace, cherch, commence, termine, lon, avant, apres, entre, garder et enlever : var.suprespac().majuscul().decoup().",
+      "Sur une liste ou un vecteur, elles s'appliquent a chaque element texte (un seul niveau, les autres elements restent tels quels) : liste(|A|, |B|).miniscul() donne liste(|a|, |b|). Seule sur une ligne, l.majuscul() change seulement la variable l : une autre variable qui designait la meme liste (w ~ l) n'est pas modifiee."
     ], exemple: "nom~|  BONJOUR  |\nnom.miniscul().suprespac()\naffi(nom)   ->   bonjour" },
 
   { noms: ["effa"], categorie: "Console", syntaxe: "effa()  ou  effa(nom1, nom2, ...)", description: [
@@ -7592,24 +8131,32 @@ function enregistrerFonctionsBase() {
     // retour sans valeur), affi() reste faite pour son effet d'affichage, pas pour sa valeur.
     fonctionsBase["affi"] = fonctionsExpression["affi"] = async function(args, ctxExpr) {
         let parties = [];
+        let couleurDepart = couleurConsole; // couleur en vigueur au debut de CE affi (avant d'eventuels couleur(...) en ligne)
+        let marqueurEnAttente = "";
         for (let elem of args) {
             let elemTrim = elem.trim();
+            // couleur(...) en ligne : ne s'affiche pas, colore ce qui suit dans ce affi (et la suite du script)
+            let marq = await marqueurCouleurEnLigne(elemTrim, ctxExpr);
+            if (marq !== null) { marqueurEnAttente += marq; continue; }
+            let partie;
             if (elemTrim === "saulig") {
                 // saulig : saut de ligne. Reconnu de facon generale par evaluerElementBrut(),
                 // mais traite ici directement (sans repasser par elle) pour rester coherent
                 // avec le formatage d'affichage (formatPourAffichage) plutot que formatValeur.
-                parties.push("\n");
+                partie = "\n";
             } else if (estTexteLitteralComplet(elemTrim)) {
-                parties.push(elemTrim.slice(1, -1));
+                partie = (await valeurTexteLitteral(elemTrim, ctxExpr));
             } else {
                 verifierTexteLitteralFerme(elemTrim);
-                parties.push(await formatPourAffichage(await evalExpr(elemTrim, ctxExpr)));
+                partie = await formatPourAffichage(await evalExpr(elemTrim, ctxExpr));
             }
+            parties.push(marqueurEnAttente + partie);
+            marqueurEnAttente = "";
         }
         // Les parties sont normalement separees par un espace, sauf autour d'un saut de
         // ligne insere par saulig : on retire l'espace parasite qui se retrouverait juste
         // avant/apres le "\n".
-        printValeur(parties.join(" ").replace(/ {2,}/g, " ").replace(/ *\n */g, "\n"));
+        printValeur(parties.join(" ").replace(/ {2,}/g, " ").replace(/ *\n */g, "\n"), "", couleurDepart);
         // Force l'affichage immediat de ce resultat avant de poursuivre l'execution,
         // au lieu de tout accumuler et de ne peindre l'ecran qu'a la toute fin.
         await respirer(true);
@@ -7628,7 +8175,7 @@ function enregistrerFonctionsBase() {
             if (elemTrim === "saulig") {
                 parties.push("\n");
             } else if (estTexteLitteralComplet(elemTrim)) {
-                parties.push(elemTrim.slice(1, -1));
+                parties.push((await valeurTexteLitteral(elemTrim, ctxExpr)));
             } else {
                 verifierTexteLitteralFerme(elemTrim);
                 parties.push(formatValeur(await evalExpr(elemTrim, ctxExpr)));
@@ -7719,47 +8266,42 @@ function enregistrerFonctionsBase() {
 
     // Texte : decoup, joindr, remplace, cherch, commence, termine.
     fonctionsBase["decoup"] = fonctionsExpression["decoup"] = async function(args, ctxExpr) {
-        if (args.length < 1 || args.length > 2) throw new Error("decoup(texte, separateur) attend 1 ou 2 arguments (separateur facultatif)");
-        let t = exigerTexte(await evalExpr(args[0], ctxExpr), "decoup", "le texte");
-        let morceaux;
-        if (args.length === 1) morceaux = t.split(/\s+/).filter(m => m !== "");
-        else {
-            let sep = exigerTexte(await evalExpr(args[1], ctxExpr), "decoup", "le separateur");
-            morceaux = sep === "" ? Array.from(t) : t.split(sep);
-        }
-        return { __type: "liste", elements: morceaux };
+        if (args.length < 1 || args.length > 3) throw new Error("decoup(texte, separateur, limite) attend 1 a 3 arguments (separateur et limite facultatifs)");
+        let t = exigerTexte(await evaluerElementBrut(args[0], ctxExpr), "decoup", "le texte");
+        // evaluerElementBrut : reconnait saulig (saut de ligne) comme separateur, en plus de |texte| et des expressions
+        let extra = [];
+        for (let i = 1; i < args.length; i++) extra.push(await evaluerElementBrut(args[i], ctxExpr));
+        let r = analyserSepEtNombre(extra, "decoup", "la limite");
+        return coreDecoup(t, r.sep, r.n);
     };
     fonctionsBase["joindr"] = fonctionsExpression["joindr"] = async function(args, ctxExpr) {
         if (args.length < 1 || args.length > 2) throw new Error("joindr(liste, separateur) attend 1 ou 2 arguments (separateur facultatif)");
         let l = await evaluerElementBrut(args[0], ctxExpr);
-        let elements = estListe(l) ? l.elements : (estVecteur(l) ? l : null);
-        if (elements === null) throw new ErreurTypeInvalide("joindr : le 1er argument doit etre une liste ou un vecteur (recu : " + nomNature(l) + ")");
-        let sep = args.length === 2 ? exigerTexte(await evalExpr(args[1], ctxExpr), "joindr", "le separateur") : "";
-        return elements.map(e => formatValeur(e)).join(sep);
+        let sep = args.length === 2 ? exigerTexte(await evaluerElementBrut(args[1], ctxExpr), "joindr", "le separateur") : undefined;
+        return coreJoindr(l, sep, "joindr");
     };
     fonctionsBase["remplace"] = fonctionsExpression["remplace"] = async function(args, ctxExpr) {
         if (args.length !== 3) throw new Error("remplace(texte, ancien, nouveau) attend 3 arguments");
-        let t = exigerTexte(await evalExpr(args[0], ctxExpr), "remplace", "le texte");
-        let ancien = exigerTexte(await evalExpr(args[1], ctxExpr), "remplace", "'ancien'");
-        let nouveau = exigerTexte(await evalExpr(args[2], ctxExpr), "remplace", "'nouveau'");
-        if (ancien === "") throw new Error("remplace : le texte a remplacer ('ancien') ne peut pas etre vide");
-        return t.split(ancien).join(nouveau);
+        let t = exigerTexte(await evaluerElementBrut(args[0], ctxExpr), "remplace", "le texte");
+        let ancien = exigerTexte(await evaluerElementBrut(args[1], ctxExpr), "remplace", "'ancien'");
+        let nouveau = exigerTexte(await evaluerElementBrut(args[2], ctxExpr), "remplace", "'nouveau'");
+        return coreRemplace(t, ancien, nouveau);
     };
     fonctionsBase["cherch"] = fonctionsExpression["cherch"] = async function(args, ctxExpr) {
         if (args.length !== 2) throw new Error("cherch(texte, morceau) attend 2 arguments");
-        let t = exigerTexte(await evalExpr(args[0], ctxExpr), "cherch", "le texte");
-        let m = exigerTexte(await evalExpr(args[1], ctxExpr), "cherch", "le morceau cherche");
-        return t.indexOf(m) + 1; // position a partir de 1 (comme texte[i]), 0 si absent
+        let cible = await evaluerElementBrut(args[0], ctxExpr);
+        let m = await evaluerElementBrut(args[1], ctxExpr);
+        return coreCherch(cible, m, "cherch"); // position a partir de 1 (comme texte[i]), 0 si absent
     };
     fonctionsBase["commence"] = fonctionsExpression["commence"] = async function(args, ctxExpr) {
         if (args.length !== 2) throw new Error("commence(texte, debut) attend 2 arguments");
-        let t = exigerTexte(await evalExpr(args[0], ctxExpr), "commence", "le texte");
-        return t.startsWith(exigerTexte(await evalExpr(args[1], ctxExpr), "commence", "le debut"));
+        let t = exigerTexte(await evaluerElementBrut(args[0], ctxExpr), "commence", "le texte");
+        return t.startsWith(exigerTexte(await evaluerElementBrut(args[1], ctxExpr), "commence", "le debut"));
     };
     fonctionsBase["termine"] = fonctionsExpression["termine"] = async function(args, ctxExpr) {
         if (args.length !== 2) throw new Error("termine(texte, fin) attend 2 arguments");
-        let t = exigerTexte(await evalExpr(args[0], ctxExpr), "termine", "le texte");
-        return t.endsWith(exigerTexte(await evalExpr(args[1], ctxExpr), "termine", "la fin"));
+        let t = exigerTexte(await evaluerElementBrut(args[0], ctxExpr), "termine", "le texte");
+        return t.endsWith(exigerTexte(await evaluerElementBrut(args[1], ctxExpr), "termine", "la fin"));
     };
 
 
@@ -7918,19 +8460,29 @@ function enregistrerFonctionsBase() {
     // et saulig), factorisee ici pour etre reutilisee par toutes les variantes de entr.
     async function construireMessageEntr(args, ctxExpr) {
         let parties = [];
+        let marqueurEnAttente = "";
+        // Couleur en vigueur AVANT d'eventuels couleur(...) en ligne : si une couleur est fixee (couleur(|vert|) puis
+        // entr(...)), le message la prend ; sinon il garde la couleur normale de l'invite.
+        let debutCouleur = couleurConsole ? MARQ_COUL_DEB + couleurConsole + MARQ_COUL_FIN : "";
         for (let elem of args) {
             let elemTrim = (elem || "").trim();
             if (elemTrim === "") continue;
+            // couleur(...) en ligne : ne s'affiche pas, colore la suite du message
+            let marq = await marqueurCouleurEnLigne(elemTrim, ctxExpr);
+            if (marq !== null) { marqueurEnAttente += marq; continue; }
+            let partie;
             if (elemTrim === "saulig") {
-                parties.push("\n");
+                partie = "\n";
             } else if (estTexteLitteralComplet(elemTrim)) {
-                parties.push(elemTrim.slice(1, -1));
+                partie = (await valeurTexteLitteral(elemTrim, ctxExpr));
             } else {
-                try { verifierTexteLitteralFerme(elemTrim); parties.push(formatValeur(await evalExpr(elemTrim, ctxExpr))); }
-                catch (e) { parties.push(elemTrim); }
+                try { verifierTexteLitteralFerme(elemTrim); partie = formatValeur(await evalExpr(elemTrim, ctxExpr)); }
+                catch (e) { partie = elemTrim; }
             }
+            parties.push(marqueurEnAttente + partie);
+            marqueurEnAttente = "";
         }
-        return parties.join(" ").replace(/ {2,}/g, " ").replace(/ *\n */g, "\n");
+        return debutCouleur + parties.join(" ").replace(/ {2,}/g, " ").replace(/ *\n */g, "\n");
     }
     // Separe, parmi les arguments bruts d'un entr.secret()/entr.Nsecret()/entr.Tsecret(),
     // le parametre nomme sty~... (le caractere de masquage) du reste (le message a afficher).
@@ -8515,13 +9067,7 @@ function enregistrerFonctionsBase() {
     // lon(...) : longueur d'un vecteur/matrice (nombre total d'elements). Un scalaire vaut 1.
     fonctionsBase["lon"] = fonctionsExpression["lon"] = async function(args, ctxExpr) {
         if (args.length < 1) throw new Error("lon(...) attend un argument");
-        let v = await evalExpr(args[0], ctxExpr);
-        if (estListe(v)) return v.elements.length;
-        if (estDictionnai(v)) return v.entrees.size;
-        if (estVecteur(v)) return v.length;
-        if (estMatrice(v)) return v.donnees.length;
-        if (typeof v === 'string') return v.length; // nombre de caracteres, coherent avec texte[i]
-        return 1;
+        return coreLon(await evalExpr(args[0], ctxExpr));
     };
 
     // dim(...) : dimensions d'une matrice, sous forme de vecteur c(nlig, ncol).
@@ -9185,7 +9731,7 @@ function enregistrerFonctionsBase() {
             if (elemTrim === "saulig") {
                 parties.push("\n");
             } else if (estTexteLitteralComplet(elemTrim)) {
-                parties.push(elemTrim.slice(1, -1));
+                parties.push((await valeurTexteLitteral(elemTrim, ctxExpr)));
             } else {
                 verifierTexteLitteralFerme(elemTrim);
                 parties.push(await formatPourAffichage(await evalExpr(elemTrim, ctxExpr)));
@@ -10224,7 +10770,7 @@ function enregistrerFonctionsBase() {
         async function texteOption(cle, defaut) {
             if (!(cle in nommes)) return defaut;
             let s = nommes[cle].trim();
-            if (estTexteLitteralComplet(s)) return s.slice(1, -1);
+            if (estTexteLitteralComplet(s)) return (await valeurTexteLitteral(s, ctxExpr));
             verifierTexteLitteralFerme(s);
             let v = await evalExpr(s, ctxExpr);
             if (v && v.__type === "liste") throw new Error("trac(...) : " + cle + "~ attend un texte ; une liste (une valeur par courbe) ne marche qu'avec trac.multi(...)");
@@ -10321,7 +10867,7 @@ function enregistrerFonctionsBase() {
         async function optionParCourbe(cle) {
             if (!Object.prototype.hasOwnProperty.call(nommes, cle)) return null;
             let src = nommes[cle].trim();
-            if (estTexteLitteralComplet(src)) return { global: src.slice(1, -1) };
+            if (estTexteLitteralComplet(src)) return { global: (await valeurTexteLitteral(src, ctxExpr)) };
             verifierTexteLitteralFerme(src);
             let v = await evalExpr(src, ctxExpr);
             if (v && v.__type === "liste") {
@@ -10355,9 +10901,9 @@ function enregistrerFonctionsBase() {
                 argsTrac.push(cle + "~" + nommes[cle]);
             }
             let couleurI = !optCouleur ? palette[(i - 1) % palette.length] : (optCouleur.liste ? optCouleur.liste[i - 1] : optCouleur.global);
-            argsTrac.push("couleur~|" + couleurI + "|");
-            if (optStyle) argsTrac.push("style~|" + (optStyle.liste ? optStyle.liste[i - 1] : optStyle.global) + "|");
-            if (optLegende) argsTrac.push("legende~|" + optLegende.liste[i - 1] + "|");
+            argsTrac.push("couleur~" + texteMlgLitteral(couleurI));
+            if (optStyle) argsTrac.push("style~" + texteMlgLitteral(optStyle.liste ? optStyle.liste[i - 1] : optStyle.global));
+            if (optLegende) argsTrac.push("legende~" + texteMlgLitteral(optLegende.liste[i - 1]));
             if (optEpaisseur) argsTrac.push("epaisseur~" + (optEpaisseur.liste ? optEpaisseur.liste[i - 1] : optEpaisseur.global));
             await fonctionsBase["trac"](argsTrac, ctxExpr);
         }
@@ -10443,7 +10989,7 @@ function enregistrerFonctionsBase() {
                 continue;
             }
             let texte;
-            if (estTexteLitteralComplet(src)) texte = src.slice(1, -1);
+            if (estTexteLitteralComplet(src)) texte = (await valeurTexteLitteral(src, ctxExpr));
             else {
                 verifierTexteLitteralFerme(src);
                 let v = await evalExpr(src, ctxExpr);
@@ -10802,7 +11348,7 @@ function genererHTMLColore(texte) {
       i = j;
     } else if (texte[i] === '|') {
       let j = i + 1;
-      while (j < n && texte[j] !== '|') j++;
+      while (j < n && texte[j] !== '|') { if (texte[j] === '\\') j++; j++; }
       let finInclus = j < n ? j + 1 : n;
       resultat += echapperHTML(texte.slice(i, finInclus));
       i = finInclus;
@@ -10892,7 +11438,7 @@ function print(texte, classe = "") {
 // repasser par le colorisateur de commandes. Sinon un texte affiche comme affi(|ou|) se
 // retrouvait recolore comme si "ou" etait l'operateur du langage, alors que ce n'est plus
 // qu'un simple texte a ce stade (les | ont deja ete retires).
-function printValeur(texte, classe = "") {
+function printValeur(texte, classe = "", couleurDepart = couleurConsole) {
   let div = document.createElement("div");
   let classes = classe;
   if (modeConsoleCommande) classes = (classes ? classes + " " : "") + "resultatConsole";
@@ -10903,9 +11449,14 @@ function printValeur(texte, classe = "") {
   // espace insecable quand le texte est vide (ou quand une ligne interne, separee par un
   // saut de ligne, est vide), pour que affi(||) affiche bien une ligne visible, comme
   // affi(| |).
-  texteStr = texteStr.split("\n").map(l => l === "" ? "\u00A0" : l).join("\n");
-  if (couleurConsole) div.style.color = couleurConsole;
-  div.innerHTML = echapperHTML(texteStr);
+  // (une ligne qui ne contient que des marqueurs de couleur compte aussi comme vide)
+  texteStr = texteStr.split("\n").map(l => retirerMarqueursCouleur(l) === "" ? l + "\u00A0" : l).join("\n");
+  if (texteStr.indexOf(MARQ_COUL_DEB) === -1) {
+    if (couleurDepart) div.style.color = couleurDepart;
+    div.innerHTML = echapperHTML(texteStr);
+  } else {
+    remplirTexteColore(div, texteStr, couleurDepart); // plusieurs couleurs dans la meme ligne (couleur(...) en ligne)
+  }
   outputDiv.appendChild(div);
   outputDiv.scrollTop = outputDiv.scrollHeight;
 }
@@ -11491,12 +12042,9 @@ function splitAffiElements(str) {
   let elems = [], i = 0, n = str.length, buffer = "", depth = 0;
   while (i < n) {
     let c = str[i];
-    if (c === '|' && depth === 0 && buffer.trim() === "") {
-      let k = i + 1, fin = -1;
-      while (k < n) {
-        if (str[k] === '|') { fin = k; break; }
-        k++;
-      }
+    let pref0 = (depth === 0 && buffer.trim() === "") ? prefixeTexteEn(str, i) : null;
+    if (pref0) {
+      let fin = finTexteLitteral(str, pref0.debutBarre);
       if (fin === -1) { elems.push(str.slice(i)); i = n; }
       else { elems.push(str.slice(i, fin + 1)); i = fin + 1; }
       buffer = "";
@@ -11539,7 +12087,10 @@ async function evaluerArgumentAppelStmt(argStr, ctxExpr) {
 }
 function splitTopLevelComma(str) {
   let parts = [], depth = 0, buf = "", dansTexte = false;
+  let echappe = false;
   for (let ch of str) {
+    if (echappe) { echappe = false; buf += ch; continue; }
+    if (dansTexte && ch === '\\') { echappe = true; buf += ch; continue; }
     if (ch === '|') { dansTexte = !dansTexte; buf += ch; continue; }
     if (!dansTexte) {
       // Les crochets [...] (indexation m[i,j]) comptent aussi comme profondeur : sans ca,
@@ -11624,6 +12175,7 @@ async function executerCommandeSimple(ligne) {
       let j = pos + 1, depth = 1, dansTexteIdx = false;
       while (j < ligne.length && depth > 0) {
         let ch = ligne[j];
+        if (dansTexteIdx && ch === '\\') { j += 2; continue; }
         if (ch === '|') dansTexteIdx = !dansTexteIdx;
         else if (!dansTexteIdx) {
           if (ch === '[') depth++;
@@ -11714,20 +12266,16 @@ async function executerCommandeSimple(ligne) {
     let chemin = mMethodesTexte[1];
     let cible = resoudreCheminCible(chemin);
     if (typeof cible === "number") { return; } // nombre : rien a convertir, on ignore silencieusement
-    if (typeof cible !== "string") {
-      throw new ErreurTypeInvalide(chemin + ".miniscul()/majuscul()/suprespac() attend une variable contenant du texte");
+    if (typeof cible !== "string" && !estListe(cible) && !estVecteur(cible)) {
+      throw new ErreurTypeInvalide(chemin + ".miniscul()/majuscul()/suprespac() attend une variable contenant du texte, une liste ou un vecteur");
     }
     let chaine = mMethodesTexte[2];
     let methodes = [];
     let reM = /\.(miniscul|majuscul|suprespac)\(\s*\)/g, mm;
     while ((mm = reM.exec(chaine)) !== null) methodes.push(mm[1]);
     let valeur = cible;
-    for (let methode of methodes) {
-      if (methode === "miniscul") valeur = valeur.toLowerCase();
-      else if (methode === "majuscul") valeur = valeur.toUpperCase();
-      else if (methode === "suprespac") valeur = valeur.trim();
-    }
-    assignerCheminValeur(chemin, valeur);
+    for (let methode of methodes) valeur = appliquerNettoyageTexte(valeur, methode);
+    ecrireNettoyageTexte(chemin, cible, valeur);
     return;
   }
 
@@ -11837,11 +12385,10 @@ async function executerCommandeSimple(ligne) {
       }
       let cible = resoudreCheminCible(nomVar);
       if (typeof cible === "number") { return; } // nombre : rien a convertir, on ignore silencieusement
-      if (typeof cible !== "string") {
-        throw new ErreurTypeInvalide(nomVar + "." + methode + "() attend une variable contenant du texte");
+      if (typeof cible !== "string" && !estListe(cible) && !estVecteur(cible)) {
+        throw new ErreurTypeInvalide(nomVar + "." + methode + "() attend une variable contenant du texte, une liste ou un vecteur");
       }
-      let valeur = methode === "miniscul" ? cible.toLowerCase() : methode === "majuscul" ? cible.toUpperCase() : cible.trim();
-      assignerCheminValeur(nomVar, valeur);
+      ecrireNettoyageTexte(nomVar, cible, appliquerNettoyageTexte(cible, methode));
       return;
     }
 
@@ -11866,7 +12413,7 @@ async function executerCommandeSimple(ligne) {
         if (elemTrim === "saulig") {
           parties.push("\n");
         } else if (estTexteLitteralComplet(elemTrim)) {
-          parties.push(elemTrim.slice(1, -1));
+          parties.push((await valeurTexteLitteral(elemTrim, ctxExpr)));
         } else {
           verifierTexteLitteralFerme(elemTrim);
           parties.push(formatValeur(await evalExpr(elemTrim, ctxExpr)));
@@ -11874,7 +12421,7 @@ async function executerCommandeSimple(ligne) {
       }
       valeur = parties.join(" ").replace(/ {2,}/g, " ").replace(/ *\n */g, "\n");
     } else if (estTexteLitteralComplet(valeurExpr)) {
-      valeur = valeurExpr.slice(1, -1);
+      valeur = (await valeurTexteLitteral(valeurExpr, ctxExpr));
     } else {
       verifierTexteLitteralFerme(valeurExpr);
       valeur = await evalExpr(valeurExpr, ctxExpr);
@@ -11910,7 +12457,7 @@ async function executerCommandeSimple(ligne) {
         if (elemTrim === "saulig") {
           parties.push("\n");
         } else if (estTexteLitteralComplet(elemTrim)) {
-          parties.push(elemTrim.slice(1, -1));
+          parties.push((await valeurTexteLitteral(elemTrim, ctxExpr)));
         } else {
           verifierTexteLitteralFerme(elemTrim);
           parties.push(formatValeur(await evalExpr(elemTrim, ctxExpr)));
@@ -11920,7 +12467,7 @@ async function executerCommandeSimple(ligne) {
       return;
     }
     if (estTexteLitteralComplet(valeur)) {
-      setVar(nom, valeur.slice(1, -1));
+      setVar(nom, (await valeurTexteLitteral(valeur, ctxExpr)));
     } else {
       verifierTexteLitteralFerme(valeur);
       setVar(nom, await evalExpr(valeur, ctxExpr));
@@ -11944,6 +12491,7 @@ async function executerCommandeSimple(ligne) {
       let depth = 1, k = mIdent[0].length, dansTexte = false;
       while (k < ligne.length && depth > 0) {
         let c = ligne[k];
+        if (dansTexte && c === '\\') { k += 2; continue; }
         if (c === '|') dansTexte = !dansTexte;
         if (!dansTexte) {
           if (c === '(') depth++;
@@ -12074,10 +12622,12 @@ if (Object.prototype.hasOwnProperty.call(fonctionsBase, nom)) {
 // la fin de la ligne est ignore, sauf a l'interieur d'un texte litteral |...| (pour pouvoir
 // ecrire des ** a l'interieur d'un texte affiche sans que ce soit traite comme un commentaire).
 function retirerCommentaires(code) {
-  let resultat = "", i = 0, n = code.length, dansTexte = false;
+  let resultat = "", i = 0, n = code.length, dansTexte = false, ignorerBarre = false;
   while (i < n) {
     let c = code[i];
-    if (c === '|') { dansTexte = !dansTexte; resultat += c; i++; continue; }
+    const esc = ignorerBarre; ignorerBarre = false;
+    if (c === '|' && !esc) { dansTexte = !dansTexte; resultat += c; i++; continue; }
+    if (c === '\\' && dansTexte && !esc) ignorerBarre = true;
     if (!dansTexte && c === '*' && code[i + 1] === '*') {
       while (i < n && code[i] !== '\n') i++;
       continue; // le '\n' (s'il existe) sera traite au prochain tour de boucle
@@ -12108,9 +12658,12 @@ function parser(code) {
   let profondeur = 0;
   let sauterEspaces = false;
   let ligneFinBuffer = 1;   // ligne du dernier caractere non blanc de l'instruction en cours
+  let ignorerBarre = false;
   for (let i = 0; i < code.length; i++) {
     let c = code[i];
-    if (c === '|') dansTexte = !dansTexte;
+    const esc = ignorerBarre; ignorerBarre = false;
+    if (c === '|' && !esc) dansTexte = !dansTexte;
+    else if (c === '\\' && dansTexte && !esc) ignorerBarre = true;
     if (!dansTexte && profondeur > 0) {
       if (c === '\r') continue;
       if (c === '\n') {
@@ -12189,7 +12742,7 @@ function _decrireJetonExpr(t) {
   if (!t) return "fin de l'expression";
   switch (t.type) {
     case 'num': return String(t.v);
-    case 'str': return "|" + t.v + "|";
+    case 'str': return t.raw !== undefined ? t.raw : "|" + t.v + "|";
     case 'ident': return t.v;
     case 'op': case 'cmp': return t.v;
     case 'and': return "et";
@@ -12313,11 +12866,13 @@ function verifierSyntaxeExpression(str) {
 // unique "texte" : accolades, lignes et instructions comprises.
 function _trouverTexteNonFerme(code) {
   const c = retirerCommentaires(code);
-  let dansTexte = false, ligne = 1, ligneOuverture = 0;
+  let dansTexte = false, ligne = 1, ligneOuverture = 0, ignorerBarre = false;
   for (let k = 0; k < c.length; k++) {
     const ch = c[k];
+    const esc = ignorerBarre; ignorerBarre = false;
     if (ch === '\n') { ligne++; continue; }
-    if (ch === '|') { dansTexte = !dansTexte; if (dansTexte) ligneOuverture = ligne; }
+    if (ch === '|' && !esc) { dansTexte = !dansTexte; if (dansTexte) ligneOuverture = ligne; }
+    else if (ch === '\\' && dansTexte && !esc) ignorerBarre = true;
   }
   return dansTexte ? ligneOuverture : 0;
 }
@@ -12328,6 +12883,7 @@ function _splitVirgulesHautNiveau(str) {
   let buf = "", prof = 0, dansTexte = false;
   for (let k = 0; k < str.length; k++) {
     const c = str[k];
+    if (dansTexte && c === '\\') { buf += c + (str[k + 1] || ""); k++; continue; }
     if (c === '|') { dansTexte = !dansTexte; buf += c; continue; }
     if (!dansTexte) {
       if (c === '(' || c === '[') prof++;
@@ -12345,6 +12901,7 @@ function _indexTildeHautNiveau(t) {
   let dansTexte = false, prof = 0;
   for (let k = 0; k < t.length; k++) {
     const c = t[k];
+    if (dansTexte && c === '\\') { k++; continue; }
     if (c === '|') { dansTexte = !dansTexte; continue; }
     if (dansTexte) continue;
     if (c === '(' || c === '[') prof++;
@@ -12371,6 +12928,29 @@ const _RE_ATTRAPE = /^attrape(?:\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:,\s*([a-zA-Z_
 
 // Verifie tout le programme sans rien executer. "code" est le source brut, "tokens" le resultat
 // de parser(code). Renvoie la liste des erreurs [{ ligne, message }] (vide si la syntaxe est bonne).
+// Verifie, AVANT l'execution, la forme des textes f|...| / rf|...| / fr|...| : accolade jamais fermee, {} vide,
+// | non echappe ou \| mal place dans les accolades, expression mal ecrite. Renvoie { ligne, message } ou null.
+function _verifierTextesF(code) {
+  const c = retirerCommentaires(code);
+  let ligne = 1;
+  for (let k = 0; k < c.length; k++) {
+    if (c[k] === '\n') { ligne++; continue; }
+    const p = prefixeTexteEn(c, k);
+    if (!p) continue;
+    const fin = finTexteLitteral(c, p.debutBarre);
+    if (fin === -1) return null;   // texte non ferme : deja signale par _trouverTexteNonFerme
+    if (p.interp) {
+      const contenu = c.slice(p.debutBarre + 1, fin);
+      try {
+        for (const part of analyserTexteF(contenu, p.brut)) if (part.expr !== undefined) verifierSyntaxeExpression(part.expr);
+      } catch (e) { return { ligne: ligne, message: e.message }; }
+    }
+    for (let q = k; q <= fin; q++) if (c[q] === '\n') ligne++;
+    k = fin;
+  }
+  return null;
+}
+
 function verifierSyntaxeProgramme(code, tokens) {
   const erreurs = [];
   let tokCourant = null;   // instruction en cours d'analyse (pour l'indice "parenthese restee ouverte")
@@ -12380,6 +12960,13 @@ function verifierSyntaxeProgramme(code, tokens) {
   const ligneTexteOuvert = _trouverTexteNonFerme(code);
   if (ligneTexteOuvert) {
     err(ligneTexteOuvert, "Texte litteral non ferme : il manque le | de fermeture");
+    delete erreurs[0].tok;
+    return erreurs;
+  }
+  // 1b) textes f|...| mal formes
+  const erreurF = _verifierTextesF(code);
+  if (erreurF) {
+    err(erreurF.ligne, erreurF.message);
     delete erreurs[0].tok;
     return erreurs;
   }
@@ -12661,7 +13248,7 @@ function verifierInstructionSimple(t, l, err, testExpr, dansClasse) {
   }
 
   let hint = "";
-  const sansTextes = t.replace(/\|[^|]*\|/g, "||");
+  const sansTextes = t.replace(/\|(?:\\.|[^|\\])*\|/g, "||");
   if (/(^|[^=!<>])=([^=]|$)/.test(sansTextes)) hint = " -- pour affecter une valeur utilise ~ (ex: x ~ 5), pas =";
   err(l, "Commande inconnue : " + _court(t) + hint);
 }
@@ -13051,7 +13638,7 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
               if (elemTrim === "saulig") {
                 parties.push("\n");
               } else if (estTexteLitteralComplet(elemTrim)) {
-                parties.push(elemTrim.slice(1, -1));
+                parties.push((await valeurTexteLitteral(elemTrim, ctxExpr)));
               } else {
                 verifierTexteLitteralFerme(elemTrim);
                 parties.push(formatValeur(await evalExpr(elemTrim, ctxExpr)));
