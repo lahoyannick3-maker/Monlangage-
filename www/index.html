@@ -1883,10 +1883,14 @@ let __cacheTokenizerExpr = new Map();
 // Si un texte litteral commence en s[i] (avec prefixe eventuel), renvoie { brut, interp, debutBarre }, sinon null.
 function prefixeTexteEn(s, i) {
   if (s[i] === '|') return { brut: false, interp: false, debutBarre: i };
-  if (s[i] !== 'r' && s[i] !== 'f') return null;
-  let m = /^(rf|fr|r|f)\|/.exec(s.slice(i, i + 3));
+  if (s[i] !== 'r' && s[i] !== 'f' && s[i] !== 'm') return null;
+  let m = /^(fam|rf|fr|r|f|m)\|/.exec(s.slice(i, i + 4));
   if (!m) return null;
   if (i > 0 && /[a-zA-Z0-9_]/.test(s[i - 1])) return null;   // colle a un identifiant : ce n'est pas un prefixe
+  // m|...| = MOTIF (expression reguliere) ecrit directement ; fam|...| = motif FABRIQUE avec des {variables}.
+  // Dans les deux, les antislashs restent tels quels (brut) : \d est lu par le motif, pas par le texte.
+  if (m[1] === 'm') return { brut: true, interp: false, motif: true, debutBarre: i + 1 };
+  if (m[1] === 'fam') return { brut: true, interp: true, motif: true, debutBarre: i + 3 };
   return { brut: m[1].includes('r'), interp: m[1].includes('f'), debutBarre: i + m[1].length };
 }
 // Index de la barre FERMANTE du texte dont la barre ouvrante est en debutBarre (-1 si non ferme).
@@ -1894,7 +1898,7 @@ function finTexteLitteral(s, debutBarre) {
   // Dans un f|...| (f, rf, fr), les accolades {expr} peuvent contenir des textes |...| imbriques
   // (ex: f|{compte(|bob|)}|) : on saute alors toute l'accolade, sans prendre leurs barres pour la fermeture.
   let interp = barreOuvreTexteF(s, debutBarre);
-  let brut = interp && (s[debutBarre - 1] === 'r' || s[debutBarre - 2] === 'r');
+  let brut = interp && (s[debutBarre - 1] === 'r' || s[debutBarre - 2] === 'r' || s[debutBarre - 1] === 'm');
   for (let k = debutBarre + 1; k < s.length; k++) {
     let c = s[k];
     if (c === '\\') { if (brut && s[k + 1] === '{') continue; k++; continue; }   // rf|C:\{dossier}| : l'antislash ne protege pas l'accolade
@@ -1912,7 +1916,8 @@ function finTexteLitteral(s, debutBarre) {
 function barreOuvreTexteF(s, k) {
   if (s[k] !== '|') return false;
   let a = s[k - 1], b = s[k - 2], d;
-  if (a === 'f') d = (b === 'r') ? k - 2 : k - 1;
+  if (a === 'm' && b === 'a' && s[k - 3] === 'f') d = k - 3;   // fam|...|
+  else if (a === 'f') d = (b === 'r') ? k - 2 : k - 1;
   else if (a === 'r' && b === 'f') d = k - 2;
   else return false;
   return !(d > 0 && /[a-zA-Z0-9_]/.test(s[d - 1]));
@@ -2032,6 +2037,7 @@ async function evaluerTexteF(parts, ctx) {
 async function valeurTexteLitteral(s, ctx) {
   let p = prefixeTexteEn(s, 0);
   let contenu = s.slice(p.debutBarre + 1, -1);
+  if (p.motif) return p.interp ? await evaluerMotifF(analyserMotifF(contenu), '', ctx) : creerMotif(alternativesMotif(contenu), '');
   if (p.interp) return await evaluerTexteF(analyserTexteF(contenu, p.brut), ctx);
   return p.brut ? contenu : decoderEchappements(contenu);
 }
@@ -2039,11 +2045,114 @@ async function valeurTexteLitteral(s, ctx) {
 function valeurTexteLitteralSimple(s) {
   let p = prefixeTexteEn(s, 0);
   let contenu = s.slice(p.debutBarre + 1, -1);
+  if (p.motif) { if (p.interp) throw new Error("fam|...| n'est pas utilisable ici"); return creerMotif(alternativesMotif(contenu), ''); }
   if (p.interp) throw new Error("f|...| n'est pas utilisable ici");
   return p.brut ? contenu : decoderEchappements(contenu);
 }
 // Ecrit une valeur texte comme texte MLG litteral equivalent (pour fabriquer du code) : \ et | proteges.
 function texteMlgLitteral(v) { return "|" + String(v).replace(/\\/g, "\\\\").replace(/\|/g, "\\|") + "|"; }
+
+// ===================== MOTIFS (expressions regulieres) =====================
+// m|...|   motif ecrit directement : m|\d+|   (options apres la barre fermante : m|abc|i)
+// fam|...| motif FABRIQUE : {x} = variable (texte protege, nombre protege, motif insere), {x!m} = texte insere comme
+//          vrai motif, {n!c} = nombre de repetitions (devient {3}), {3} et {2,5} = comptage du motif, \{ = vraie accolade.
+// Dans les deux : \| = alternative (a|b) ; une vraie barre a chercher s'ecrit [|]. Le reste des antislashs va tel quel au motif.
+// Options : i (ignorer les majuscules), m (^ et $ ligne par ligne), s (le point accepte aussi le saut de ligne).
+const OPTIONS_MOTIF = "ims";
+function estMotif(v) { return v !== null && typeof v === 'object' && v.__type === 'motif'; }
+function alternativesMotif(contenu) {
+  let out = '';
+  for (let k = 0; k < contenu.length; k++) {
+    let c = contenu[k];
+    if (c === '\\' && k + 1 < contenu.length) {
+      if (contenu[k + 1] === '|') { out += '|'; k++; continue; }
+      out += c + contenu[k + 1]; k++; continue;
+    }
+    out += c;
+  }
+  return out;
+}
+function compilerMotifSource(source, flags) {
+  for (const f of flags) {
+    if (!OPTIONS_MOTIF.includes(f)) throw new Error("motif invalide : l'option '" + f + "' n'existe pas (options possibles : i, m, s)");
+  }
+  if (new Set(flags).size !== flags.length) throw new Error("motif invalide : option ecrite deux fois dans '" + flags + "'");
+  try { return new RegExp(source, flags); }
+  catch (e) { throw new Error("motif invalide : " + source); }
+}
+function creerMotif(source, flags) {
+  flags = flags || '';
+  compilerMotifSource(source, flags);   // erreur claire tout de suite si le motif est refuse
+  return { __type: "motif", source: source, flags: flags };
+}
+// Un RegExp NEUF a chaque appel (aucun etat lastIndex partage). global = true pour trouver/remplacer/decouper partout.
+function reDuMotif(m, global) { return new RegExp(m.source, m.flags + (global ? 'g' : '')); }
+function echapperMotif(t) { return t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+let __modificateursMotif = null;
+function modificateursSupportes() {
+  if (__modificateursMotif === null) { try { new RegExp("(?i:a)"); __modificateursMotif = true; } catch (e) { __modificateursMotif = false; } }
+  return __modificateursMotif;
+}
+// Contenu de fam|...| -> liste de { lit } et { expr, mode } (mode : '' variable, 'm' texte insere comme motif, 'c' comptage).
+function analyserMotifF(contenu) {
+  let parts = [], lit = '', i = 0, n = contenu.length;
+  const poser = () => { if (lit !== '') { parts.push({ lit: lit }); lit = ''; } };
+  while (i < n) {
+    let c = contenu[i];
+    if (c === '\\' && i + 1 < n) {
+      if (contenu[i + 1] === '|') { lit += '|'; i += 2; continue; }
+      lit += c + contenu[i + 1]; i += 2; continue;
+    }
+    if (c === '{') {
+      let j = finAccoladeF(contenu, i + 1);
+      if (j === -1) throw new Error("Motif fam|...| : accolade { jamais fermee (pour une vraie accolade, ecris \\{)");
+      let e = contenu.slice(i + 1, j).trim();
+      if (/^\d+(,\d*)?$/.test(e)) { lit += '{' + e + '}'; i = j + 1; continue; }   // {3}, {2,5}, {2,} : comptage du motif, tel quel
+      let mode = '';
+      let mm = /^([\s\S]+?)!([mc])$/.exec(e);
+      if (mm) { e = mm[1].trim(); mode = mm[2]; }
+      if (e === '') throw new Error("Motif fam|...| : accolade vide {} (il faut une variable ; pour une vraie accolade, ecris \\{)");
+      if (estTexteLitteralComplet(e)) throw new Error("Motif fam|...| : un texte |...| seul n'a pas sa place dans les accolades (elles servent a inserer une variable) : {" + e + "}");
+      let sans = retirerTextesDansExpr(e);
+      if (sans.includes('|') || sans.includes('{')) throw new Error("Motif fam|...| : caractere inattendu dans l'expression : {" + e + "}");
+      poser();
+      parts.push({ expr: e, mode: mode });
+      i = j + 1; continue;
+    }
+    lit += c; i++;
+  }
+  poser();
+  return parts;
+}
+async function evaluerMotifF(parts, flags, ctx) {
+  let src = '';
+  for (let p of parts) {
+    if (p.lit !== undefined) { src += p.lit; continue; }
+    let v = await evalExpr(p.expr, ctx);
+    if (p.mode === 'c') {
+      let nb = (typeof v === 'bigint') ? Number(v) : v;
+      if (typeof nb !== 'number' || !Number.isInteger(nb) || nb < 0) {
+        throw new ErreurTypeInvalide("le nombre de repetitions doit etre un entier positif, recu : " + formatValeur(v));
+      }
+      src += '{' + nb + '}'; continue;
+    }
+    if (p.mode === 'm') {
+      if (typeof v !== 'string') throw new ErreurTypeInvalide("fam|...| : {" + p.expr + "!m} doit etre du texte (recu : " + nomNature(v) + ")");
+      src += alternativesMotif(v); continue;   // texte insere comme vrai motif (invalide -> erreur 'motif invalide' a la fin)
+    }
+    if (estMotif(v)) {
+      if (v.flags !== '') {
+        if (!modificateursSupportes()) throw new Error("fam|...| : le motif {" + p.expr + "} a des options (" + v.flags + ") et ce moteur ne sait pas les limiter a une partie du motif ; ecris plutot l'option apres fam|...|, par exemple fam|...|" + v.flags);
+        src += '(?' + v.flags + ':' + v.source + ')';
+      } else src += '(?:' + v.source + ')';
+      continue;
+    }
+    if (typeof v === 'string') { src += echapperMotif(v); continue; }
+    if (typeof v === 'number' || typeof v === 'bigint') { src += echapperMotif(formatValeur(v)); continue; }
+    throw new ErreurTypeInvalide("fam|...| : {" + p.expr + "} doit etre du texte, un nombre ou un motif (recu : " + nomNature(v) + ")");
+  }
+  return creerMotif(src, flags);
+}
 
 function tokenizerExpr(str) {
   // La tokenization est purement syntaxique (ne depend jamais des valeurs des
@@ -2079,7 +2188,7 @@ function tokenizerExpr(str) {
       tokens.push({ type: 'num', v: parseFloat(str.slice(i, j)) });
       i = j; continue;
     }
-    if (/[a-zA-Z_]/.test(c) && !((c === 'r' || c === 'f') && prefixeTexteEn(str, i))) {
+    if (/[a-zA-Z_]/.test(c) && !((c === 'r' || c === 'f' || c === 'm') && prefixeTexteEn(str, i))) {
       // MOD et ENTI sont des mots-operateurs : on les reconnait meme colles a des
       // chiffres (3mod4, 3MOD4, 3enti4, 3ENTI4) sans obliger a mettre des espaces.
       // On ne les reconnait pas si c'est le debut d'un identifiant plus long
@@ -2108,12 +2217,23 @@ function tokenizerExpr(str) {
       else tokens.push({ type: 'ident', v: mot });
       i = j; continue;
     }
-    if (c === '|' || ((c === 'r' || c === 'f') && prefixeTexteEn(str, i))) {
+    if (c === '|' || ((c === 'r' || c === 'f' || c === 'm') && prefixeTexteEn(str, i))) {
       let pref = prefixeTexteEn(str, i);
       let fin = finTexteLitteral(str, pref.debutBarre);
       if (fin < 0) throw new Error("Texte litteral |...| non ferme dans l'expression : \"" + str + "\"");
       let contenu = str.slice(pref.debutBarre + 1, fin);
       let tok = { type: 'str', raw: str.slice(i, fin + 1) };
+      if (pref.motif) {
+        // options (i, m, s) collees apres la barre fermante : m|abc|i  (si une lettre d'un mot suit, ce n'est pas une option)
+        let fl = '', q = fin + 1;
+        while (q < n && OPTIONS_MOTIF.includes(str[q])) { fl += str[q]; q++; }
+        if (fl !== '' && /[a-zA-Z0-9_]/.test(str[q] || '')) { fl = ''; q = fin + 1; }
+        tok.raw = str.slice(i, q);
+        if (pref.interp) { tok.f = analyserMotifF(contenu); tok.v = contenu; tok.motifF = { flags: fl }; }
+        else tok.v = creerMotif(alternativesMotif(contenu), fl);
+        tokens.push(tok);
+        i = q; continue;
+      }
       if (pref.interp) { tok.f = analyserTexteF(contenu, pref.brut); tok.v = contenu; }
       else tok.v = pref.brut ? contenu : decoderEchappements(contenu);
       tokens.push(tok);
@@ -3639,7 +3759,7 @@ async function evalExprSansEntreeAsync(str, ctx) {
     let t = peek();
     if (!t) throw new Error("Expression incomplete");
     if (t.type === 'num') { next(); return t.v; }
-    if (t.type === 'str') { next(); return t.f ? await evaluerTexteF(t.f, ctx) : t.v; }
+    if (t.type === 'str') { next(); return t.f ? (t.motifF ? await evaluerMotifF(t.f, t.motifF.flags, ctx) : await evaluerTexteF(t.f, ctx)) : t.v; }
     if (t.type === '(') {
       next(); let v = await parseOr();
       if (!peek() || peek().type !== ')') throw new Error("Parenthese fermante manquante");
@@ -4021,9 +4141,9 @@ function exigerTexte(v, nomCmd, quoi) {
    Les six commandes decoup, joindr, remplace, cherch, commence, termine existent AUSSI en fonction (ancienne forme,
    plus documentee) ; les deux formes partagent le meme code (les fonctions coeur ci-dessous).
    Methodes a nom pointe : avant.dernier, apres.dernier, garder.contenant, enlever.contenant. */
-const METHODES_TEXTE = new Set(["decoup", "joindr", "remplace", "cherch", "commence", "termine", "lon",
+const METHODES_TEXTE = new Set(["decoup", "joindr", "remplace", "cherch", "commence", "termine", "lon", "correspond", "trouve",
                                 "avant", "apres", "entre", "garder", "enlever"]);
-const METHODES_POINTEES = new Map([["avant", "dernier"], ["apres", "dernier"], ["garder", "contenant"], ["enlever", "contenant"]]);
+const METHODES_POINTEES = new Map([["avant", "dernier"], ["apres", "dernier"], ["garder", "contenant"], ["enlever", "contenant"], ["trouve", "tout"]]);
 function egalValeursSimples(a, b) {
   if (a === b) return true;
   if ((typeof a === 'number' || typeof a === 'bigint') && (typeof b === 'number' || typeof b === 'bigint')) return Number(a) === Number(b);
@@ -4041,14 +4161,15 @@ function exigerEntier(v, nomCmd, quoi) {
 }
 // Arguments (), (sep), (nombre) ou (sep, nombre) : un nombre SEUL est la limite/position (separateur par defaut = les
 // espaces) ; pour couper sur un chiffre il faut l'ecrire en texte : |1|.
-function analyserSepEtNombre(args, nomCmd, libelleNombre) {
+function analyserSepEtNombre(args, nomCmd, libelleNombre, motifOk) {
   if (args.length > 2) throw new Error(nomCmd + " : 2 arguments au plus (separateur, " + libelleNombre.replace(/^la /, "") + ")");
   let sep, nombre;
   if (args.length === 1) {
     if (estNombreArg(args[0])) nombre = exigerEntier(args[0], nomCmd, libelleNombre);
+    else if (motifOk && estMotif(args[0])) sep = args[0];
     else sep = exigerTexte(args[0], nomCmd, "le separateur");
   } else if (args.length === 2) {
-    sep = exigerTexte(args[0], nomCmd, "le separateur");
+    sep = (motifOk && estMotif(args[0])) ? args[0] : exigerTexte(args[0], nomCmd, "le separateur");
     nombre = exigerEntier(args[1], nomCmd, libelleNombre);
   }
   return { sep: sep, n: nombre };
@@ -4068,6 +4189,8 @@ function coreDecoup(t, sep, limite) {
       morceaux.push(reste.slice(0, m.index));
       reste = reste.slice(m.index + m[0].length);
     }
+  } else if (estMotif(sep)) {
+    morceaux = decouperParMotif(t, sep, limite);
   } else if (sep === "") {
     let lettres = Array.from(t);
     morceaux = (limite !== undefined && lettres.length > limite) ? lettres.slice(0, limite - 1).concat([lettres.slice(limite - 1).join("")]) : lettres;
@@ -4082,9 +4205,101 @@ function coreJoindr(l, sep, nomCmd) {
   if (elements === null) throw new ErreurTypeInvalide(nomCmd + " : la valeur doit etre une liste ou un vecteur (recu : " + nomNature(l) + ")");
   return elements.map(e => formatValeur(e)).join(sep === undefined ? "" : sep);
 }
-function coreRemplace(t, ancien, nouveau) {
+// max === undefined -> tout remplacer ; sinon au plus max remplacements (les premiers). ancien : texte (cherche tel quel) ou motif.
+function coreRemplace(t, ancien, nouveau, max) {
+  if (estMotif(ancien)) return remplacerParMotif(t, ancien, nouveau, max);
   if (ancien === "") throw new Error("remplace : le texte a remplacer ('ancien') ne peut pas etre vide");
-  return t.split(ancien).join(nouveau);
+  if (max === undefined) return t.split(ancien).join(nouveau);
+  let out = '', i = 0, nb = 0;
+  while (nb < max) {
+    let a = t.indexOf(ancien, i);
+    if (a < 0) break;
+    out += t.slice(i, a) + nouveau;
+    i = a + ancien.length; nb++;
+  }
+  return out + t.slice(i);
+}
+// Dans le texte de remplacement d'un motif : $1, $2... = groupe par son numero ; $<nom> = groupe nomme ; $$ = un vrai $.
+function expansionRemplacement(modele, m) {
+  return modele.replace(/\$(\$|\d{1,2}|<([^>]*)>)/g, (tout, g, nom) => {
+    if (g === '$') return '$';
+    if (nom !== undefined) {
+      if (m.groups && Object.prototype.hasOwnProperty.call(m.groups, nom)) return m.groups[nom] === undefined ? '' : m.groups[nom];
+      return tout;
+    }
+    let num = parseInt(g, 10);
+    if (g.length === 2 && num >= m.length) {   // $12 sans groupe 12 : groupe 1 suivi du chiffre 2 (comme JS)
+      let n1 = parseInt(g[0], 10);
+      if (n1 >= 1 && n1 < m.length) return (m[n1] === undefined ? '' : m[n1]) + g[1];
+    }
+    if (num >= 1 && num < m.length) return m[num] === undefined ? '' : m[num];
+    return tout;
+  });
+}
+function remplacerParMotif(t, motif, nouveau, max) {
+  let out = '', dernier = 0, nb = 0;
+  for (let m of t.matchAll(reDuMotif(motif, true))) {
+    if (max !== undefined && nb >= max) break;
+    out += t.slice(dernier, m.index) + expansionRemplacement(nouveau, m);
+    dernier = m.index + m[0].length; nb++;
+  }
+  return out + t.slice(dernier);
+}
+// decoup avec un motif : comme le decoupage par texte (limite = nombre de morceaux au plus, le dernier garde le reste).
+// Les groupes () du motif ne sont PAS ajoutes aux morceaux ; une correspondance vide au tout debut ou a la toute fin est ignoree.
+function decouperParMotif(t, motif, limite) {
+  let morceaux = [], dernier = 0;
+  for (let m of t.matchAll(reDuMotif(motif, true))) {
+    if (limite !== undefined && morceaux.length === limite - 1) break;
+    if (m[0] === '' && (m.index === 0 || m.index === t.length)) continue;
+    morceaux.push(t.slice(dernier, m.index));
+    dernier = m.index + m[0].length;
+  }
+  morceaux.push(t.slice(dernier));
+  return morceaux;
+}
+function exigerMotif(v, nomCmd) {
+  if (!estMotif(v)) {
+    throw new ErreurTypeInvalide(nomCmd + " : il faut un motif (ecrit m|...| ou fam|...|), recu : " + nomNature(v) +
+      (typeof v === 'string' ? " (pour chercher un texte tel quel dans un motif, ecris fam|{x}| )" : ""));
+  }
+  return v;
+}
+// Verifie le groupe demande (numero, 0 = tout le morceau ; ou nom) AVANT de chercher, pour que l'erreur ne depende pas du texte.
+function verifierGroupe(motif, groupe, nomCmd) {
+  let sonde = new RegExp(motif.source + '|', motif.flags).exec('');
+  let nb = sonde.length - 1;
+  if (typeof groupe === 'bigint') groupe = Number(groupe);
+  if (typeof groupe === 'number') {
+    if (!Number.isInteger(groupe) || groupe < 0 || groupe > nb) {
+      throw new Error(nomCmd + " : le groupe " + formatValeur(groupe) + " n'existe pas dans ce motif (il y a " + nb + " groupe(s) ; le groupe 0 est tout le morceau trouve)");
+    }
+    return groupe;
+  }
+  if (typeof groupe === 'string') {
+    if (!sonde.groups || !Object.prototype.hasOwnProperty.call(sonde.groups, groupe)) {
+      throw new Error(nomCmd + " : le groupe nomme '" + groupe + "' n'existe pas dans ce motif (ecris (?<" + groupe + ">...) dans le motif)");
+    }
+    return groupe;
+  }
+  throw new ErreurTypeInvalide(nomCmd + " : le groupe doit etre un numero ou un nom (recu : " + nomNature(groupe) + ")");
+}
+function lireGroupe(m, groupe) {
+  let r = (typeof groupe === 'number') ? m[groupe] : (m.groups ? m.groups[groupe] : undefined);
+  return r === undefined ? "" : r;
+}
+// trouve : le premier morceau qui correspond, ou le texte vide s'il n'y en a pas (jamais d'erreur si rien n'est trouve).
+function coreTrouve(t, motif, groupe, nomCmd) {
+  groupe = verifierGroupe(motif, groupe, nomCmd);
+  let m = reDuMotif(motif, false).exec(t);
+  return m === null ? "" : lireGroupe(m, groupe);
+}
+// trouve.tout : la liste de tous les morceaux qui correspondent (liste vide s'il n'y en a pas).
+function coreTrouveTout(t, motif, groupe, nomCmd) {
+  groupe = verifierGroupe(motif, groupe, nomCmd);
+  let r = [];
+  for (let m of t.matchAll(reDuMotif(motif, true))) r.push(lireGroupe(m, groupe));
+  return { __type: "liste", elements: r };
 }
 // cherch : position (a partir de 1) du morceau dans un texte, ou d'une valeur dans une liste/un vecteur ; 0 si absent.
 function coreCherch(cible, m, nomCmd) {
@@ -4248,17 +4463,28 @@ function appliquerMethodeTexte(v, m, args) {
       m + " : la valeur avant le point doit etre du texte, une liste ou un vecteur (recu : " + nomNature(v) + ")", false);
   }
   if (m === "remplace") {
-    attend(2, 2, "remplace(ancien, nouveau)");
-    let ancien = exigerTexte(args[0], "remplace", "'ancien'"), nouveau = exigerTexte(args[1], "remplace", "'nouveau'");
+    attend(2, 3, "remplace(ancien, nouveau, max)");
+    let ancien = estMotif(args[0]) ? args[0] : exigerTexte(args[0], "remplace", "'ancien'"), nouveau = exigerTexte(args[1], "remplace", "'nouveau'");
     if (ancien === "") throw new Error("remplace : le texte a remplacer ('ancien') ne peut pas etre vide");
-    return surTexteOuElements(v, t => coreRemplace(t, ancien, nouveau),
+    let max = n === 3 ? exigerEntier(args[2], "remplace", "le nombre maximum de remplacements") : undefined;
+    if (max !== undefined && max < 0) throw new Error("remplace : le nombre maximum de remplacements ne peut pas etre negatif (recu : " + max + ")");
+    return surTexteOuElements(v, t => coreRemplace(t, ancien, nouveau, max),
       "remplace : la valeur avant le point doit etre du texte, une liste ou un vecteur (recu : " + nomNature(v) + ")", false);
   }
   // decoup / entre / commence / termine : s'appliquent a un TEXTE
   if (typeof v !== 'string') throw new ErreurTypeInvalide(m + " : la valeur avant le point doit etre du texte (recu : " + nomNature(v) + ")");
   if (m === "decoup") {
-    let r = analyserSepEtNombre(args, "decoup", "la limite");
+    let r = analyserSepEtNombre(args, "decoup", "la limite", true);
     return coreDecoup(v, r.sep, r.n);
+  }
+  if (m === "correspond") {
+    attend(1, 1, "correspond(motif)");
+    return reDuMotif(exigerMotif(args[0], "correspond"), false).test(v);
+  }
+  if (m === "trouve" || m === "trouve.tout") {
+    attend(1, 2, m + "(motif, groupe)");
+    let motif = exigerMotif(args[0], m), groupe = n === 2 ? args[1] : 0;
+    return m === "trouve" ? coreTrouve(v, motif, groupe, m) : coreTrouveTout(v, motif, groupe, m);
   }
   if (m === "entre") {
     attend(2, 2, "entre(debut, fin)");
@@ -4276,6 +4502,7 @@ function nomNature(v) {
   if (estMatrice(v)) return "matrice";
   if (estListe(v)) return "liste";
   if (estDictionnai(v)) return "dictionnai";
+  if (estMotif(v)) return "motif";
   if (estVecteur(v)) return "vecteur";
   if (typeof v === "boolean") return "booleen";
   if (typeof v === "bigint") return "entier";
@@ -4337,6 +4564,7 @@ function appliquerRacineN(n, v) {
 function estTexteLitteralComplet(s) {
   let p = prefixeTexteEn(s, 0);
   if (!p) return false;
+  if (p.motif) return false;   // m|...| et fam|...| sont des MOTIFS (pas des textes) : ils passent par l'evaluation d'expression
   return finTexteLitteral(s, p.debutBarre) === s.length - 1;
 }
 function verifierTexteLitteralFerme(s) {
@@ -5396,6 +5624,7 @@ function formatValeur(v) {
   if (estMatrice(v)) return formatMatrice(v);
   if (estListe(v)) return formatListe(v);
   if (estDictionnai(v)) return formatDictionnai(v);
+  if (estMotif(v)) return "/" + v.source + "/" + v.flags;
   if (estVecteur(v)) return formatVecteur(v);
   if (v === true) return "VRAI";
   if (v === false) return "FAUX";
@@ -7605,11 +7834,12 @@ let aideCommandes = [
       "copier(x) copie la liste, le vecteur, la matrice, le dictionnai ou l'instance, mais les listes/dictionnai places A L'INTERIEUR restent partages avec l'original.",
       "copier.profond(x) copie tout, a tous les niveaux : plus aucun element n'est partage avec l'original."
     ], exemple: "a ~ liste(liste(1,2), 3)\nb ~ copier(a)\nb[2] ~ 7                  ** a[2] reste 3\nb[1][1] ~ 99              ** a[1][1] devient aussi 99 (liste interne partagee)\nc ~ copier.profond(a)\nc[1][1] ~ 5               ** a n'est pas touche" },
-  { noms: ["decoup", "joindr", "remplace", "cherch", "commence", "termine"], categorie: "Texte", syntaxe: "texte.decoup(separateur)  /  texte.decoup(separateur, limite)  /  texte.decoup(limite)  /  liste.joindr(separateur)  /  texte.remplace(ancien, nouveau)  /  x.cherch(morceau)  /  texte.commence(debut)  /  texte.termine(fin)", description: [
+  { noms: ["decoup", "joindr", "remplace", "cherch", "commence", "termine"], categorie: "Texte", syntaxe: "texte.decoup(separateur)  /  texte.decoup(separateur, limite)  /  texte.decoup(limite)  /  liste.joindr(separateur)  /  texte.remplace(ancien, nouveau)  /  texte.remplace(ancien, nouveau, max)  /  x.cherch(morceau)  /  texte.commence(debut)  /  texte.termine(fin)", description: [
       "texte.decoup(sep) coupe le texte a chaque sep (n'importe quel texte, de n'importe quelle longueur) et renvoie une liste. Sans sep : coupe sur les espaces (plusieurs espaces de suite comptent pour un seul, ceux du debut et de la fin sont ignores). Avec sep vide || : coupe lettre par lettre. saulig est accepte comme argument : texte.decoup(saulig) coupe a chaque saut de ligne, liste.joindr(saulig) colle avec des sauts de ligne, texte.remplace(saulig, | |) enleve les sauts de ligne.",
       "texte.decoup(sep, limite) fait au plus limite morceaux : le dernier garde tout le reste. texte.decoup(limite) fait pareil en coupant sur les espaces. Limite 0 ou negative : liste vide. Limite plus grande que le nombre de morceaux possibles : meme resultat que decoup(sep). Limite non entiere (2.5) : erreur claire. Un nombre seul est toujours la limite : pour couper sur un chiffre, l'ecrire en texte : decoup(|1|).",
       "liste.joindr(sep) colle les elements d'une liste ou d'un vecteur avec sep entre chaque (sans sep : colles sans rien entre eux). Les nombres sont convertis en texte.",
-      "texte.remplace(ancien, nouveau) remplace TOUTES les occurrences de ancien par nouveau (ancien ne peut pas etre vide). Sur une liste ou un vecteur, remplace s'applique a chaque element texte et renvoie une liste.",
+      "texte.decoup(motif) coupe a chaque endroit ou le motif correspond : |a1b22c|.decoup(m|\\d+|) donne liste(|a|, |b|, |c|). Les groupes () du motif ne sont pas ajoutes aux morceaux. La limite marche comme pour un texte.",
+      "texte.remplace(ancien, nouveau) remplace TOUTES les occurrences de ancien par nouveau (ancien ne peut pas etre vide). Un 3e argument facultatif limite le nombre de remplacements (au plus max, les premiers) : |a a a|.remplace(|a|, |b|, 2) donne b b a. ancien peut aussi etre un motif (voir correspond / trouve) : nouveau peut alors contenir $1, $2... ou $<nom> pour reutiliser un groupe, et $$ pour un vrai $. Sur une liste ou un vecteur, remplace s'applique a chaque element texte et renvoie une liste.",
       "x.cherch(morceau) donne la position (a partir de 1, comme texte[i]) de la premiere occurrence, ou 0 si le morceau est absent. x peut etre un texte (on cherche un morceau de texte) ou une liste/un vecteur (on cherche une valeur : l.cherch(5)).",
       "texte.commence(debut) et texte.termine(fin) renvoient VRAI ou FAUX. Majuscules et minuscules comptent comme des lettres differentes.",
       "Toutes ces commandes s'enchainent avec miniscul(), majuscul(), suprespac(), lon(), avant, apres, entre, garder et enlever : texte.suprespac().majuscul().decoup().joindr(|-|). Les anciennes ecritures decoup(texte, sep), joindr(liste, sep)... marchent toujours."
@@ -7637,6 +7867,14 @@ let aideCommandes = [
       "Un seul niveau : les listes imbriquees ne sont jamais fouillees plus profond (une sous-liste est un seul element).",
       "Erreurs claires : aucune valeur donnee, valeur vide dans .contenant, .contenant sur un texte (pas de sens)."
     ], exemple: "liste(|a|, |ab|, |b|).garder(|a|)              ->   liste(|a|)\nliste(|a|, |ab|, |b|).garder.contenant(|a|)    ->   liste(|a|, |ab|)\nliste(|a|, |ab|, |b|).enlever.contenant(|a|)   ->   liste(|b|)\nc(1, 2, 1, 3).enlever(1)                       ->   c(2, 3)\n|a1b22c|.garder(|0123456789|)                  ->   122" },
+  { noms: ["correspond", "trouve", "trouve.tout"], categorie: "Texte", syntaxe: "x.correspond(motif)  /  x.trouve(motif)  /  x.trouve(motif, groupe)  /  x.trouve.tout(motif)  /  x.trouve.tout(motif, groupe)", description: [
+      "Un MOTIF (expression reguliere) decrit une forme de texte. m|\\d+| est un motif qui trouve un nombre ; m|abc|i ignore les majuscules ; fam|...| fabrique un motif avec des {variables}. Options apres la barre fermante : i (ignorer les majuscules), m (^ et $ ligne par ligne), s (le point accepte aussi le saut de ligne).",
+      "Dans m|...| et fam|...|, les antislashs vont tels quels au motif (\\d, \\s, \\.) ; \\| est l'ALTERNATIVE : m|chat\\|chien| = chat ou chien. Pour chercher une vraie barre, ecris [\\|] ou \\x7C : m|a[\\|]b| et m|a\\x7Cb| cherchent a|b.",
+      "x.correspond(motif) renvoie VRAI ou FAUX. x.trouve(motif) renvoie le premier morceau qui correspond, ou un texte vide s'il n'y en a pas (jamais d'erreur). x.trouve.tout(motif) renvoie la liste de tous les morceaux (liste vide s'il n'y en a pas). Un texte ordinaire n'est pas un motif : pour chercher un texte tel quel, ecris fam|{x}|.",
+      "Groupes : les parentheses du motif isolent des morceaux. trouve et trouve.tout acceptent apres le motif un numero de groupe (0 = tout le morceau) ou un nom : avec (?<mois>\\d+) dans le motif, x.trouve(motif, |mois|). Groupe inexistant : erreur claire.",
+      "fam|...| : {x} insere la variable x (un texte ou un nombre est cherche tel quel, un motif est insere avec son sens et ses options) ; {x!m} insere un texte comme vrai motif ; {n!c} donne un nombre de repetitions ({3}) et exige un entier positif ; {3} et {2,5} restent le comptage du motif ; \\{ est une vraie accolade. Un motif refuse par le moteur donne l'erreur « motif invalide : ... ».",
+      "decoup et remplace acceptent aussi un motif (voir ces commandes)."
+    ], exemple: "|Tel 12 et 34|.correspond(m|\\d+|)          ->   VRAI\n|Tel 12 et 34|.trouve(m|\\d+|)              ->   12\n|Tel 12 et 34|.trouve.tout(m|\\d+|)         ->   liste(|12|, |34|)\n|18-10-2026|.trouve(m|(?<mois>\\d+)-(\\d+)|, |mois|)   ->   10\n|18-10-2026|.remplace(m|(\\d+)-(\\d+)-(\\d+)|, |$3-$2-$1|)   ->   2026-10-18\nn ~ 3   puis   |123|.correspond(fam|^\\d{n!c}$|)   ->   VRAI" },
   { noms: ["seq"], categorie: "Creer un vecteur/une matrice", syntaxe: "seq(debut, fin, pas)", description: [
       "Construit une suite de nombres, de debut a fin.",
       "pas est facultatif : +1 par defaut (ou -1 si fin est plus petit que debut)."
@@ -8329,7 +8567,7 @@ function enregistrerFonctionsBase() {
         // evaluerElementBrut : reconnait saulig (saut de ligne) comme separateur, en plus de |texte| et des expressions
         let extra = [];
         for (let i = 1; i < args.length; i++) extra.push(await evaluerElementBrut(args[i], ctxExpr));
-        let r = analyserSepEtNombre(extra, "decoup", "la limite");
+        let r = analyserSepEtNombre(extra, "decoup", "la limite", true);
         return coreDecoup(t, r.sep, r.n);
     };
     fonctionsBase["joindr"] = fonctionsExpression["joindr"] = async function(args, ctxExpr) {
@@ -8339,11 +8577,14 @@ function enregistrerFonctionsBase() {
         return coreJoindr(l, sep, "joindr");
     };
     fonctionsBase["remplace"] = fonctionsExpression["remplace"] = async function(args, ctxExpr) {
-        if (args.length !== 3) throw new Error("remplace(texte, ancien, nouveau) attend 3 arguments");
+        if (args.length < 3 || args.length > 4) throw new Error("remplace(texte, ancien, nouveau, max) attend 3 ou 4 arguments (max facultatif)");
         let t = exigerTexte(await evaluerElementBrut(args[0], ctxExpr), "remplace", "le texte");
-        let ancien = exigerTexte(await evaluerElementBrut(args[1], ctxExpr), "remplace", "'ancien'");
+        let ancienBrut = await evaluerElementBrut(args[1], ctxExpr);
+        let ancien = estMotif(ancienBrut) ? ancienBrut : exigerTexte(ancienBrut, "remplace", "'ancien'");
         let nouveau = exigerTexte(await evaluerElementBrut(args[2], ctxExpr), "remplace", "'nouveau'");
-        return coreRemplace(t, ancien, nouveau);
+        let max = args.length === 4 ? exigerEntier(await evaluerElementBrut(args[3], ctxExpr), "remplace", "le nombre maximum de remplacements") : undefined;
+        if (max !== undefined && max < 0) throw new Error("remplace : le nombre maximum de remplacements ne peut pas etre negatif (recu : " + max + ")");
+        return coreRemplace(t, ancien, nouveau, max);
     };
     fonctionsBase["cherch"] = fonctionsExpression["cherch"] = async function(args, ctxExpr) {
         if (args.length !== 2) throw new Error("cherch(texte, morceau) attend 2 arguments");
@@ -12992,10 +13233,11 @@ function _verifierTextesF(code) {
     if (!p) continue;
     const fin = finTexteLitteral(c, p.debutBarre);
     if (fin === -1) return null;   // texte non ferme : deja signale par _trouverTexteNonFerme
-    if (p.interp) {
+    if (p.interp || p.motif) {
       const contenu = c.slice(p.debutBarre + 1, fin);
       try {
-        for (const part of analyserTexteF(contenu, p.brut)) if (part.expr !== undefined) verifierSyntaxeExpression(part.expr);
+        if (p.motif && !p.interp) creerMotif(alternativesMotif(contenu), '');
+        else for (const part of (p.motif ? analyserMotifF(contenu) : analyserTexteF(contenu, p.brut))) if (part.expr !== undefined) verifierSyntaxeExpression(part.expr);
       } catch (e) { return { ligne: ligne, message: e.message }; }
     }
     for (let q = k; q <= fin; q++) if (c[q] === '\n') ligne++;
