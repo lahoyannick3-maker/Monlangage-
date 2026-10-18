@@ -1,0 +1,19 @@
+** Test des alertes natives (a lancer avec RUN dans l'app installee, apres le build)
+
+** 1) Vibration de 1 seconde, meme en silencieux
+alerte.vibre(1000)
+attendre(2)
+
+** 2) Mode script : l'alerte vit avec le script
+alerte.mode(|script|)
+a ~ alerte.son(|sirene|, 30, 0.6)
+attendre(4)
+alerte.arrete(a)
+attendre(1)
+
+** 3) Mode autonome (defaut) : le script se termine, l'alerte continue.
+**    Une notification avec le bouton Arreter s'affiche.
+alerte.mode(|autonome|)
+alerte.son(|defaut|, 20)
+alerte.vibre(liste(0, 500, 300, 500, 300, 500))
+affi(|Script termine : l'alerte doit continuer. Coupe-la avec le bouton Arreter de la notification.|)

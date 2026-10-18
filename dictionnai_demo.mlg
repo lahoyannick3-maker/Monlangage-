@@ -1,0 +1,33 @@
+** Demo : dictionnai, trier, copier et fonctions de texte
+d ~ dictionnai(|nom|: |Yannick|, |age|: 30)
+d[|ville|] ~ |Abidjan|
+affi(d)
+affi(d.lire(|pays|, |inconnu|))
+si(|age| dan d){
+  affi(|age connu : |, d[|age|])
+}
+
+** compter les mots d'un texte
+phrase ~ |le chat et le chien et le chat|
+compte ~ dictionnai()
+pou(mot dan decoup(phrase)){
+  compte[mot] ~ compte.lire(mot, 0) + 1
+}
+pou(mot dan trier(compte.cles())){
+  affi(mot, compte[mot])
+}
+
+** tri : nouvelle liste (trier) ou sur place (.trier)
+l ~ liste(3, 1, 2)
+m ~ trier(l, decroiss~VRAI)
+affi(m)
+l.trier()
+affi(l)
+
+** copie independante
+a ~ liste(liste(1, 2), 3)
+b ~ copier.profond(a)
+b[1][1] ~ 99
+affi(a[1][1])
+affi(joindr(decoup(|a-b-c|, |-|), | + |))
+affi(remplace(|le chat|, |chat|, |chien|))
