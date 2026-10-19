@@ -620,7 +620,7 @@ let _cacheSegmentsExpression = new Map(); // str -> { version, segments }
 // numero de ligne propre (il est fabrique a partir de tokens d'expression, qui n'en portent
 // pas), donc on reutilise la derniere ligne source reellement executee.
 let ligneExpressionCourante = 0;
-let commandes = ["affi", "pou", "tanqer", "casse", "quitte", "continu", "si", "sinon", "sision", "essai", "attrape", "fonc", "retour", "entr", "c", "liste", "texte", "seq", "rep", "alea", "ralea", "matrice", "lon", "dim", "limiteRecursion", "entier", "reel", "som", "moy", "var", "sd", "max", "min", "suchaq", "det", "trace", "trans", "aide", "base", "effa", "voi", "lettr", "Lettr", "VRAI", "FAUX", "pasdefini", "ecrire.cle", "lire.cle", "ajout.cle"];
+let commandes = ["affi", "pou", "tanqer", "casse", "quitte", "continu", "si", "sinon", "sisinon", "essai", "attrape", "fonc", "retour", "entr", "c", "liste", "texte", "seq", "rep", "alea", "ralea", "matrice", "lon", "dim", "limiteRecursion", "entier", "reel", "som", "moy", "var", "sd", "max", "min", "suchaq", "det", "trace", "trans", "aide", "base", "effa", "voi", "lettr", "Lettr", "VRAI", "FAUX", "pasdefini", "ecrire.cle", "lire.cle", "ajout.cle"];
 
 let outputDiv = document.getElementById("output");
 // Couleur du texte de affi(...) fixee par couleur(...) ; null = couleur normale. Remise a null au debut et a la fin de chaque script.
@@ -1863,6 +1863,8 @@ function assignerCheminValeur(chemin, valeur) {
 function estVrai(v) {
   if (estVecteur(v)) return v.some(x => estVrai(x));
   if (estMatrice(v)) return v.donnees.some(x => estVrai(x));
+  if (estListe(v)) return v.elements.length > 0;
+  if (estDictionnai(v)) return v.entrees.size > 0;
   return !(v === 0 || v === false || v === "" || v === null || v === undefined || (typeof v === "number" && Number.isNaN(v)));
 }
 
@@ -4220,7 +4222,7 @@ function exigerTexte(v, nomCmd, quoi) {
    Methodes a nom pointe : avant.dernier, apres.dernier, garder.contenant, enlever.contenant. */
 const METHODES_TEXTE = new Set(["decoup", "joindr", "remplace", "cherch", "commence", "termine", "lon", "correspond", "trouve", "complete", "extrait",
                                 "avant", "apres", "entre", "garder", "enlever"]);
-const METHODES_POINTEES = new Map([["avant", ["dernier"]], ["apres", ["dernier"]], ["garder", ["contenant"]], ["enlever", ["contenant"]], ["trouve", ["tout"]]]);
+const METHODES_POINTEES = new Map([["avant", ["dernier"]], ["apres", ["dernier"]], ["garder", ["contenant"]], ["enlever", ["contenant"]], ["trouve", ["tout"]], ["inverse", ["text"]], ["cherch", ["dernier"]]]);
 function egalValeursSimples(a, b) {
   if (a === b) return true;
   if ((typeof a === 'number' || typeof a === 'bigint') && (typeof b === 'number' || typeof b === 'bigint')) return Number(a) === Number(b);
@@ -4400,6 +4402,22 @@ function coreCherch(cible, m, nomCmd, depart) {
   for (let i = debut; i < elements.length; i++) if (egalValeursSimples(elements[i], m)) return i + 1;
   return 0;
 }
+// Position (a partir de 1) de la DERNIERE occurrence, 0 si absente. Texte : le morceau tel quel ; motif : debut du dernier morceau
+// que trouve.tout donnerait ; liste/vecteur : le dernier element egal.
+function coreCherchDernier(cible, m, nomCmd) {
+  if (typeof cible === 'string') {
+    if (estMotif(m)) {
+      let derniere = 0;
+      for (let r of cible.matchAll(reDuMotif(m, true))) derniere = r.index + 1;
+      return derniere;
+    }
+    return cible.lastIndexOf(exigerTexte(m, nomCmd, "le morceau cherche")) + 1;
+  }
+  let elements = estListe(cible) ? cible.elements : (estVecteur(cible) ? cible : null);
+  if (elements === null) throw new ErreurTypeInvalide(nomCmd + " : la valeur doit etre un texte, une liste ou un vecteur (recu : " + nomNature(cible) + ")");
+  for (let i = elements.length - 1; i >= 0; i--) if (egalValeursSimples(elements[i], m)) return i + 1;
+  return 0;
+}
 function coreLon(v) {
   if (estListe(v)) return v.elements.length;
   if (estDictionnai(v)) return v.entrees.size;
@@ -4571,6 +4589,12 @@ function appliquerMethodeTexte(v, m, args) {
     if (sep === "") throw new Error(m + " : le separateur ne peut pas etre vide");
     return surTexteOuElements(v, t => coreAvantApres(t, sens, sep, position, dernier),
       m + " : la valeur avant le point doit etre du texte, une liste ou un vecteur (recu : " + nomNature(v) + ")", false);
+  }
+  if (m === "cherch.dernier") { attend(1, 1, "cherch.dernier(morceau)"); return coreCherchDernier(v, args[0], "cherch.dernier"); }
+  if (m === "inverse.text") {
+    attend(0, 0, "inverse.text()");
+    if (typeof v !== 'string') throw new ErreurTypeInvalide("inverse.text() : la valeur doit etre un texte (recu : " + nomNature(v) + ")");
+    return Array.from(v).reverse().join('');   // par caractere Unicode : un emoji reste entier
   }
   if (m === "extrait") {
     // x.extrait(debut, longueur) : morceau d'un texte, d'une liste ou d'un vecteur (positions comptees comme lon et t[i]).
@@ -7596,6 +7620,12 @@ let aideCommandes = [
       "Recupere une valeur sauvegardee avec ecrire.cle(...).",
       "Renvoie pasdefini si la cle n'existe pas."
     ], exemple: "c ~ lire.cle(|mon_compte|)" },
+  { noms: ["creer.dossier"], categorie: "Sauvegarde", syntaxe: "creer.dossier(chemin)  ou  creer.dossier(chemin, ecra~FAUX)", description: [
+      "creer.dossier(chemin) cree le dossier a ce chemin complet (avec des '/'), ainsi que les dossiers parents qui manquent. Renvoie VRAI.",
+      "ecra~FAUX par defaut : si quelque chose existe deja a cet endroit, la creation est REFUSEE (erreur, a intercepter avec essai/attrape). ecra~VRAI : si le DOSSIER existe deja, pas d'erreur et creer.dossier renvoie FAUX. ecra~VRAI ne supprime et ne modifie jamais rien.",
+      "Si un FICHIER occupe deja l'emplacement, c'est une erreur dans tous les cas : un dossier ne peut pas le remplacer.",
+      "Ne fonctionne que dans l'app installee (pas en previsualisation navigateur)."
+    ], exemple: "creer.dossier(|/storage/emulated/0/Documents/Mes_scripts|)\ncreer.dossier(|/storage/emulated/0/Documents/Mes_scripts|, ecra~VRAI)   ->   FAUX (il existe deja)" },
   { noms: ["ecrire.fichier"], categorie: "Sauvegarde", syntaxe: "ecrire.fichier(nom, valeur, ecra~FAUX)  ou  ecrire.fichier(chemin, val1, val2, ..., ecra~FAUX)", description: [
       "ecrire.fichier(nom, valeur) : ouvre le navigateur de fichiers integre pour choisir ou enregistrer un vrai fichier .mld.",
       "ecrire.fichier(chemin, valeur) : si nom contient un '/', ecriture DIRECTE a cet emplacement, sans rien afficher a l'ecran.",
@@ -7604,12 +7634,17 @@ let aideCommandes = [
       "Le chemin direct et la verification ecra ne fonctionnent que dans l'app installee (pas en previsualisation navigateur).",
       "Contrairement a ecrire.cle(), le fichier peut ensuite etre partage, copie, deplace hors de l'app.",
       "Un TEXTE est enregistre tel quel, avec ses vraies lignes (un journal reste lisible dans l'IDE) ; une liste ou un dictionnai est ecrit sur plusieurs lignes. lire.fichier(...) renvoie toujours la valeur d'origine."
-    ], exemple: "ecrire.fichier(|sauvegarde_banque|, moi, ecra~VRAI)\nsi(existe.fichier(|/storage/emulated/0/Download/banque.mld|)) { affi(|deja present|) }\nsinon { ecrire.fichier(|/storage/emulated/0/Download/banque.mld|, moi) }" },
-  { noms: ["existe.fichier"], categorie: "Sauvegarde", syntaxe: "existe.fichier(chemin)", description: [
-      "Renvoie VRAI si un fichier existe deja a ce CHEMIN COMPLET (avec '/'), FAUX sinon.",
+    ], exemple: "ecrire.fichier(|sauvegarde_banque|, moi, ecra~VRAI)\nsi(fichier.existe(|/storage/emulated/0/Download/banque.mld|)) { affi(|deja present|) }\nsinon { ecrire.fichier(|/storage/emulated/0/Download/banque.mld|, moi) }" },
+  { noms: ["fichier.existe"], categorie: "Sauvegarde", syntaxe: "fichier.existe(chemin)", description: [
+      "Renvoie VRAI si un FICHIER existe vraiment a ce CHEMIN COMPLET (avec '/'), FAUX sinon (FAUX aussi si le chemin est un dossier).",
+      "Ancien nom existe.fichier : il donne une erreur qui indique fichier.existe.",
       "A utiliser typiquement avant ecrire.fichier(chemin, valeur) pour decider d'ecraser ou non.",
       "Disponible uniquement dans l'app installee (pas en previsualisation navigateur)."
-    ], exemple: "si(existe.fichier(|/storage/emulated/0/Download/banque.mld|)) { affi(|Fichier deja present|) }" },
+    ], exemple: "si(fichier.existe(|/storage/emulated/0/Download/banque.mld|)) { affi(|Fichier deja present|) }" },
+  { noms: ["dossier.existe"], categorie: "Sauvegarde", syntaxe: "dossier.existe(chemin)", description: [
+      "Renvoie VRAI si un DOSSIER existe vraiment a ce CHEMIN COMPLET (avec '/'), FAUX sinon (FAUX aussi si le chemin est un fichier).",
+      "Disponible uniquement dans l'app installee (pas en previsualisation navigateur)."
+    ], exemple: "si(non dossier.existe(|/storage/emulated/0/Download/Mes_scripts|)){ creer.dossier(|/storage/emulated/0/Download/Mes_scripts|) }" },
   { noms: ["lire.fichier"], categorie: "Sauvegarde", syntaxe: "lire.fichier()  ou  lire.fichier(chemin)", description: [
       "lire.fichier() : ouvre le navigateur de fichiers du telephone et attend que l'utilisateur choisisse un fichier sauvegarde avec ecrire.fichier(...).",
       "lire.fichier(chemin) : lit DIRECTEMENT le fichier a ce chemin, sans rien afficher a l'ecran.",
@@ -7652,10 +7687,16 @@ let aideCommandes = [
       "L'app ne tient pas de registre central de tous les fichiers crees avec ecrire.fichier() (ils peuvent etre ecrits a n'importe quel chemin) : voir.fichier() liste le contenu d'UN dossier donne, comme le navigateur de fichiers integre.",
       "Disponible uniquement dans l'app installee (pas en previsualisation navigateur)."
     ], exemple: "affi(voir.fichier(|/storage/emulated/0/Download|))" },
+  { noms: ["supri.dossier"], categorie: "Sauvegarde", syntaxe: "supri.dossier(chemin)  ou  supri.dossier(chemin, tout~FAUX)", description: [
+      "supri.dossier(chemin) supprime le dossier a ce chemin complet (avec des '/'), seulement s'il est VIDE : sinon erreur claire. Renvoie VRAI s'il a ete supprime, FAUX s'il n'existait pas (pas d'erreur).",
+      "tout~VRAI supprime le dossier ET tout ce qu'il contient (fichiers et sous-dossiers), SANS RETOUR POSSIBLE. tout~FAUX par defaut.",
+      "Chemins toujours refuses, meme avec tout~VRAI : la racine du stockage, ses dossiers standards (Documents, Download, DCIM, Pictures, Music, Movies...), le dossier Android et tout ce qui est hors du stockage partage du telephone. Un chemin avec '..' est refuse. Un fichier est refuse aussi (voir supri.fichier).",
+      "Ne fonctionne que dans l'app installee (pas en previsualisation navigateur)."
+    ], exemple: "supri.dossier(|/storage/emulated/0/Documents/Mes_scripts|)\nsupri.dossier(|/storage/emulated/0/Documents/Mes_scripts|, tout~VRAI)   ->   VRAI (tout est supprime)" },
   { noms: ["supri.fichier"], categorie: "Sauvegarde", syntaxe: "supri.fichier(nom)  ou  supri.fichier(chemin)", description: [
       "Supprime UN fichier precis, sans toucher aux autres.",
       "Sans '/' : ouvre le navigateur de fichiers integre en mode 'ouvrir' pour choisir le fichier a supprimer.",
-      "Avec un chemin complet (avec '/') : suppression DIRECTE a cet emplacement, sans rien afficher a l'ecran -- erreur si le fichier n'existe pas (verifiable avant avec existe.fichier(...)).",
+      "Avec un chemin complet (avec '/') : suppression DIRECTE a cet emplacement, sans rien afficher a l'ecran -- erreur si le fichier n'existe pas (verifiable avant avec fichier.existe(...)).",
       "Disponible uniquement dans l'app installee (pas en previsualisation navigateur)."
     ], exemple: "supri.fichier(|/storage/emulated/0/Download/scores.mld|)" },
   { noms: ["~"], categorie: "Base", syntaxe: "nom ~ valeur", description: [
@@ -7695,6 +7736,13 @@ let aideCommandes = [
       "Collection -> conver.*.nombr : seulement si la collection contient EXACTEMENT 1 element numerique, erreur sinon.",
       "Entre collections : conver.vecteu.matric (colonne) / conver.matric.vecteu (aplatit tous les elements) ; conver.vecteu.liste / conver.liste.vecteu (element par element) ; conver.liste.matric (chaque vecteur de la liste devient une ligne -- tous doivent avoir la meme longueur) / conver.matric.liste (l'inverse : chaque ligne devient un vecteur de la liste)."
     ], exemple: "conver.texte.nombr(|3.5|)   ->   3.5\nconver.nombr.texte(42)       ->   |42|\nconver.nombr.booleen(0)      ->   FAUX\nconver.matric.vecteu(matrice(1:4, nlig~2, ncol~2))   ->   c(1,2,3,4)\nconver.vecteu.matric(c(1,2,3))   ->   matrice 3x1\nconver.liste.matric(liste(c(1,2), c(3,4)))   ->   matrice 2x2" },
+  { noms: ["est.booleen"], categorie: "Base", syntaxe: "est.booleen(var)", description: [
+      "VRAI uniquement si var est un booleen (VRAI ou FAUX). FAUX pour 0, 1, un texte, etc."
+    ], exemple: "est.booleen(VRAI)   ->   VRAI\nest.booleen(1)      ->   FAUX\nest.booleen(3>2)    ->   VRAI" },
+  { noms: ["est.vide"], categorie: "Base", syntaxe: "est.vide(var)", description: [
+      "VRAI si var est vide : texte vide ||, vecteur c(), liste(), dictionnai() ou matrice sans element. FAUX pour tout le reste (un nombre, un booleen, pasdefini).",
+      "Dans si(...), tanqer(...) et sisinon(...), ces valeurs vides comptent aussi pour FAUX."
+    ], exemple: "est.vide(liste())   ->   VRAI\nest.vide(||)        ->   VRAI\nest.vide(c(1,2))    ->   FAUX\nest.vide(0)         ->   FAUX" },
   { noms: ["est.numero"], categorie: "Base", syntaxe: "est.numero(texte)", description: [
       "VRAI si la valeur est un TEXTE fait uniquement de chiffres, avec un + facultatif au debut (un numero de telephone, par exemple). FAUX pour tout le reste : un nombre, un texte avec des lettres, des espaces ou un tiret, un texte vide.",
       "Ne pas confondre avec est.nombr(...) : est.nombr regarde le TYPE (5 est un nombre, |5| est du texte), est.numero regarde le CONTENU d'un texte. est.numero(5) est donc FAUX, est.numero(|5|) est VRAI."
@@ -7895,12 +7943,12 @@ let aideCommandes = [
       "Un seul bloc au total est execute parmi si/sinon si/sinon : le premier dont la condition est vraie.",
       "Peut etre suivi d'autres sinon si(...){...} et/ou d'un sinon final (tous optionnels)."
     ], exemple: "si(note>=16){ affi(|Excellent|) } sinon si(note>=10){ affi(|Reussi|) } sinon{ affi(|Echoue|) }" },
-  { noms: ["sision"], categorie: "Controle", syntaxe: "sision(condition, valeurSiVrai, valeurSiFaux)", description: [
-      "Version vectorisee (element par element) de si/sinon, comme ifelse() en R.",
-      "condition peut etre un vecteur de tests (ex: x>0) : le resultat est un vecteur ou chaque element vient de valeurSiVrai ou valeurSiFaux selon le test correspondant.",
-      "valeurSiVrai et valeurSiFaux peuvent etre des scalaires ou des vecteurs (recycles si plus courts que condition, comme les autres operations vectorielles).",
-      "Si condition est un simple scalaire, renvoie directement valeurSiVrai ou valeurSiFaux."
-    ], exemple: "x ~ seq(-2,2,1)\naffi(sision(x>=0, x, x*-1))   ->   [1] 2 1 0 1 2" },
+  { noms: ["sisinon"], categorie: "Controle", syntaxe: "sisinon(condition, siVrai, siFaux)", description: [
+      "Choix conditionnel : si condition est vraie, evalue et renvoie siVrai, sinon siFaux. Seule la branche choisie est executee.",
+      "Une condition vide (vecteur, liste, dictionnai, texte vide) compte pour FAUX, comme dans si(...).",
+      "Si condition est un vecteur de tests (ex: x>0), version vectorisee comme ifelse() en R : les deux branches sont evaluees et chaque element vient de siVrai ou siFaux selon le test correspondant (scalaires ou vecteurs recycles).",
+      "L'ancien nom sision donne une erreur qui indique sisinon."
+    ], exemple: "sisinon(age>=18, affi(|majeur|), affi(|mineur|))   ** un seul des deux affi s'execute\nx ~ seq(-2,2,1)\naffi(sisinon(x>=0, x, x*-1))   ->   [1] 2 1 0 1 2" },
   { noms: ["essai", "attrape", "finalement"], categorie: "Controle", syntaxe: "essai{ ... } attrape(msg){ ... }  /  essai{ ... } attrape{ ... }  /  essai{ ... } finalement{ ... }  /  essai{ ... } attrape{ ... } finalement{ ... }", description: [
       "Intercepte une erreur levee dans le bloc essai au lieu de planter tout le script.",
       "Si une erreur survient dans essai, l'execution du bloc s'arrete et le bloc attrape s'execute a la place.",
@@ -8018,13 +8066,13 @@ let aideCommandes = [
       "copier(x) copie la liste, le vecteur, la matrice, le dictionnai ou l'instance, mais les listes/dictionnai places A L'INTERIEUR restent partages avec l'original.",
       "copier.profond(x) copie tout, a tous les niveaux : plus aucun element n'est partage avec l'original."
     ], exemple: "a ~ liste(liste(1,2), 3)\nb ~ copier(a)\nb[2] ~ 7                  ** a[2] reste 3\nb[1][1] ~ 99              ** a[1][1] devient aussi 99 (liste interne partagee)\nc ~ copier.profond(a)\nc[1][1] ~ 5               ** a n'est pas touche" },
-  { noms: ["decoup", "joindr", "remplace", "cherch", "commence", "termine"], categorie: "Texte", syntaxe: "texte.decoup(separateur)  /  texte.decoup(separateur, limite)  /  texte.decoup(limite)  /  liste.joindr(separateur)  /  texte.remplace(ancien, nouveau)  /  texte.remplace(ancien, nouveau, max)  /  x.cherch(morceau)  /  texte.commence(debut)  /  texte.termine(fin)", description: [
+  { noms: ["decoup", "joindr", "remplace", "cherch", "cherch.dernier", "commence", "termine"], categorie: "Texte", syntaxe: "texte.decoup(separateur)  /  texte.decoup(separateur, limite)  /  texte.decoup(limite)  /  liste.joindr(separateur)  /  texte.remplace(ancien, nouveau)  /  texte.remplace(ancien, nouveau, max)  /  x.cherch(morceau)  /  x.cherch(morceau, depart)  /  x.cherch.dernier(morceau)  /  texte.commence(debut)  /  texte.termine(fin)", description: [
       "texte.decoup(sep) coupe le texte a chaque sep (n'importe quel texte, de n'importe quelle longueur) et renvoie une liste. Sans sep : coupe sur les espaces (plusieurs espaces de suite comptent pour un seul, ceux du debut et de la fin sont ignores). Avec sep vide || : coupe lettre par lettre. saulig est accepte comme argument : texte.decoup(saulig) coupe a chaque saut de ligne, liste.joindr(saulig) colle avec des sauts de ligne, texte.remplace(saulig, | |) enleve les sauts de ligne.",
       "texte.decoup(sep, limite) fait au plus limite morceaux : le dernier garde tout le reste. texte.decoup(limite) fait pareil en coupant sur les espaces. Limite 0 ou negative : liste vide. Limite plus grande que le nombre de morceaux possibles : meme resultat que decoup(sep). Limite non entiere (2.5) : erreur claire. Un nombre seul est toujours la limite : pour couper sur un chiffre, l'ecrire en texte : decoup(|1|).",
       "liste.joindr(sep) colle les elements d'une liste ou d'un vecteur avec sep entre chaque (sans sep : colles sans rien entre eux). Les nombres sont convertis en texte.",
       "texte.decoup(motif) coupe a chaque endroit ou le motif correspond : |a1b22c|.decoup(m|\\d+|) donne liste(|a|, |b|, |c|). Les groupes () du motif ne sont pas ajoutes aux morceaux. La limite marche comme pour un texte.",
       "texte.remplace(ancien, nouveau) remplace TOUTES les occurrences de ancien par nouveau (ancien ne peut pas etre vide). Un 3e argument facultatif limite le nombre de remplacements (au plus max, les premiers) : |a a a|.remplace(|a|, |b|, 2) donne b b a. ancien peut aussi etre un motif (voir correspond / trouve) : nouveau peut alors contenir $1, $2... ou $<nom> pour reutiliser un groupe, et $$ pour un vrai $. Sur une liste ou un vecteur, remplace s'applique a chaque element texte et renvoie une liste.",
-      "x.cherch(morceau) donne la position (a partir de 1, comme texte[i]) de la premiere occurrence, ou 0 si le morceau est absent. x.cherch(morceau, depart) cherche a partir de la position depart (la position rendue reste celle du texte entier) : |a-b-a|.cherch(|a|, 2) donne 5. x peut etre un texte (on cherche un morceau de texte) ou une liste/un vecteur (on cherche une valeur : l.cherch(5)). Indices negatifs : texte[-1] est la derniere lettre, l[-2] l'avant-dernier element d'une liste ou d'un vecteur, texte[-3:-1] les trois dernieres lettres ; ils marchent aussi pour modifier : l[-1] ~ 9. Les matrices ne les acceptent pas. Sur un texte, morceau peut aussi etre un motif : |Tel 12 et 34|.cherch(m|\\d+|) donne 5 (position du premier morceau qui correspond, 0 s'il n'y en a pas).",
+      "x.cherch(morceau) donne la position (a partir de 1, comme texte[i]) de la premiere occurrence, ou 0 si le morceau est absent. x.cherch(morceau, depart) cherche a partir de la position depart (la position rendue reste celle du texte entier) : |a-b-a|.cherch(|a|, 2) donne 5. x.cherch.dernier(morceau) donne la position de la DERNIERE occurrence (0 si absente) : |a-b-a|.cherch.dernier(|a|) donne 5. Avec un motif, c'est le debut du dernier morceau trouve ; marche aussi sur une liste ou un vecteur. x peut etre un texte (on cherche un morceau de texte) ou une liste/un vecteur (on cherche une valeur : l.cherch(5)). Indices negatifs : texte[-1] est la derniere lettre, l[-2] l'avant-dernier element d'une liste ou d'un vecteur, texte[-3:-1] les trois dernieres lettres ; ils marchent aussi pour modifier : l[-1] ~ 9. Les matrices ne les acceptent pas. Sur un texte, morceau peut aussi etre un motif : |Tel 12 et 34|.cherch(m|\\d+|) donne 5 (position du premier morceau qui correspond, 0 s'il n'y en a pas).",
       "texte.commence(debut) et texte.termine(fin) renvoient VRAI ou FAUX. Majuscules et minuscules comptent comme des lettres differentes.",
       "Toutes ces commandes s'enchainent avec miniscul(), majuscul(), suprespac(), lon(), avant, apres, entre, garder et enlever : texte.suprespac().majuscul().decoup().joindr(|-|). Les anciennes ecritures decoup(texte, sep), joindr(liste, sep)... marchent toujours."
     ], exemple: "|a, b, c|.decoup(|, |)         ->   liste(|a|, |b|, |c|)\n|un deux  trois|.decoup()         ->   liste(|un|, |deux|, |trois|)\n|un deux trois|.decoup(2)       ->   liste(|un|, |deux trois|)\n|a,b,c,d|.decoup(|,|, 3)        ->   liste(|a|, |b|, |c,d|)\ntexte(|a|, saulig, |b|).decoup(saulig)   ->   liste(|a|, |b|)\nliste(|a|,|b|).joindr(| et |)   ->   a et b\n|le chat|.remplace(|chat|, |chien|)   ->   le chien\n|bonjour|.cherch(|jou|)         ->   4\nliste(|a|, 5).cherch(5)         ->   2\n|bonjour|.commence(|bon|)       ->   VRAI\n|  un deux  |.suprespac().decoup().joindr(|-|)   ->   un-deux" },
@@ -8051,6 +8099,9 @@ let aideCommandes = [
       "Un seul niveau : les listes imbriquees ne sont jamais fouillees plus profond (une sous-liste est un seul element).",
       "Erreurs claires : aucune valeur donnee, valeur vide dans .contenant, .contenant sur un texte (pas de sens)."
     ], exemple: "liste(|a|, |ab|, |b|).garder(|a|)              ->   liste(|a|)\nliste(|a|, |ab|, |b|).garder.contenant(|a|)    ->   liste(|a|, |ab|)\nliste(|a|, |ab|, |b|).enlever.contenant(|a|)   ->   liste(|b|)\nc(1, 2, 1, 3).enlever(1)                       ->   c(2, 3)\n|a1b22c|.garder(|0123456789|)                  ->   122" },
+  { noms: ["inverse.text"], categorie: "Texte", syntaxe: "x.inverse.text()", description: [
+      "x.inverse.text() renvoie le texte a l'envers : |abc|.inverse.text() donne cba. Les emojis restent entiers. Ne marche que sur un texte (une liste ou un vecteur donne une erreur). Ne pas confondre avec inverse(matrice), l'inverse d'une matrice."
+    ], exemple: "|abc|.inverse.text()                    ->   cba\n|Bonjour|.inverse.text().majuscul()      ->   RUOJNOB" },
   { noms: ["extrait"], categorie: "Texte", syntaxe: "x.extrait(debut, longueur)  /  x.extrait(debut)", description: [
       "x.extrait(debut, longueur) donne le morceau de x qui commence a la position debut (a partir de 1) et fait longueur elements : |abcdef|.extrait(2, 3) donne bcd. x peut etre un texte (le resultat est un texte), une liste ou un vecteur (le resultat est une liste ou un vecteur).",
       "La longueur est facultative : sans elle, on va jusqu'a la fin. Une longueur trop grande s'arrete a la fin sans erreur : |abcdef|.extrait(5, 10) donne ef. Une longueur 0 donne un morceau vide ; une longueur negative donne une erreur.",
@@ -8259,7 +8310,7 @@ let aideCommandes = [
       "si elle est necessaire pour determiner le resultat. Utile pour se proteger d'une erreur :",
       "x!=0 et 10/x>2 ne divise jamais par zero, meme si x vaut 0, car et s'arrete des que",
       "x!=0 est FAUX sans jamais evaluer 10/x.",
-      "Utilises typiquement dans si(...), tanqer(...), sision(...)."
+      "Utilises typiquement dans si(...), tanqer(...), sisinon(...)."
     ], exemple: "si(x>0 et x<10){ affi(|entre 0 et 10|) }\nsi(jour==|samedi| ou jour==|dimanche|){ affi(|weekend|) }\nsi(non estVide){ affi(|il y a des elements|) }\nsi(x!=0 et 10/x>2){ affi(|sans risque de division par zero|) }" },
 
   { noms: ["sin"], categorie: "Fonctions mathematiques", syntaxe: "sin(x)", description: [
@@ -8515,13 +8566,13 @@ let aideCommandes = [
       "quelle app acceptant un fichier) pour ce fichier -- PAS specifique a une messagerie,",
       "c'est le meme selecteur \"Partager\" que dans n'importe quelle app Android.",
       "Erreur si le fichier n'existe pas a ce chemin (verifiable avant avec",
-      "existe.fichier(...)).",
+      "fichier.existe(...)).",
       "Necessite l'app native et la permission de stockage."
     ], exemple: "partager.fichier(|/sdcard/Download/rapport.pdf|)" },
 
   { noms: ["taille.fichier"], categorie: "Sauvegarde", syntaxe: "taille.fichier(chemin)", description: [
       "Taille du fichier en OCTETS. Erreur si le fichier n'existe pas a ce chemin",
-      "(verifiable avant avec existe.fichier(...)).",
+      "(verifiable avant avec fichier.existe(...)).",
       "Necessite l'app native et la permission de stockage."
     ], exemple: "affi(taille.fichier(|/sdcard/Download/rapport.pdf|) / 1000, | Ko|)" },
 
@@ -8883,30 +8934,31 @@ function enregistrerFonctionsBase() {
     // lettr et Lettr sont geres comme des identifiants constants directement dans l'evaluateur
     // d'expressions (comme VRAI/FAUX), sans parentheses : voir parsePrimaryBrute.
 
-    // sision(condition, valeurSiVrai, valeurSiFaux) : version vectorisee (element par element)
-    // de si/sinon, comme ifelse(...) en R. Si condition est un vecteur (typiquement issu d'une
-    // comparaison comme x>0), le resultat est un vecteur choisissant, pour chaque position,
-    // dans valeurSiVrai ou valeurSiFaux (recycles si plus courts, comme les autres operations
-    // vectorielles du langage). Si condition est un simple scalaire, renvoie une seule valeur.
-    fonctionsBase["sision"] = fonctionsExpression["sision"] = async function(args, ctxExpr) {
-        if (args.length !== 3) throw new Error("sision(condition, valeurSiVrai, valeurSiFaux) attend exactement 3 arguments");
+    // sisinon(condition, siVrai, siFaux) : choix conditionnel. Seule la branche choisie est EVALUEE
+    // (sisinon(ok, affi(|a|), affi(|b|)) n'affiche qu'un des deux). Si condition est un vecteur de tests
+    // (ex: x>0), c'est la version vectorisee (comme ifelse() en R) : les deux branches sont evaluees et
+    // le resultat prend, pour chaque position, la valeur de l'une ou de l'autre (recyclees si plus courtes).
+    // Une condition vide (vecteur, liste, texte vide...) compte pour FAUX, comme dans si(...).
+    fonctionsBase["sisinon"] = fonctionsExpression["sisinon"] = async function(args, ctxExpr) {
+        if (args.length !== 3) throw new Error("sisinon(condition, siVrai, siFaux) attend exactement 3 arguments");
         let cond = await evaluerElementBrut(args[0], ctxExpr);
+        if (!estVecteur(cond) || cond.length === 0) {
+            return await evaluerElementBrut(estVrai(cond) ? args[1] : args[2], ctxExpr);
+        }
         let siVrai = await evaluerElementBrut(args[1], ctxExpr);
         let siFaux = await evaluerElementBrut(args[2], ctxExpr);
-
-        if (!estVecteur(cond)) {
-            if (estVecteur(siVrai) || estVecteur(siFaux)) throw new Error("sision(...) : pour choisir dans des vecteurs, condition doit aussi etre un vecteur (ex: x>0)");
-            return estVrai(cond) ? siVrai : siFaux;
-        }
-        if (cond.length === 0) throw new Error("sision(...) : condition est un vecteur vide");
         let vVrai = estVecteur(siVrai) ? siVrai : [siVrai];
         let vFaux = estVecteur(siFaux) ? siFaux : [siFaux];
-        if (vVrai.length === 0 || vFaux.length === 0) throw new Error("sision(...) : valeurSiVrai/valeurSiFaux ne peuvent pas etre un vecteur vide");
+        if (vVrai.length === 0 || vFaux.length === 0) throw new Error("sisinon(...) : siVrai/siFaux ne peuvent pas etre un vecteur vide quand condition est un vecteur");
         let resultat = [];
         for (let i = 0; i < cond.length; i++) {
             resultat.push(estVrai(cond[i]) ? vVrai[i % vVrai.length] : vFaux[i % vFaux.length]);
         }
         return unifierTypeVecteur(resultat);
+    };
+    // Ancien nom : erreur claire qui indique le nouveau (comme stop -> casse).
+    fonctionsBase["sision"] = fonctionsExpression["sision"] = async function() {
+        throw new Error("sision a ete renomme sisinon : ecris sisinon(condition, siVrai, siFaux)");
     };
 
     // matrice(elements, nlig~..., ncol~..., parlig~VRAI|FAUX) : cree une matrice.
@@ -9171,7 +9223,7 @@ function enregistrerFonctionsBase() {
         catch (e) { throw new Error("lire.cle(...) : la sauvegarde pour '" + cle + "' est corrompue"); }
     };
 
-    // existe.fichier(chemin) : VRAI/FAUX selon qu'un fichier existe deja a cet emplacement.
+    // fichier.existe(chemin) : VRAI/FAUX selon qu'un fichier existe deja a cet emplacement.
     // Demande un CHEMIN COMPLET (comme ecrire.fichier(chemin, valeur) avec un "/") : sans
     // emplacement fixe, il n'y a rien a verifier avant l'ouverture du navigateur de fichiers
     // interactif. A utiliser typiquement avant ecrire.fichier(chemin, valeur) pour decider
@@ -9185,21 +9237,69 @@ function enregistrerFonctionsBase() {
         if (!(window.MonLangage && typeof window.MonLangage.permissionStockageAccordee === "function")) return true;
         return window.MonLangage.permissionStockageAccordee();
     }
-    fonctionsBase["existe.fichier"] = fonctionsExpression["existe.fichier"] = async function(args, ctxExpr) {
-        if (args.length !== 1) throw new Error("existe.fichier(chemin) attend 1 argument");
+    // fichier.existe(chemin) / dossier.existe(chemin) : VRAI si un FICHIER (resp. un DOSSIER) existe vraiment a ce chemin.
+    // fichier.existe est FAUX pour un dossier, dossier.existe est FAUX pour un fichier.
+    function fabriquerExiste(nom, methodePont, ajouterMld) {
+        return async function(args, ctxExpr) {
+            if (args.length !== 1) throw new Error(nom + "(chemin) attend 1 argument");
+            let chemin = await evalExpr(args[0], ctxExpr);
+            if (typeof chemin !== 'string') throw new ErreurTypeInvalide(nom + "(chemin) : chemin doit etre du texte");
+            if (chemin.indexOf("/") === -1) {
+                throw new Error(nom + "(chemin) : il faut un chemin complet (avec '/'), comme pour ecrire.fichier(chemin, valeur)");
+            }
+            if (!(window.MonLangage && typeof window.MonLangage[methodePont] === "function")) {
+                throw new ErreurIndisponibleHorsApp(nom + "(...) : disponible uniquement dans l'app installee (rebuild requis)");
+            }
+            if (!verifierPermissionStockage()) {
+                throw new ErreurPermissionRefusee(nom + "(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
+            }
+            let cheminFinal = chemin;
+            if (ajouterMld && !/\.[a-zA-Z0-9]+$/.test(chemin)) cheminFinal = chemin + ".mld";
+            else if (!ajouterMld && chemin.length > 1) cheminFinal = chemin.replace(/\/+$/, "");
+            return window.MonLangage[methodePont](cheminFinal);
+        };
+    }
+    fonctionsBase["fichier.existe"] = fonctionsExpression["fichier.existe"] = fabriquerExiste("fichier.existe", "existeFichier", true);
+    fonctionsBase["dossier.existe"] = fonctionsExpression["dossier.existe"] = fabriquerExiste("dossier.existe", "existeDossier", false);
+    fonctionsBase["existe.fichier"] = fonctionsExpression["existe.fichier"] = async function() {
+        throw new Error("existe.fichier a ete renomme fichier.existe : ecris fichier.existe(chemin)");
+    };
+
+    // creer.dossier(chemin) ou creer.dossier(chemin, ecra~FAUX) : cree un dossier (et ses dossiers parents manquants).
+    // ecra~FAUX (par defaut) : si quelque chose existe deja a cet endroit, c'est refuse (erreur claire).
+    // ecra~VRAI : si le DOSSIER existe deja, pas d'erreur (rien n'est supprime ni modifie). Un FICHIER a cet endroit reste une
+    // erreur dans tous les cas. Renvoie VRAI si le dossier vient d'etre cree, FAUX s'il existait deja (avec ecra~VRAI).
+    // Necessite l'app installee (code Android : window.MonLangage.creerDossier).
+    fonctionsBase["creer.dossier"] = fonctionsExpression["creer.dossier"] = async function(args, ctxExpr) {
+        if (args.length < 1 || args.length > 2) throw new Error("creer.dossier(chemin, ecra~FAUX) attend 1 ou 2 arguments (ecra est facultatif)");
         let chemin = await evalExpr(args[0], ctxExpr);
-        if (typeof chemin !== 'string') throw new ErreurTypeInvalide("existe.fichier(chemin) : chemin doit etre du texte");
+        if (typeof chemin !== 'string') throw new ErreurTypeInvalide("creer.dossier(chemin) : chemin doit etre du texte");
         if (chemin.indexOf("/") === -1) {
-            throw new Error("existe.fichier(chemin) : il faut un chemin complet (avec '/'), comme pour ecrire.fichier(chemin, valeur) -- un simple nom n'a pas d'emplacement fixe a verifier avant l'ouverture du navigateur de fichiers");
+            throw new Error("creer.dossier(chemin) : il faut un chemin complet (avec '/'), comme pour ecrire.fichier(chemin, valeur)");
         }
-        if (!(window.MonLangage && typeof window.MonLangage.existeFichier === "function")) {
-            throw new ErreurIndisponibleHorsApp("existe.fichier(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        let ecra = false;
+        if (args.length === 2) {
+            let mParam = args[1].trim().match(/^(\w+)\s*~\s*(.*)$/);
+            if (!mParam) throw new Error("creer.dossier(chemin, ecra~VRAI) : le 2e argument doit etre ecra~VRAI ou ecra~FAUX");
+            if (mParam[1] !== "ecra") throw new Error("Parametre inconnu pour creer.dossier(...) : " + mParam[1]);
+            ecra = estVrai(await evalExpr(mParam[2], ctxExpr));
+        }
+        if (!(window.MonLangage && typeof window.MonLangage.creerDossier === "function")) {
+            throw new ErreurIndisponibleHorsApp("creer.dossier(...) : disponible uniquement dans l'app installee (rebuild requis)");
         }
         if (!verifierPermissionStockage()) {
-            throw new ErreurPermissionRefusee("existe.fichier(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
+            throw new ErreurPermissionRefusee("creer.dossier(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
         }
-        let cheminFinal = /\.[a-zA-Z0-9]+$/.test(chemin) ? chemin : chemin + ".mld";
-        return window.MonLangage.existeFichier(cheminFinal);
+        let resultat = window.MonLangage.creerDossier(chemin);   // CREE | EXISTE_DOSSIER | EXISTE_FICHIER | ECHEC
+        if (resultat === "CREE") return true;
+        if (resultat === "EXISTE_DOSSIER") {
+            if (ecra) return false;
+            throw new ErreurFichierDejaExistant("creer.dossier(...) : le dossier '" + chemin + "' existe deja (utilise ecra~VRAI pour continuer sans erreur ; rien n'est supprime)");
+        }
+        if (resultat === "EXISTE_FICHIER") {
+            throw new ErreurFichierDejaExistant("creer.dossier(...) : un fichier existe deja a l'emplacement '" + chemin + "' (un dossier ne peut pas le remplacer)");
+        }
+        throw new Error("creer.dossier(...) : impossible de creer le dossier '" + chemin + "'");
     };
 
     // ecrire.fichier(nom, valeur) ou ecrire.fichier(nom, val1, val2, ..., ecra~FAUX) :
@@ -9214,7 +9314,7 @@ function enregistrerFonctionsBase() {
     // logique que pour ecrire.cle(cle, val1, val2, ...) -- voir plus haut.
     // ecra~FAUX (par defaut) : si le fichier cible existe deja, l'ecriture est REFUSEE et
     // une erreur est levee (a intercepter avec essai/attrape, ou a eviter en verifiant
-    // d'abord avec existe.fichier(...)). ecra~VRAI ecrase sans verifier, comme avant.
+    // d'abord avec fichier.existe(...)). ecra~VRAI ecrase sans verifier, comme avant.
     // Ce refus par defaut ne s'applique qu'aux deux chemins qui passent par le stockage
     // reel de l'app (chemin direct et navigateur de fichiers integre) : en repli navigateur
     // web (pas d'app native), il n'existe aucun moyen de verifier un fichier existant depuis
@@ -9253,7 +9353,7 @@ function enregistrerFonctionsBase() {
             }
             let cheminDirect = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".mld";
             if (!ecra && typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminDirect)) {
-                throw new ErreurFichierDejaExistant("ecrire.fichier(...) : le fichier '" + cheminDirect + "' existe deja (utilise ecra~VRAI pour l'ecraser, ou existe.fichier(...) pour verifier avant)");
+                throw new ErreurFichierDejaExistant("ecrire.fichier(...) : le fichier '" + cheminDirect + "' existe deja (utilise ecra~VRAI pour l'ecraser, ou fichier.existe(...) pour verifier avant)");
             }
             let ok = window.MonLangage.ecrireFichier(cheminDirect, texte);
             if (!ok) throw new Error("ecrire.fichier(...) : echec de l'ecriture sur '" + cheminDirect + "'");
@@ -9264,7 +9364,7 @@ function enregistrerFonctionsBase() {
             let nomSansExt = nom.replace(/\.[a-zA-Z0-9]+$/, "");
             let cheminComplet = await demanderEmplacementEcritureFichier(nomSansExt, ".mld");
             if (!ecra && typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminComplet)) {
-                throw new ErreurFichierDejaExistant("ecrire.fichier(...) : le fichier '" + cheminComplet + "' existe deja (utilise ecra~VRAI pour l'ecraser, ou existe.fichier(...) pour verifier avant)");
+                throw new ErreurFichierDejaExistant("ecrire.fichier(...) : le fichier '" + cheminComplet + "' existe deja (utilise ecra~VRAI pour l'ecraser, ou fichier.existe(...) pour verifier avant)");
             }
             let ok = window.MonLangage.ecrireFichier(cheminComplet, texte);
             if (!ok) throw new Error("ecrire.fichier(...) : echec de l'ecriture sur le telephone");
@@ -9343,7 +9443,7 @@ function enregistrerFonctionsBase() {
     // sans l'ecraser -- meme logique de fusion que ajout.cle() (voir fusionnerPourAjout(...)).
     // nom sans '/' : ouvre le navigateur de fichiers integre en mode "ouvrir" pour choisir le
     // fichier existant a completer (comme lire.fichier()). nom avec '/' : chemin complet,
-    // le fichier doit deja exister a cet emplacement exact (verifie avec existe.fichier()).
+    // le fichier doit deja exister a cet emplacement exact (verifie avec fichier.existe()).
     // Necessite l'app native (lecture + reecriture reelles sur le stockage) : pas de repli
     // navigateur web, contrairement a ecrire.fichier().
     fonctionsBase["ajout.fichier"] = fonctionsExpression["ajout.fichier"] = async function(args, ctxExpr) {
@@ -9498,7 +9598,7 @@ function enregistrerFonctionsBase() {
     // aux autres. nom sans '/' : ouvre le navigateur de fichiers integre en mode "ouvrir"
     // pour choisir le fichier a supprimer. chemin avec '/' : suppression DIRECTE a cet
     // emplacement exact, sans rien afficher a l'ecran (erreur si le fichier n'existe pas,
-    // verifiable avant avec existe.fichier(...)). Necessite l'app native.
+    // verifiable avant avec fichier.existe(...)). Necessite l'app native.
     fonctionsBase["supri.fichier"] = fonctionsExpression["supri.fichier"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("supri.fichier(nom) attend 1 argument");
         let nom = await evalExpr(args[0], ctxExpr);
@@ -9523,6 +9623,48 @@ function enregistrerFonctionsBase() {
         let ok = window.MonLangage.supprimerFichier(cheminComplet);
         if (!ok) throw new Error("supri.fichier(...) : echec de la suppression de '" + cheminComplet + "'");
         return true;
+    };
+
+    // supri.dossier(chemin) ou supri.dossier(chemin, tout~FAUX) : supprime UN dossier. Par defaut seulement s'il est VIDE (erreur claire
+    // sinon). tout~VRAI supprime le dossier ET tout ce qu'il contient, sans retour possible. Les chemins sensibles sont refuses
+    // meme avec tout~VRAI (racine du stockage, Documents, Download, DCIM..., tout ce qui est hors du stockage partage).
+    // Renvoie VRAI si le dossier a ete supprime, FAUX s'il n'existait pas (pas d'erreur). Necessite l'app installee.
+    fonctionsBase["supri.dossier"] = fonctionsExpression["supri.dossier"] = async function(args, ctxExpr) {
+        if (args.length < 1 || args.length > 2) throw new Error("supri.dossier(chemin, tout~FAUX) attend 1 ou 2 arguments (tout est facultatif)");
+        let chemin = await evalExpr(args[0], ctxExpr);
+        if (typeof chemin !== 'string') throw new ErreurTypeInvalide("supri.dossier(chemin) : chemin doit etre du texte");
+        if (chemin.indexOf("/") === -1) {
+            throw new Error("supri.dossier(chemin) : il faut un chemin complet (avec '/'), comme pour creer.dossier(chemin)");
+        }
+        let segments = chemin.split("/").filter(x => x !== "");
+        if (segments.length === 0) throw new Error("supri.dossier(chemin) : ce chemin designe la racine, il est protege");
+        if (segments.indexOf("..") !== -1) throw new Error("supri.dossier(chemin) : le chemin ne doit pas contenir '..' (ecris le chemin complet du dossier)");
+        let tout = false;
+        if (args.length === 2) {
+            let mParam = args[1].trim().match(/^(\w+)\s*~\s*(.*)$/);
+            if (!mParam) throw new Error("supri.dossier(chemin, tout~VRAI) : le 2e argument doit etre tout~VRAI ou tout~FAUX");
+            if (mParam[1] !== "tout") throw new Error("Parametre inconnu pour supri.dossier(...) : " + mParam[1]);
+            tout = estVrai(await evalExpr(mParam[2], ctxExpr));
+        }
+        if (!(window.MonLangage && typeof window.MonLangage.supprimerDossier === "function")) {
+            throw new ErreurIndisponibleHorsApp("supri.dossier(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        if (!verifierPermissionStockage()) {
+            throw new ErreurPermissionRefusee("supri.dossier(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
+        }
+        let resultat = window.MonLangage.supprimerDossier(chemin, tout);   // SUPPRIME | ABSENT | NON_VIDE | EXISTE_FICHIER | PROTEGE | ECHEC
+        if (resultat === "SUPPRIME") return true;
+        if (resultat === "ABSENT") return false;
+        if (resultat === "NON_VIDE") {
+            throw new Error("supri.dossier(...) : le dossier '" + chemin + "' n'est pas vide (ecris tout~VRAI pour supprimer le dossier ET tout ce qu'il contient, sans retour possible)");
+        }
+        if (resultat === "EXISTE_FICHIER") {
+            throw new Error("supri.dossier(...) : '" + chemin + "' est un fichier, pas un dossier (utilise supri.fichier(...))");
+        }
+        if (resultat === "PROTEGE") {
+            throw new Error("supri.dossier(...) : le dossier '" + chemin + "' est protege (la racine du stockage, ses dossiers standards comme Documents ou Download, le dossier Android et tout ce qui est hors du stockage partage ne peuvent pas etre supprimes)");
+        }
+        throw new Error("supri.dossier(...) : impossible de supprimer le dossier '" + chemin + "' (certains fichiers n'ont peut-etre pas pu etre supprimes)");
     };
 
     // lire.fichier() : sur l'app native, ouvre le navigateur de fichiers integre puis lit
@@ -10678,6 +10820,20 @@ function enregistrerFonctionsBase() {
     fonctionsBase["est.matric"] = fonctionsExpression["est.matric"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("est.matric(...) attend exactement 1 argument");
         return estMatrice(await evalExpr(args[0], ctxExpr));
+    };
+    fonctionsBase["est.booleen"] = fonctionsExpression["est.booleen"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("est.booleen(...) attend exactement 1 argument");
+        return typeof (await evalExpr(args[0], ctxExpr)) === 'boolean';
+    };
+    fonctionsBase["est.vide"] = fonctionsExpression["est.vide"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("est.vide(...) attend exactement 1 argument");
+        let v = await evalExpr(args[0], ctxExpr);
+        if (typeof v === 'string') return v.length === 0;
+        if (estVecteur(v)) return v.length === 0;
+        if (estListe(v)) return v.elements.length === 0;
+        if (estDictionnai(v)) return v.entrees.size === 0;
+        if (estMatrice(v)) return v.donnees.length === 0;
+        return false;
     };
     fonctionsBase["est.liste"] = fonctionsExpression["est.liste"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("est.liste(...) attend exactement 1 argument");
@@ -13836,7 +13992,7 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
 
         // Enchaine sur d'eventuels "sinon si(...)" (comme "else if" en R), puis un
         // eventuel "sinon{...}" final. Un seul bloc au total est execute.
-        // (sision(...) est une fonction a part, pas une structure de bloc : voir plus bas.)
+        // (sisinon(...) est une fonction a part, pas une structure de bloc : voir plus bas.)
         let curseur = finBloc;
         while (tokens[curseur]) {
           let texteSuivant = tokens[curseur].texte;
