@@ -924,13 +924,24 @@ public class MonLangageBridge {
         }
 
         // VRAI si un fichier (pas un dossier) existe deja a cet emplacement. Utilise par
-        // existe.fichier(...) et par ecrire.fichier(..., ecra~FAUX) pour eviter d'ecraser
+        // fichier.existe(...) et par ecrire.fichier(..., ecra~FAUX) pour eviter d'ecraser
         // un fichier existant sans que le codeur l'ait explicitement demande.
         @JavascriptInterface
         public boolean existeFichier(String cheminComplet) {
             try {
                 File fichier = new File(cheminComplet);
                 return fichier.exists() && fichier.isFile();
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        // VRAI si un DOSSIER (pas un fichier) existe a cet emplacement. Utilise par dossier.existe(...).
+        @JavascriptInterface
+        public boolean existeDossier(String cheminComplet) {
+            try {
+                File dossier = new File(cheminComplet);
+                return dossier.exists() && dossier.isDirectory();
             } catch (Exception e) {
                 return false;
             }
@@ -947,6 +958,82 @@ public class MonLangageBridge {
                 return fichier.delete();
             } catch (Exception e) {
                 return false;
+            }
+        }
+
+        // Cree un dossier (et ses dossiers parents manquants). Renvoie "CREE", "EXISTE_DOSSIER" (un dossier est deja la),
+        // "EXISTE_FICHIER" (un fichier occupe l'emplacement) ou "ECHEC". Ne supprime et ne modifie JAMAIS rien.
+        // Utilise par creer.dossier(...).
+        @JavascriptInterface
+        public String creerDossier(String cheminComplet) {
+            try {
+                File dossier = new File(cheminComplet);
+                if (dossier.isDirectory()) return "EXISTE_DOSSIER";
+                if (dossier.exists()) return "EXISTE_FICHIER";
+                return dossier.mkdirs() ? "CREE" : "ECHEC";
+            } catch (Exception e) {
+                e.printStackTrace();
+                return "ECHEC";
+            }
+        }
+
+        // Chemins que supprimerDossier(...) refuse TOUJOURS, meme avec tout = true : la racine du stockage et ses parents, ses
+        // dossiers standards (Documents, Download, DCIM...), le dossier Android, et tout ce qui est hors du stockage partage.
+        // Le chemin est d'abord rendu canonique (resout .. et les liens symboliques) pour qu'on ne puisse pas contourner la protection.
+        private boolean cheminDossierProtege(File dossier) {
+            try {
+                String r = android.os.Environment.getExternalStorageDirectory().getCanonicalFile().getPath();
+                String c = dossier.getCanonicalPath();
+                if (c.equals("/") || c.equals(r)) return true;
+                if (!c.startsWith(r + "/")) return true;
+                String reste = c.substring(r.length() + 1);
+                int barre = reste.indexOf('/');
+                String premier = barre < 0 ? reste : reste.substring(0, barre);
+                if (premier.equalsIgnoreCase("Android")) return true;
+                if (barre < 0) {
+                    String[] standards = {"Documents", "Download", "Downloads", "DCIM", "Pictures", "Music", "Movies", "Alarms",
+                            "Notifications", "Podcasts", "Ringtones", "Audiobooks", "Recordings"};
+                    for (String nom : standards) if (premier.equalsIgnoreCase(nom)) return true;
+                }
+                return false;
+            } catch (Exception e) {
+                return true;
+            }
+        }
+
+        // Supprime un fichier ou un dossier et tout son contenu. Un lien symbolique est supprime lui-meme, jamais suivi.
+        private boolean supprimerRecursif(File f) {
+            try {
+                boolean lien = !f.getCanonicalFile().equals(f.getAbsoluteFile());
+                if (f.isDirectory() && !lien) {
+                    File[] enfants = f.listFiles();
+                    if (enfants != null) {
+                        for (File enfant : enfants) {
+                            if (!supprimerRecursif(enfant)) return false;
+                        }
+                    }
+                }
+                return f.delete();
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        // Supprime un DOSSIER. Renvoie "SUPPRIME", "ABSENT" (il n'existait pas), "NON_VIDE" (il contient quelque chose et tout = false),
+        // "EXISTE_FICHIER" (c'est un fichier : refuse), "PROTEGE" (chemin sensible : refuse) ou "ECHEC". Utilise par supri.dossier(...).
+        @JavascriptInterface
+        public String supprimerDossier(String cheminComplet, boolean tout) {
+            try {
+                File dossier = new File(cheminComplet).getCanonicalFile();
+                if (cheminDossierProtege(dossier)) return "PROTEGE";
+                if (!dossier.exists()) return "ABSENT";
+                if (!dossier.isDirectory()) return "EXISTE_FICHIER";
+                File[] contenu = dossier.listFiles();
+                if (!tout && contenu != null && contenu.length > 0) return "NON_VIDE";
+                return supprimerRecursif(dossier) ? "SUPPRIME" : "ECHEC";
+            } catch (Exception e) {
+                e.printStackTrace();
+                return "ECHEC";
             }
         }
 
