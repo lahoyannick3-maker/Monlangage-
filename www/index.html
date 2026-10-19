@@ -3504,15 +3504,10 @@ function evalExprSansEntreeSync(str, ctx) {
       // Methodes de texte chainees directement dans une expression (si(...), affi(...), etc.) :
       // var.miniscul(), |texte|.majuscul(), (a+b).suprespac()... Ne consomme le '.' que si le
       // motif complet correspond, pour ne jamais gener l'operateur '.' de produit scalaire.
-      if (peek() && peek().type === 'op' && peek().v === '.' &&
-          tokens[pos + 1] && tokens[pos + 1].type === 'ident' &&
-          (tokens[pos + 1].v === 'miniscul' || tokens[pos + 1].v === 'majuscul' || tokens[pos + 1].v === 'suprespac') &&
-          tokens[pos + 2] && tokens[pos + 2].type === '(' &&
-          tokens[pos + 3] && tokens[pos + 3].type === ')') {
-        next(); // '.'
-        let methode = next().v; // miniscul / majuscul / suprespac
-        next(); next(); // '(' ')'
-        valeur = appliquerNettoyageTexte(valeur, methode); // texte, liste ou vecteur (un nombre est laisse tel quel)
+      let nettoyage = (peek() && peek().type === 'op' && peek().v === '.') ? nettoyageDepuis(tokens, pos) : null;
+      if (nettoyage) {
+        for (let q = 0; q < nettoyage.n; q++) next();   // . nom [. suffixe] ( )
+        valeur = appliquerNettoyageTexte(valeur, nettoyage.nom); // texte, liste ou vecteur (un nombre est laisse tel quel)
         continue;
       }
       // Indexation sur le resultat d'un attribut/appel precedent : moi.comptes[i], f()[1]...
@@ -3809,15 +3804,10 @@ async function evalExprSansEntreeAsync(str, ctx) {
         continue;
       }
       // Methodes de texte chainees directement dans une expression.
-      if (peek() && peek().type === 'op' && peek().v === '.' &&
-          tokens[pos + 1] && tokens[pos + 1].type === 'ident' &&
-          (tokens[pos + 1].v === 'miniscul' || tokens[pos + 1].v === 'majuscul' || tokens[pos + 1].v === 'suprespac') &&
-          tokens[pos + 2] && tokens[pos + 2].type === '(' &&
-          tokens[pos + 3] && tokens[pos + 3].type === ')') {
-        next(); // '.'
-        let methode = next().v; // miniscul / majuscul / suprespac
-        next(); next(); // '(' ')'
-        valeur = appliquerNettoyageTexte(valeur, methode); // texte, liste ou vecteur (un nombre est laisse tel quel)
+      let nettoyage = (peek() && peek().type === 'op' && peek().v === '.') ? nettoyageDepuis(tokens, pos) : null;
+      if (nettoyage) {
+        for (let q = 0; q < nettoyage.n; q++) next();   // . nom [. suffixe] ( )
+        valeur = appliquerNettoyageTexte(valeur, nettoyage.nom); // texte, liste ou vecteur (un nombre est laisse tel quel)
         continue;
       }
       // Indexation sur le resultat d'un attribut/appel precedent : moi.comptes[i], f()[1]...
@@ -4228,9 +4218,9 @@ function exigerTexte(v, nomCmd, quoi) {
    Les six commandes decoup, joindr, remplace, cherch, commence, termine existent AUSSI en fonction (ancienne forme,
    plus documentee) ; les deux formes partagent le meme code (les fonctions coeur ci-dessous).
    Methodes a nom pointe : avant.dernier, apres.dernier, garder.contenant, enlever.contenant. */
-const METHODES_TEXTE = new Set(["decoup", "joindr", "remplace", "cherch", "commence", "termine", "lon", "correspond", "trouve",
+const METHODES_TEXTE = new Set(["decoup", "joindr", "remplace", "cherch", "commence", "termine", "lon", "correspond", "trouve", "complete", "extrait",
                                 "avant", "apres", "entre", "garder", "enlever"]);
-const METHODES_POINTEES = new Map([["avant", "dernier"], ["apres", "dernier"], ["garder", "contenant"], ["enlever", "contenant"], ["trouve", "tout"]]);
+const METHODES_POINTEES = new Map([["avant", ["dernier"]], ["apres", ["dernier"]], ["garder", ["contenant"]], ["enlever", ["contenant"]], ["trouve", ["tout"]]]);
 function egalValeursSimples(a, b) {
   if (a === b) return true;
   if ((typeof a === 'number' || typeof a === 'bigint') && (typeof b === 'number' || typeof b === 'bigint')) return Number(a) === Number(b);
@@ -4389,14 +4379,26 @@ function coreTrouveTout(t, motif, groupe, nomCmd) {
   return { __type: "liste", elements: r };
 }
 // cherch : position (a partir de 1) du morceau dans un texte, ou d'une valeur dans une liste/un vecteur ; 0 si absent.
-function coreCherch(cible, m, nomCmd) {
+// depart (facultatif) : position (a partir de 1) ou la recherche commence ; la position rendue reste celle du texte entier.
+function coreCherch(cible, m, nomCmd, depart) {
+  let debut = 0;
+  if (depart !== undefined) {
+    debut = exigerEntier(depart, nomCmd, "la position de depart") - 1;
+    if (debut < 0) throw new Error(nomCmd + " : la position de depart doit etre >= 1 (recu : " + (debut + 1) + ")");
+  }
   if (typeof cible === 'string') {
-    if (estMotif(m)) { let r = reDuMotif(m, false).exec(cible); return r === null ? 0 : r.index + 1; }   // position du premier morceau qui correspond
-    return cible.indexOf(exigerTexte(m, nomCmd, "le morceau cherche")) + 1;
+    if (estMotif(m)) {   // position du premier morceau qui correspond
+      let re = reDuMotif(m, true);
+      re.lastIndex = debut;
+      let r = re.exec(cible);
+      return r === null ? 0 : r.index + 1;
+    }
+    return cible.indexOf(exigerTexte(m, nomCmd, "le morceau cherche"), debut) + 1;
   }
   let elements = estListe(cible) ? cible.elements : (estVecteur(cible) ? cible : null);
   if (elements === null) throw new ErreurTypeInvalide(nomCmd + " : la valeur doit etre un texte, une liste ou un vecteur (recu : " + nomNature(cible) + ")");
-  return elements.findIndex(e => egalValeursSimples(e, m)) + 1;
+  for (let i = debut; i < elements.length; i++) if (egalValeursSimples(elements[i], m)) return i + 1;
+  return 0;
 }
 function coreLon(v) {
   if (estListe(v)) return v.elements.length;
@@ -4416,8 +4418,26 @@ function surTexteOuElements(v, f, msgErreur, ignorerNombre) {
   throw new ErreurTypeInvalide(msgErreur);
 }
 // miniscul / majuscul / suprespac sur un texte, une liste ou un vecteur.
+const NETTOYAGES = new Map([["miniscul", [""]], ["majuscul", ["", "premier"]], ["suprespac", ["", "debut", "fin"]]]);
+// tokens[pos] est le '.' : reconnait .base() ou .base.suffixe() ; renvoie { nom, n (jetons consommes) } ou null.
+function nettoyageDepuis(tokens, pos) {
+  let t1 = tokens[pos + 1], t2 = tokens[pos + 2], t3 = tokens[pos + 3];
+  if (!t1 || t1.type !== 'ident' || !NETTOYAGES.has(t1.v)) return null;
+  if (t2 && t2.type === '(' && t3 && t3.type === ')') return { nom: t1.v, n: 4 };
+  if (t2 && t2.type === 'op' && t2.v === '.' && t3 && t3.type === 'ident' && NETTOYAGES.get(t1.v).includes(t3.v) &&
+      tokens[pos + 4] && tokens[pos + 4].type === '(' && tokens[pos + 5] && tokens[pos + 5].type === ')') return { nom: t1.v + '.' + t3.v, n: 6 };
+  return null;
+}
+// Premiere lettre en majuscule, le reste du texte ne change pas.
+function premiereMajuscule(t) {
+  if (t === '') return t;
+  let c = String.fromCodePoint(t.codePointAt(0));
+  return c.toUpperCase() + t.slice(c.length);
+}
 function appliquerNettoyageTexte(v, methode) {
-  let f = methode === 'miniscul' ? (t => t.toLowerCase()) : methode === 'majuscul' ? (t => t.toUpperCase()) : (t => t.trim());
+  let f = methode === 'miniscul' ? (t => t.toLowerCase()) : methode === 'majuscul' ? (t => t.toUpperCase())
+    : methode === 'majuscul.premier' ? premiereMajuscule : methode === 'suprespac.debut' ? (t => t.trimStart())
+    : methode === 'suprespac.fin' ? (t => t.trimEnd()) : (t => t.trim());
   return surTexteOuElements(v, f, "." + methode + "() attend du texte, une liste ou un vecteur", true);
 }
 // Occurrences du separateur, de gauche a droite SANS chevauchement. sep === undefined : suites d'espaces.
@@ -4508,7 +4528,7 @@ function coreFiltrer(v, valeurs, garder, contenant, nomCmd) {
 function nomMethodePointee(tokens, pos) {
   let t0 = tokens[pos], t1 = tokens[pos + 1], t2 = tokens[pos + 2], t3 = tokens[pos + 3], t4 = tokens[pos + 4];
   if (!t0 || t0.type !== 'op' || t0.v !== '.' || !t1 || t1.type !== 'ident' || !METHODES_POINTEES.has(t1.v)) return null;
-  if (!t2 || t2.type !== 'op' || t2.v !== '.' || !t3 || t3.type !== 'ident' || t3.v !== METHODES_POINTEES.get(t1.v)) return null;
+  if (!t2 || t2.type !== 'op' || t2.v !== '.' || !t3 || t3.type !== 'ident' || !METHODES_POINTEES.get(t1.v).includes(t3.v)) return null;
   if (!t4 || t4.type !== '(') return null;
   return t1.v + "." + t3.v;
 }
@@ -4523,7 +4543,7 @@ function methodeTexteApplicable(valeur) {
 }
 // valeur.methode(args) : args = valeurs DEJA evaluees. m peut etre pointe : "avant.dernier", "garder.contenant"...
 function appliquerMethodeTexte(v, m, args) {
-  if (args.some(a => a !== null && typeof a === 'object' && a.__argNomme !== undefined)) {
+  if (m !== "complete" && args.some(a => a !== null && typeof a === 'object' && a.__argNomme !== undefined)) {   // complete(..., placederriere~V) est la seule methode de texte a argument nomme
     throw new Error("." + m + "(...) n'accepte pas d'argument nomme");
   }
   let n = args.length;
@@ -4535,7 +4555,7 @@ function appliquerMethodeTexte(v, m, args) {
     attend(0, 1, "joindr(separateur)");
     return coreJoindr(v, n === 1 ? exigerTexte(args[0], "joindr", "le separateur") : undefined, "joindr");
   }
-  if (m === "cherch") { attend(1, 1, "cherch(morceau)"); return coreCherch(v, args[0], "cherch"); }
+  if (m === "cherch") { attend(1, 2, "cherch(morceau, depart)"); return coreCherch(v, args[0], "cherch", n === 2 ? args[1] : undefined); }
   if (m === "garder" || m === "enlever" || m === "garder.contenant" || m === "enlever.contenant") {
     return coreFiltrer(v, args, m.startsWith("garder"), m.endsWith(".contenant"), m);
   }
@@ -4551,6 +4571,51 @@ function appliquerMethodeTexte(v, m, args) {
     if (sep === "") throw new Error(m + " : le separateur ne peut pas etre vide");
     return surTexteOuElements(v, t => coreAvantApres(t, sens, sep, position, dernier),
       m + " : la valeur avant le point doit etre du texte, une liste ou un vecteur (recu : " + nomNature(v) + ")", false);
+  }
+  if (m === "extrait") {
+    // x.extrait(debut, longueur) : morceau d'un texte, d'une liste ou d'un vecteur (positions comptees comme lon et t[i]).
+    // debut : a partir de 1 ; negatif = depuis la fin. longueur facultative : jusqu'a la fin si omise ; 0 = vide.
+    attend(1, 2, "extrait(debut, longueur)");
+    let taille = typeof v === 'string' ? v.length : (estListe(v) ? v.elements.length : (estVecteur(v) ? v.length : -1));
+    if (taille < 0) throw new ErreurTypeInvalide("extrait : la valeur doit etre un texte, une liste ou un vecteur (recu : " + nomNature(v) + ")");
+    let debut = exigerEntier(args[0], "extrait", "le debut");
+    let longueur = n === 2 ? exigerEntier(args[1], "extrait", "la longueur") : undefined;
+    if (longueur !== undefined && longueur < 0) throw new Error("extrait : la longueur ne peut pas etre negative (recu : " + longueur + ")");
+    if (debut === 0) throw new Error("extrait : le debut ne peut pas etre 0 (les positions commencent a 1 ; un debut negatif compte depuis la fin)");
+    let debut0 = debut;
+    if (debut < 0) {
+      debut = indiceDepuisFin(debut, taille);
+      if (debut < 1) throw new Error("extrait : le debut " + debut0 + " est hors limites (taille " + taille + ")");
+    }
+    let a = debut - 1;
+    let b = longueur === undefined ? taille : Math.min(taille, a + longueur);
+    if (b < a) b = a;
+    if (typeof v === 'string') return v.slice(a, b);
+    if (estListe(v)) return { __type: "liste", elements: v.elements.slice(a, b) };
+    return v.slice(a, b);
+  }
+  if (m === "complete") {
+    // t.complete(longueur, caractere, placederriere~V) : ajoute le caractere (un espace si omis) jusqu'a la longueur voulue.
+    // Devant par defaut ; placederriere~V (ou VRAI) l'ajoute derriere. Un texte deja assez long ne change pas.
+    let positionnels = [], derriere = false, vu = false;
+    for (const a of args) {
+      if (a !== null && typeof a === 'object' && a.__argNomme !== undefined) {
+        if (a.__argNomme !== 'placederriere') throw new Error("complete : argument nomme inconnu '" + a.__argNomme + "' (le seul possible est placederriere~V ou placederriere~F)");
+        if (vu) throw new Error("complete : placederriere est ecrit deux fois");
+        if (typeof a.valeur !== 'boolean') throw new ErreurTypeInvalide("complete : placederriere attend VRAI ou FAUX (ou V ou F), recu : " + formatValeur(a.valeur));
+        derriere = a.valeur; vu = true;
+      } else positionnels.push(a);
+    }
+    if (positionnels.length < 1 || positionnels.length > 2) throw new Error("complete(longueur, caractere, placederriere~V) : la longueur est obligatoire, le caractere et placederriere sont facultatifs");
+    let longueur = exigerEntier(positionnels[0], "complete", "la longueur");
+    if (longueur < 0) throw new Error("complete : la longueur ne peut pas etre negative (recu : " + longueur + ")");
+    let car = positionnels.length === 2 ? exigerTexte(positionnels[1], "complete", "le caractere a ajouter") : " ";
+    if (car.length !== 1) throw new Error("complete : le caractere a ajouter doit etre un seul caractere (recu : |" + car + "|)");
+    return surTexteOuElements(v, t => {
+      if (t.length >= longueur) return t;
+      let ajout = car.repeat(longueur - t.length);
+      return derriere ? t + ajout : ajout + t;
+    }, "complete(...) attend du texte, une liste ou un vecteur (pour un nombre : texte(5).complete(2, |0|))", false);
   }
   if (m === "remplace") {
     attend(2, 3, "remplace(ancien, nouveau, max)");
@@ -5441,8 +5506,11 @@ function verifierIndiceEntier(v, nom) {
   return v;
 }
 
+// Indice negatif = depuis la fin : -1 est le dernier, -2 l'avant-dernier... (lecture d'un texte, d'une liste, d'un vecteur).
+function indiceDepuisFin(n, taille) { return (n < 0 && n >= -taille) ? taille + n + 1 : n; }
 // Resout un indice (nombre, vecteur d'indices, ou vecteur logique) en tableau de positions 0-based.
-function resoudreIndicesVecteur(idx, tailleMax, nom) {
+// depuisFin = true : les indices negatifs comptent depuis la fin.
+function resoudreIndicesVecteur(idx, tailleMax, nom, depuisFin) {
   if (estMatrice(idx)) idx = idx.donnees;
   if (!estVecteur(idx)) throw new ErreurIndexHorsLimite("Indice invalide pour " + nom);
   if (idx.length > 0 && typeof idx[0] === 'boolean') {
@@ -5452,9 +5520,10 @@ function resoudreIndicesVecteur(idx, tailleMax, nom) {
     return res;
   }
   let res = [];
-  for (let n of idx) {
-    verifierIndiceEntier(n, nom);
-    if (n < 1 || n > tailleMax) throw new Error("Indice " + n + " hors limites pour " + nom + " (taille " + tailleMax + ")");
+  for (let n0 of idx) {
+    verifierIndiceEntier(n0, nom);
+    let n = depuisFin ? indiceDepuisFin(n0, tailleMax) : n0;
+    if (n < 1 || n > tailleMax) throw new Error("Indice " + n0 + " hors limites pour " + nom + " (taille " + tailleMax + ")");
     res.push(n - 1);
   }
   return res;
@@ -5479,10 +5548,12 @@ function accederVecteur(v, indice, nom) {
   if (indice === null) return v.slice();
   if (typeof indice === 'number') {
     verifierIndiceEntier(indice, nom);
-    if (indice < 1 || indice > v.length) throw new Error("Indice " + indice + " hors limites pour " + nom + " (taille " + v.length + ")");
+    let i0 = indice;
+    indice = indiceDepuisFin(indice, v.length);
+    if (indice < 1 || indice > v.length) throw new Error("Indice " + i0 + " hors limites pour " + nom + " (taille " + v.length + ")");
     return v[indice - 1];
   }
-  let positions = resoudreIndicesVecteur(indice, v.length, nom);
+  let positions = resoudreIndicesVecteur(indice, v.length, nom, true);
   return positions.map(p => v[p]);
 }
 
@@ -5496,10 +5567,12 @@ function accederTexte(v, indice, nom) {
   if (indice === null) return v;
   if (typeof indice === 'number') {
     verifierIndiceEntier(indice, nom);
-    if (indice < 1 || indice > v.length) throw new Error("Indice " + indice + " hors limites pour " + nom + " (longueur " + v.length + ")");
+    let i0 = indice;
+    indice = indiceDepuisFin(indice, v.length);
+    if (indice < 1 || indice > v.length) throw new Error("Indice " + i0 + " hors limites pour " + nom + " (longueur " + v.length + ")");
     return v[indice - 1];
   }
-  let positions = resoudreIndicesVecteur(indice, v.length, nom);
+  let positions = resoudreIndicesVecteur(indice, v.length, nom, true);
   return positions.map(p => v[p]).join("");
 }
 function accederUnique(v, indice, nom) {
@@ -5513,10 +5586,12 @@ function accederUnique(v, indice, nom) {
     if (indice === null) return { __type: "liste", elements: elements.slice() };
     if (typeof indice === 'number') {
       verifierIndiceEntier(indice, nom);
-      if (indice < 1 || indice > elements.length) throw new Error("Indice " + indice + " hors limites pour " + nom + " (taille " + elements.length + ")");
+      let i0 = indice;
+      indice = indiceDepuisFin(indice, elements.length);
+      if (indice < 1 || indice > elements.length) throw new Error("Indice " + i0 + " hors limites pour " + nom + " (taille " + elements.length + ")");
       return elements[indice - 1];
     }
-    let positionsListe = resoudreIndicesVecteur(indice, elements.length, nom);
+    let positionsListe = resoudreIndicesVecteur(indice, elements.length, nom, true);
     return { __type: "liste", elements: positionsListe.map(p => elements[p]) };
   }
   let plat = estMatrice(v) ? v.donnees : (estVecteur(v) ? v : null);
@@ -5524,10 +5599,12 @@ function accederUnique(v, indice, nom) {
   if (indice === null) return plat.slice();
   if (typeof indice === 'number') {
     verifierIndiceEntier(indice, nom);
-    if (indice < 1 || indice > plat.length) throw new Error("Indice " + indice + " hors limites pour " + nom + " (taille " + plat.length + ")");
+    let i0 = indice;
+    if (estVecteur(v)) indice = indiceDepuisFin(indice, plat.length);   // matrices : inchange
+    if (indice < 1 || indice > plat.length) throw new Error("Indice " + i0 + " hors limites pour " + nom + " (taille " + plat.length + ")");
     return plat[indice - 1];
   }
-  let positions = resoudreIndicesVecteur(indice, plat.length, nom);
+  let positions = resoudreIndicesVecteur(indice, plat.length, nom, estVecteur(v));
   return positions.map(p => plat[p]);
 }
 
@@ -5575,13 +5652,18 @@ function affecterTexte(v, indice, valeur, nom) {
   if (indice === null) return valeur; // texte[] ~ valeur : remplace tout le texte
   if (typeof indice === 'number') {
     verifierIndiceEntier(indice, nom);
+    if (indice < 0) {   // depuis la fin : -1 = derniere lettre
+      let i0 = indice;
+      indice = indiceDepuisFin(indice, cars.length);
+      if (indice < 1) throw new ErreurIndexHorsLimite("Indice " + i0 + " hors limites pour " + nom + " (longueur " + cars.length + ")");
+    }
     if (indice < 1) throw new ErreurIndexHorsLimite("Indice " + indice + " invalide pour " + nom);
     if (valeur.length !== 1) throw new Error(nom + "[" + indice + "] ~ ... attend un seul caractere, recu \"" + valeur + "\" (longueur " + valeur.length + ")");
     while (cars.length < indice) cars.push(" ");
     cars[indice - 1] = valeur;
     return cars.join("");
   }
-  let positions = resoudreIndicesVecteur(indice, cars.length, nom);
+  let positions = resoudreIndicesVecteur(indice, cars.length, nom, true);
   let valeurs = valeur.split("");
   if (valeurs.length !== positions.length && valeurs.length !== 1) {
     throw new Error(nom + "[...] ~ ... attend " + positions.length + " caractere(s) (ou un seul repete), recu " + valeurs.length);
@@ -5603,12 +5685,17 @@ function affecterUnique(v, indice, valeur, nom) {
     }
     if (typeof indice === 'number') {
       verifierIndiceEntier(indice, nom);
+      if (indice < 0) {   // depuis la fin : -1 = dernier element
+        let i0 = indice;
+        indice = indiceDepuisFin(indice, elements.length);
+        if (indice < 1) throw new ErreurIndexHorsLimite("Indice " + i0 + " hors limites pour " + nom + " (taille " + elements.length + ")");
+      }
       if (indice < 1) throw new ErreurIndexHorsLimite("Indice " + indice + " invalide pour " + nom);
       while (elements.length < indice) elements.push(undefined);
       elements[indice - 1] = valeur;
       return;
     }
-    let positionsListe = resoudreIndicesVecteur(indice, elements.length, nom);
+    let positionsListe = resoudreIndicesVecteur(indice, elements.length, nom, true);
     let valeursListe = estListe(valeur) ? valeur.elements : [valeur];
     if (valeursListe.length !== positionsListe.length && valeursListe.length !== 1) {
       throw new Error(nom + "[...] ~ ... attend " + positionsListe.length + " valeur(s) (ou une seule repetee), recu " + valeursListe.length);
@@ -5646,6 +5733,11 @@ function affecterVecteur(v, indice, valeur, nom) {
     positions = []; for (let i = 0; i < v.length; i++) positions.push(i);
   } else if (typeof indice === 'number') {
     verifierIndiceEntier(indice, nom);
+    if (indice < 0) {   // depuis la fin : -1 = dernier element
+      let i0 = indice;
+      indice = indiceDepuisFin(indice, v.length);
+      if (indice < 1) throw new ErreurIndexHorsLimite("Indice " + i0 + " hors limites pour " + nom + " (taille " + v.length + ")");
+    }
     if (indice < 1) throw new ErreurIndexHorsLimite("Indice " + indice + " invalide pour " + nom + " (doit etre >= 1)");
     // Agrandissement automatique (comme en R) : un indice au-dela de la taille actuelle
     // etend le vecteur, en remplissant les nouvelles cases intermediaires avec 0.
@@ -5656,7 +5748,7 @@ function affecterVecteur(v, indice, valeur, nom) {
     // sauf pour l'indexation logique (v[v>3] ~ ...) ou la taille doit deja correspondre.
     let indiceMax = calculerIndiceMax(indice);
     while (v.length < indiceMax) v.push(0);
-    positions = resoudreIndicesVecteur(indice, v.length, nom);
+    positions = resoudreIndicesVecteur(indice, v.length, nom, true);
   }
   let elements = estVecteur(valeur) ? valeur : [valeur];
   if (elements.length !== positions.length && elements.length !== 1) {
@@ -7932,7 +8024,7 @@ let aideCommandes = [
       "liste.joindr(sep) colle les elements d'une liste ou d'un vecteur avec sep entre chaque (sans sep : colles sans rien entre eux). Les nombres sont convertis en texte.",
       "texte.decoup(motif) coupe a chaque endroit ou le motif correspond : |a1b22c|.decoup(m|\\d+|) donne liste(|a|, |b|, |c|). Les groupes () du motif ne sont pas ajoutes aux morceaux. La limite marche comme pour un texte.",
       "texte.remplace(ancien, nouveau) remplace TOUTES les occurrences de ancien par nouveau (ancien ne peut pas etre vide). Un 3e argument facultatif limite le nombre de remplacements (au plus max, les premiers) : |a a a|.remplace(|a|, |b|, 2) donne b b a. ancien peut aussi etre un motif (voir correspond / trouve) : nouveau peut alors contenir $1, $2... ou $<nom> pour reutiliser un groupe, et $$ pour un vrai $. Sur une liste ou un vecteur, remplace s'applique a chaque element texte et renvoie une liste.",
-      "x.cherch(morceau) donne la position (a partir de 1, comme texte[i]) de la premiere occurrence, ou 0 si le morceau est absent. x peut etre un texte (on cherche un morceau de texte) ou une liste/un vecteur (on cherche une valeur : l.cherch(5)). Sur un texte, morceau peut aussi etre un motif : |Tel 12 et 34|.cherch(m|\\d+|) donne 5 (position du premier morceau qui correspond, 0 s'il n'y en a pas).",
+      "x.cherch(morceau) donne la position (a partir de 1, comme texte[i]) de la premiere occurrence, ou 0 si le morceau est absent. x.cherch(morceau, depart) cherche a partir de la position depart (la position rendue reste celle du texte entier) : |a-b-a|.cherch(|a|, 2) donne 5. x peut etre un texte (on cherche un morceau de texte) ou une liste/un vecteur (on cherche une valeur : l.cherch(5)). Indices negatifs : texte[-1] est la derniere lettre, l[-2] l'avant-dernier element d'une liste ou d'un vecteur, texte[-3:-1] les trois dernieres lettres ; ils marchent aussi pour modifier : l[-1] ~ 9. Les matrices ne les acceptent pas. Sur un texte, morceau peut aussi etre un motif : |Tel 12 et 34|.cherch(m|\\d+|) donne 5 (position du premier morceau qui correspond, 0 s'il n'y en a pas).",
       "texte.commence(debut) et texte.termine(fin) renvoient VRAI ou FAUX. Majuscules et minuscules comptent comme des lettres differentes.",
       "Toutes ces commandes s'enchainent avec miniscul(), majuscul(), suprespac(), lon(), avant, apres, entre, garder et enlever : texte.suprespac().majuscul().decoup().joindr(|-|). Les anciennes ecritures decoup(texte, sep), joindr(liste, sep)... marchent toujours."
     ], exemple: "|a, b, c|.decoup(|, |)         ->   liste(|a|, |b|, |c|)\n|un deux  trois|.decoup()         ->   liste(|un|, |deux|, |trois|)\n|un deux trois|.decoup(2)       ->   liste(|un|, |deux trois|)\n|a,b,c,d|.decoup(|,|, 3)        ->   liste(|a|, |b|, |c,d|)\ntexte(|a|, saulig, |b|).decoup(saulig)   ->   liste(|a|, |b|)\nliste(|a|,|b|).joindr(| et |)   ->   a et b\n|le chat|.remplace(|chat|, |chien|)   ->   le chien\n|bonjour|.cherch(|jou|)         ->   4\nliste(|a|, 5).cherch(5)         ->   2\n|bonjour|.commence(|bon|)       ->   VRAI\n|  un deux  |.suprespac().decoup().joindr(|-|)   ->   un-deux" },
@@ -7959,6 +8051,11 @@ let aideCommandes = [
       "Un seul niveau : les listes imbriquees ne sont jamais fouillees plus profond (une sous-liste est un seul element).",
       "Erreurs claires : aucune valeur donnee, valeur vide dans .contenant, .contenant sur un texte (pas de sens)."
     ], exemple: "liste(|a|, |ab|, |b|).garder(|a|)              ->   liste(|a|)\nliste(|a|, |ab|, |b|).garder.contenant(|a|)    ->   liste(|a|, |ab|)\nliste(|a|, |ab|, |b|).enlever.contenant(|a|)   ->   liste(|b|)\nc(1, 2, 1, 3).enlever(1)                       ->   c(2, 3)\n|a1b22c|.garder(|0123456789|)                  ->   122" },
+  { noms: ["extrait"], categorie: "Texte", syntaxe: "x.extrait(debut, longueur)  /  x.extrait(debut)", description: [
+      "x.extrait(debut, longueur) donne le morceau de x qui commence a la position debut (a partir de 1) et fait longueur elements : |abcdef|.extrait(2, 3) donne bcd. x peut etre un texte (le resultat est un texte), une liste ou un vecteur (le resultat est une liste ou un vecteur).",
+      "La longueur est facultative : sans elle, on va jusqu'a la fin. Une longueur trop grande s'arrete a la fin sans erreur : |abcdef|.extrait(5, 10) donne ef. Une longueur 0 donne un morceau vide ; une longueur negative donne une erreur.",
+      "Un debut negatif compte depuis la fin : |abcdef|.extrait(-3, 2) donne de, et |abcdef|.extrait(-1) donne f. Un debut apres la fin donne un morceau vide ; un debut 0 donne une erreur. Les positions sont comptees comme lon(x), x[i] et cherch : un retour a la ligne compte pour un caractere."
+    ], exemple: "|abcdef|.extrait(2, 3)      ->   bcd\n|abcdef|.extrait(5, 10)     ->   ef\n|abcdef|.extrait(3)         ->   cdef\n|abcdef|.extrait(-3, 2)     ->   de\n|abcdef|.extrait(3, 0)      ->   (vide)\nliste(1, 2, 3, 4).extrait(2, 2)   ->   liste(2, 3)" },
   { noms: ["correspond", "trouve", "trouve.tout"], categorie: "Texte", syntaxe: "x.correspond(motif)  /  x.trouve(motif)  /  x.trouve(motif, groupe)  /  x.trouve.tout(motif)  /  x.trouve.tout(motif, groupe)", description: [
       "Un MOTIF (expression reguliere) decrit une forme de texte. m|\\d+| (ou /\\d+/ comme en JS) est un motif qui trouve un nombre ; m|abc|i (ou /abc/i) ignore les majuscules ; fam|...| fabrique un motif avec des {variables}. Options apres la barre fermante : i (ignorer les majuscules), m (^ et $ ligne par ligne), s (le point accepte aussi le saut de ligne), u (Unicode : \\p{L} trouve les lettres accentuees, un emoji compte pour un seul caractere ; si un motif insere dans fam|...| a besoin de u, ecris u apres fam|...|).",
       "Dans m|...| et fam|...|, les antislashs vont tels quels au motif (\\d, \\s, \\.) ; \\| est l'ALTERNATIVE : m|chat\\|chien| = chat ou chien. Pour chercher une vraie barre, ecris [\\|] ou \\x7C : m|a[\\|]b| et m|a\\x7Cb| cherchent a|b.",
@@ -8233,6 +8330,10 @@ let aideCommandes = [
       "Les conversions peuvent aussi etre faites dans l'autre sens : conver.seconde.heure(3600) -> 1 ; conver.seconde.ms(1) -> 1000 ; conver.Mo.Ko(1) -> 1024.",
       "La valeur doit etre un nombre positif ou nul. Le resultat peut etre fractionnaire (pas d'arrondi, meme quand ca ne tombe pas juste, ex: conver.ms.jour(...))."
     ], exemple: "conver.minute.seconde(5)  ->  300\nconver.heure.seconde(2)    ->  7200\nconver.ms.seconde(500)     ->  0.5\nconver.seconde.heure(3600)  ->  1\nconver.jour.heure(1)       ->  24\nconver.octet.Ko(1024)      ->  1\nconver.Mo.Ko(1)            ->  1024" },
+  { noms: ["conver.cara.code", "conver.code.cara"], categorie: "Base", syntaxe: "conver.cara.code(caractere)  /  conver.code.cara(code)", description: [
+      "conver.cara.code(|A|) donne le code du caractere (ici 65). Il faut un texte d'un seul caractere ; un emoji compte pour un seul caractere (code Unicode).",
+      "conver.code.cara(65) fait l'inverse : donne le caractere de ce code (ici A). Le code doit etre un entier de 0 a 1114111."
+    ], exemple: "conver.cara.code(|A|)   ->   65\nconver.code.cara(65)     ->   A\nconver.code.cara(conver.cara.code(|a|) - 32)   ->   A" },
   { noms: ["conver.ms.date", "conver.date.ms"], categorie: "Base", syntaxe: "conver.ms.date(valeur)  /  conver.date.ms(texte)", description: [
       "conver.ms.date(valeur) : convertit un horodatage brut en millisecondes (epoch, ex: celui renvoye par temps()) en date/heure lisible, meme format que date() : \"JJ/MM/AAAA HH:MM:SS\". La valeur doit etre un nombre positif ou nul.",
       "conver.date.ms(texte) : l'inverse -- convertit un texte \"JJ/MM/AAAA HH:MM:SS\" en horodatage brut en millisecondes. Format STRICT : erreur directe si le texte n'est pas exactement dans ce format ou si la date n'existe pas dans le calendrier (ex: 31/02/2026), sans tentative de correction."
@@ -8253,7 +8354,10 @@ let aideCommandes = [
       "rf|...| et fr|...| combinent les deux : rf|C:\\{dossier}\\a.txt| garde les antislash et insere {dossier}. r, f, rf et fr doivent etre colles a la barre ouvrante ; une variable nommee r ou f reste utilisable (r ~ 5).",
       "saulig reste valable : affi(|a|, saulig, |b|) revient a affi(|a\\nb|)."
     ], exemple: "affi(|Ligne 1\\nLigne 2|)\naffi(|Il a dit : \\|oui\\||)\nnom ~ |Yan|\nage ~ 20\naffi(f|{nom} a {age+1} ans|)\naffi(r|C:\\nouveau\\texte|)\naffi(f|{{x}} vaut {age}|)" },
-  { noms: ["miniscul", "majuscul", "suprespac"], categorie: "Texte", syntaxe: "var.miniscul()  /  var.majuscul()  /  var.suprespac()", description: [
+  { noms: ["miniscul", "majuscul", "suprespac", "majuscul.premier", "suprespac.debut", "suprespac.fin"], categorie: "Texte", syntaxe: "var.miniscul()  /  var.majuscul()  /  var.majuscul.premier()  /  var.suprespac()  /  var.suprespac.debut()  /  var.suprespac.fin()  /  texte.complete(longueur, caractere, placederriere~V)", description: [
+      "texte.complete(longueur, caractere) ajoute le caractere DEVANT le texte jusqu'a atteindre la longueur voulue : texte(5).complete(2, |0|) donne 05, |7|.complete(5, |0|) donne 00007. Un texte deja assez long ne change pas. Le caractere (un seul) est facultatif, un espace par defaut. Pour l'ajouter DERRIERE : |ab|.complete(5, |.|, placederriere~V) donne ab... (VRAI marche aussi, et FAUX remet devant). Pour un nombre, ecris d'abord texte(nombre).",
+      "majuscul.premier() met seulement la premiere lettre en majuscule, le reste du texte ne change pas : |bonjour tout le monde|.majuscul.premier() donne Bonjour tout le monde. Pour mettre le reste en minuscules, ecris .miniscul().majuscul.premier().",
+      "suprespac.debut() enleve les espaces au debut du texte seulement, suprespac.fin() ceux de la fin seulement : |  a  |.suprespac.debut() donne |a  |.",
       "miniscul() convertit le texte contenu dans var en minuscules.",
       "majuscul() convertit le texte contenu dans var en majuscules.",
       "suprespac() supprime les espaces au debut et a la fin du texte.",
@@ -8680,10 +8784,11 @@ function enregistrerFonctionsBase() {
         return coreRemplace(t, ancien, nouveau, max);
     };
     fonctionsBase["cherch"] = fonctionsExpression["cherch"] = async function(args, ctxExpr) {
-        if (args.length !== 2) throw new Error("cherch(texte, morceau) attend 2 arguments");
+        if (args.length < 2 || args.length > 3) throw new Error("cherch(texte, morceau, depart) attend 2 ou 3 arguments (depart facultatif)");
         let cible = await evaluerElementBrut(args[0], ctxExpr);
         let m = await evaluerElementBrut(args[1], ctxExpr);
-        return coreCherch(cible, m, "cherch"); // position a partir de 1 (comme texte[i]), 0 si absent
+        let depart = args.length === 3 ? await evaluerElementBrut(args[2], ctxExpr) : undefined;
+        return coreCherch(cible, m, "cherch", depart); // position a partir de 1 (comme texte[i]), 0 si absent
     };
     fonctionsBase["commence"] = fonctionsExpression["commence"] = async function(args, ctxExpr) {
         if (args.length !== 2) throw new Error("commence(texte, debut) attend 2 arguments");
@@ -9819,6 +9924,25 @@ function enregistrerFonctionsBase() {
             throw new ErreurTypeInvalide("conver.ms.date(...) attend un nombre positif ou nul (millisecondes epoch)");
         }
         return formaterDateHeure(new Date(ms));
+    };
+
+    // conver.cara.code(|A|) -> 65 ; conver.code.cara(65) -> |A|  (code Unicode : un emoji est UN caractere)
+    fonctionsBase["conver.cara.code"] = fonctionsExpression["conver.cara.code"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("conver.cara.code(...) attend exactement 1 argument (un seul caractere)");
+        let c = await evalExpr(args[0], ctxExpr);
+        if (typeof c !== "string" || Array.from(c).length !== 1) {
+            throw new ErreurTypeInvalide("conver.cara.code(...) attend un texte d'un seul caractere (recu : " + (typeof c === "string" ? "|" + c + "|" : nomNature(c)) + ")");
+        }
+        return c.codePointAt(0);
+    };
+    fonctionsBase["conver.code.cara"] = fonctionsExpression["conver.code.cara"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("conver.code.cara(...) attend exactement 1 argument (un nombre entier)");
+        let n = await evalExpr(args[0], ctxExpr);
+        if (typeof n === "bigint") n = Number(n);
+        if (typeof n !== "number" || !Number.isInteger(n) || n < 0 || n > 0x10FFFF || (n >= 0xD800 && n <= 0xDFFF)) {
+            throw new ErreurTypeInvalide("conver.code.cara(...) attend un entier de 0 a 1114111 (hors codes reserves), recu : " + formatValeur(n));
+        }
+        return String.fromCodePoint(n);
     };
 
     // conver.date.ms(texte) : inverse de conver.ms.date(...) -- convertit un texte de date/heure
@@ -12595,12 +12719,14 @@ async function executerCommandeSimple(ligne) {
         if (!estListe(cible)) {
           throw new ErreurTypeInvalide(nomAff + " n'est pas une liste : on ne peut pas ecrire " + chemin + groupes.map(x => "[" + x + "]").join("") + " (un vecteur ne contient que des valeurs simples)");
         }
+        let idx0 = idx;
+        idx = indiceDepuisFin(idx, cible.elements.length);   // indice negatif = depuis la fin
         if (idx < 1 || idx > cible.elements.length) {
-          throw new ErreurIndexHorsLimite("Indice " + idx + " hors limites pour " + nomAff + " (taille " + cible.elements.length + ")");
+          throw new ErreurIndexHorsLimite("Indice " + idx0 + " hors limites pour " + nomAff + " (taille " + cible.elements.length + ")");
         }
         parentListe = cible; indiceParent = idx; parentDico = null;
         cible = cible.elements[idx - 1];
-        nomAff = nomAff + "[" + idx + "]";
+        nomAff = nomAff + "[" + idx0 + "]";
         if (cible === undefined || cible === null) {
           throw new ErreurTypeInvalide(nomAff + " est pasdefini : rien a modifier a l'interieur");
         }
@@ -12637,7 +12763,7 @@ async function executerCommandeSimple(ligne) {
 
   // Methodes sur variable : nom.ajout(...), nom.miniscul(), nom.majuscul(), nom.suprespac()
   // Les methodes texte peuvent etre enchainees : var.miniscul().suprespac()
-  let mMethodesTexte = _regexCache(_entreeLigne, 'methodesTexte', ligne, /^([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)((?:\.(?:miniscul|majuscul|suprespac)\(\s*\))+)$/);
+  let mMethodesTexte = _regexCache(_entreeLigne, 'methodesTexte', ligne, /^([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)((?:\.(?:majuscul\.premier|suprespac\.debut|suprespac\.fin|miniscul|majuscul|suprespac)\(\s*\))+)$/);
   if (mMethodesTexte) {
     let chemin = mMethodesTexte[1];
     let cible = resoudreCheminCible(chemin);
@@ -12647,7 +12773,7 @@ async function executerCommandeSimple(ligne) {
     }
     let chaine = mMethodesTexte[2];
     let methodes = [];
-    let reM = /\.(miniscul|majuscul|suprespac)\(\s*\)/g, mm;
+    let reM = /\.(majuscul\.premier|suprespac\.debut|suprespac\.fin|miniscul|majuscul|suprespac)\(\s*\)/g, mm;
     while ((mm = reM.exec(chaine)) !== null) methodes.push(mm[1]);
     let valeur = cible;
     for (let methode of methodes) valeur = appliquerNettoyageTexte(valeur, methode);
