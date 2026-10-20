@@ -1382,14 +1382,6 @@ public class MonLangageBridge {
             }
         }
 
-        private boolean supprimerRecursif(File f) {
-            if (f.isDirectory()) {
-                File[] enfants = f.listFiles();
-                if (enfants != null) for (File enfant : enfants) supprimerRecursif(enfant);
-            }
-            return f.delete();
-        }
-
         // ---------------- Alertes natives : alerte.son / alerte.vibre / alerte.arrete ----------------
         // Delegue a AlerteManager (etat statique : une alerte "autonome" survit au script).
         // Renvoient le numero de l'alerte (> 0), ou un code d'erreur negatif (voir AlerteManager).
