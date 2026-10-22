@@ -5,7 +5,7 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MonLangage IDE v4.0</title>
+  <title>MonLangage IDE</title>
   <style>
     * { box-sizing: border-box; }
     html {
@@ -481,7 +481,7 @@ affi(|Bonjour |, nom)</textarea>
   <div id="console">
     <div id="headerConsole" style="display:flex; align-items:center; gap:10px;">
       <button id="btnRetour">← Retour</button>
-      <span id="titreConsole">Console MonLangage v4.0</span>
+      <span id="titreConsole">Console MonLangage</span>
       <button id="btnArretUrgence" type="button" hidden>🛑 Arrêt d’urgence</button>
       <button id="btnBasculePaquets" type="button" title="Gestionnaire de paquets" style="margin-left:auto;">📦 Paquets</button>
     </div>
@@ -1193,7 +1193,7 @@ let modeConsoleCommande = false;
 let modeGestionnairePaquets = false;
 function basculerGestionnairePaquets() {
   modeGestionnairePaquets = !modeGestionnairePaquets;
-  titreConsole.textContent = modeGestionnairePaquets ? "Gestionnaire de paquets" : "Console MonLangage v4.0";
+  titreConsole.textContent = modeGestionnairePaquets ? "Gestionnaire de paquets" : "Console MonLangage";
   btnBasculePaquets.textContent = modeGestionnairePaquets ? "📦 Console MLG" : "📦 Paquets";
   // Met a jour tout de suite le symbole/la couleur de l'invite DEJA affichee (pas seulement la
   // prochaine, via printInvite()) : sinon, basculer avant d'avoir valide la ligne en cours
@@ -8629,7 +8629,7 @@ let aideCommandes = [
   { noms: ["trac.enregistre"], categorie: "Graphique", syntaxe: "trac.enregistre(chemin, largeur~, hauteur~, resolution~, theme~, ecra~)", description: [
       "Enregistre en image (.png ou .jpg) le graphique de la zone active, avec TOUTES ses courbes superposees, sa legende, sa grille, son titre et ses noms d'axes. C'est une photo du moment : ce que tu traces apres n'y est pas.",
       "Fond blanc par defaut (theme~|clair|) ; theme~|sombre| donne l'aspect de la console. Les courbes blanches deviennent sombres sur fond blanc pour rester visibles.",
-      "largeur~ et hauteur~ : taille de la mise en page en points de dessin (640 x 416 par defaut, entre 100 et 8000). resolution~ : pixels par point (2 par defaut, de 1 a 8). Image finale = taille x resolution (1280 x 832 par defaut). Plus la mise en page est grande, plus le texte parait petit ; une resolution plus haute rend le meme dessin plus net. Maximum 16 millions de pixels.",
+      "largeur~ et hauteur~ : taille de la mise en page, en points de dessin (par defaut largeur 640 et hauteur 416 ; chacune entre 100 et 8000). resolution~ : nombre de pixels par point (2 par defaut, de 1 a 8). Taille de l'image finale, en pixels : largeur finale = largeur~ multipliee par resolution~, et hauteur finale = hauteur~ multipliee par resolution~. Par defaut : 640 multiplie par 2 = 1280 pixels de large, et 416 multiplie par 2 = 832 pixels de haut. Plus la mise en page est grande, plus le texte parait petit ; une resolution plus haute rend le meme dessin plus net, sans changer sa disposition. Maximum : 16 millions de pixels au total (largeur finale multipliee par hauteur finale).",
       "Chemin complet avec / (ex: |/sdcard/Download/courbe.png|), ou juste un nom : une fenetre propose l'emplacement. Un fichier existant est refuse sauf ecra~VRAI. Sans extension, .png est ajoute. Dans l'app installee seulement (dans un navigateur, l'image est telechargee)."
     ], exemple: "x ~ seq(-3,3,0.1)\ntrac(x, x*x, legende~|x^2|, titre~|Deux courbes|)\ntrac(x, x*x*x, legende~|x^3|)\ntrac.enregistre(|/sdcard/Download/courbes.png|, largeur~800, resolution~3)" },
   { noms: ["feuille.enregistre"], categorie: "Graphique", syntaxe: "feuille.enregistre(chemin, ...)  ou  feuille.enregistre(n, chemin, ...)", description: [
@@ -11717,7 +11717,7 @@ function enregistrerFonctionsBase() {
     // trac.enregistre(chemin, largeur~, hauteur~, resolution~, theme~, ecra~)  : image du graphique de la zone active.
     // feuille.enregistre([n,] chemin, ...mêmes options)                        : image de toute la feuille (grille de zones).
     // largeur~ / hauteur~ = taille de la mise en page en points de dessin (meme echelle que la console : texte et
-    // traits gardent leur taille relative), resolution~ = pixels par point (1 a 8). Image finale = taille x resolution.
+    // traits gardent leur taille relative), resolution~ = pixels par point (1 a 8). Image finale : largeur et hauteur multipliees chacune par resolution~.
     async function lireOptionsEnregistrement(args, debut, nomCmd, ctxExpr) {
         let opt = { largeur: null, hauteur: null, resolution: EXPORT_RESOLUTION_DEFAUT, theme: "clair", ecra: false };
         let vus = {};
