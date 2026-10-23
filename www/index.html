@@ -2178,7 +2178,7 @@ function motifSlashOuvre(s, i) {
     let j = k;
     while (j >= 0 && /[A-Za-z0-9_]/.test(s[j])) j--;
     const mot = s.slice(j + 1, k + 1);
-    return mot === 'et' || mot === 'ou' || mot === 'non' || mot === 'dan' || mot === 'retour';
+    return mot === 'et' || mot === 'ou' || mot === 'non' || mot === 'dan' || mot === 'retour' || mot === 'donne';
   }
   return false;
 }
@@ -3943,6 +3943,7 @@ let ctxExpr = { getVar: getVar, appelerFonction: (nom, args) => appelerFonction(
 function estMatrice(v) { return v !== null && typeof v === 'object' && v.__type === 'matrice'; }
 function estVecteur(v) { return Array.isArray(v); }
 function estListe(v) { return v !== null && typeof v === 'object' && v.__type === 'liste'; }
+function estGenerateur(v) { return v !== null && typeof v === 'object' && v.__type === 'generateur'; }
 
 /* ===================== DICTIONNAI (cle -> valeur) ===================== */
 // Un dictionnai est { __type:"dictionnai", entrees: Map(cleNormalisee -> {cle, valeur}) } : l'ordre
@@ -4678,6 +4679,7 @@ function appliquerMethodeTexte(v, m, args) {
 // Nom (texte) de la nature d'une valeur : "texte", "nombre", "booleen", "vecteur", "matrice" ou "inconnu".
 // Utilise par natu() et par les messages d'erreur de conver.*/est.*.
 function nomNature(v) {
+  if (estGenerateur(v)) return "generateur";
   if (estMatrice(v)) return "matrice";
   if (estListe(v)) return "liste";
   if (estDictionnai(v)) return "dictionnai";
@@ -4978,6 +4980,7 @@ function verifierMemeLongueur(g, d, op) {
 }
 // Types affiches dans les messages d'erreur des operateurs : nombre / texte / sinon le nom du type.
 function typeOperande(v) {
+  if (v !== null && typeof v === 'object' && v.__paquetSuivant === true) return "dictionnai (le paquet de suivant(...) : ecris suivant(g)[|valeur|] pour sa valeur)";
   if (typeof v === 'string') return "texte";
   if (typeof v === 'number' || typeof v === 'bigint') return "nombre";
   return nomNature(v);
@@ -5827,6 +5830,7 @@ function pad(texte, largeur) {
 
 function formatValeur(v) {
   if (v === undefined) return "pasdefini";
+  if (estGenerateur(v)) return "generateur";
   if (estMatrice(v)) return formatMatrice(v);
   if (estListe(v)) return formatListe(v);
   if (estDictionnai(v)) return formatDictionnai(v);
@@ -5925,6 +5929,173 @@ function formatMatrice(m) {
 // methodes de classe (moi + autres parametres). classeCourante (facultatif) memorise, pour
 // une methode de classe, la classe qui DEFINIT reellement le corps execute (utile pour
 // parent.methode(...) : voir getClasseCourante ci-dessous).
+/* ===================== GENERATEURS (donne) ===================== */
+// Une fonction dont le corps contient "donne" est un GENERATEUR (comme yield en Python/JS) :
+//  - l'appeler ne lance pas le corps, ca renvoie un generateur (execution paresseuse) ;
+//  - chaque "donne valeur" met le corps en pause et envoie la valeur a celui qui la demande ;
+//  - "retour" ou la fin du corps termine le generateur (la valeur de retour est ignoree) ;
+//  - la fin d'un generateur ne bloque jamais le script.
+// Le corps tourne dans sa propre chaine asynchrone ; le moteur partage un etat global (scopes, baseLocale...),
+// donc a chaque passage de main (reprise / donne) on ECHANGE cet etat : celui du consommateur et celui du generateur.
+let generateurCourant = null;   // generateur dont le corps est en train de s'executer (null = programme ou fonction normale)
+
+// Signal interne : affi(suivant(g)) quand le generateur est fini (affi affiche alors le mot "fini").
+class FinGenerateurAffi extends Error {}
+
+// Mots reserves : les mots de la grammaire du langage. Ils ne peuvent servir de nom ni de variable, ni de fonction,
+// ni de parametre, ni de classe, ni de variable de boucle (les attributs a.nom et les cles de dictionnai restent libres).
+// Les autres commandes et fonctions predefinies (affi, liste, texte...) NE sont PAS reservees, comme print/list en Python
+// (exceptions voulues : sisinon, lettr, Lettr). "sinon si" s'ecrit en deux mots : il est deja couvert par sinon et si.
+// Verifie par le verificateur de syntaxe, avant toute execution.
+const _MOTS_RESERVES = new Set([
+  'pou', 'tanqer', 'si', 'sinon', 'essai', 'attrape', 'finalement', 'rythme', 'fonc', 'classe', 'herite',
+  'retour', 'donne', 'casse', 'continu', 'quitte', 'lever', 'global', 'englobant', 'import', 'de',
+  'et', 'ou', 'non', 'dan', 'VRAI', 'V', 'FAUX', 'F', 'pasdefini',
+  'sisinon', 'lettr', 'Lettr'
+]);
+function _msgMotReserve(nom, role) {
+  const python = nom === 'donne' ? " (comme yield en Python)" : (nom === 'retour' ? " (comme return en Python)" : "");
+  return nom + " est un mot reserve du langage" + python + " : il ne peut pas servir de nom de " + role + ". Choisis un autre nom.";
+}
+
+const _cacheCorpsGenerateur = new WeakMap();
+function _tokenDonne(t) {
+  if (t.charCodeAt(0) !== 100 || !t.startsWith('donne')) return false;   // 'd' puis "donne" : test rapide avant toute regex
+  if (t.length === 5) return true;
+  return /^donne\s*~/.test(t) || /^donne[\s(]/.test(t);   // "donne ~ ..." est reconnu pour refuser clairement une variable nommee donne
+}
+// Vrai si le corps contient un "donne" qui lui appartient (les fonc/classe imbriquees ont leur propre corps : ignorees).
+function corpsEstGenerateur(corps) {
+  let r = _cacheCorpsGenerateur.get(corps);
+  if (r !== undefined) return r;
+  r = false;
+  for (let i = 0; i < corps.length; i++) {
+    let t = corps[i].texte;
+    if ((t.startsWith('fonc ') || t.startsWith('classe ')) && corps[i + 1] && corps[i + 1].texte === '{') {
+      try { i = trouverFinBloc(corps, i + 2, corps[i].ligne) - 1; continue; } catch (_) { /* bloc mal forme : on laisse l'execution normale le signaler */ }
+    }
+    if (_tokenDonne(t)) { r = true; break; }
+  }
+  _cacheCorpsGenerateur.set(corps, r);
+  return r;
+}
+
+// Cree le generateur d'un appel de fonction (appele par executerCorpsFonction, contexte de l'appel deja installe).
+function creerGenerateur(corps) {
+  return {
+    __type: 'generateur',
+    corps: corps,
+    statut: 'neuf',            // 'neuf' | 'suspendu' | 'enCours' | 'fini'
+    reprendre: null,           // debloque le corps apres un donne
+    signaler: null,            // reveille le consommateur (valeur donnee, fin ou erreur)
+    etat: {
+      scopes: scopes, baseLocale: baseLocale, declsFrame: declsFrame,
+      fonctions: fonctions, classes: classes,
+      entree: pileAppels[pileAppels.length - 1],
+      erreurAttrape: null
+    }
+  };
+}
+
+// Demande la valeur suivante : { valeur, fini }. Ne leve JAMAIS d'erreur de fin (seulement les vraies erreurs du corps).
+async function avancerGenerateur(g) {
+  if (g.statut === 'fini') return { valeur: undefined, fini: true };
+  if (g.statut === 'enCours') throw new Error("generateur deja en cours d'execution : un generateur ne peut pas redemander sa propre valeur suivante");
+  if (profondeurAppel + 1 > PROFONDEUR_APPEL_MAX) {
+    throw new ErreurRecursionMax("generateur : plus de " + PROFONDEUR_APPEL_MAX + " appels imbriques -- recursion probablement infinie");
+  }
+  const conso = {
+    scopes: scopes, baseLocale: baseLocale, declsFrame: declsFrame, pileAppels: pileAppels,
+    profondeurAppel: profondeurAppel, fonctions: fonctions, classes: classes,
+    erreurEnCoursAttrape: erreurEnCoursAttrape, ligne: ligneExpressionCourante, gen: generateurCourant
+  };
+  const etat = g.etat;
+  scopes = etat.scopes; baseLocale = etat.baseLocale; declsFrame = etat.declsFrame;
+  fonctions = etat.fonctions; classes = etat.classes;
+  pileAppels = conso.pileAppels.concat([etat.entree]);
+  profondeurAppel = conso.profondeurAppel + 1;
+  erreurEnCoursAttrape = etat.erreurAttrape;
+  generateurCourant = g;
+  const premiere = g.statut === 'neuf';
+  g.statut = 'enCours';
+  const evenement = new Promise(res => { g.signaler = res; });
+  if (premiere) {
+    executerTokens(g.corps, 0, g.corps.length).then(
+      () => { g.statut = 'fini'; g.signaler({ fini: true }); },
+      e => { g.statut = 'fini'; g.signaler({ erreur: e }); }
+    );
+  } else {
+    const reprise = g.reprendre; g.reprendre = null; reprise();
+  }
+  const resultat = await evenement;
+  // le corps vient de se mettre en pause (ou de finir) : on garde son etat et on rend le contexte au consommateur
+  etat.scopes = scopes; etat.baseLocale = baseLocale; etat.declsFrame = declsFrame;
+  etat.fonctions = fonctions; etat.classes = classes; etat.erreurAttrape = erreurEnCoursAttrape;
+  scopes = conso.scopes; baseLocale = conso.baseLocale; declsFrame = conso.declsFrame;
+  fonctions = conso.fonctions; classes = conso.classes; pileAppels = conso.pileAppels;
+  profondeurAppel = conso.profondeurAppel; erreurEnCoursAttrape = conso.erreurEnCoursAttrape;
+  ligneExpressionCourante = conso.ligne; generateurCourant = conso.gen;
+  if (resultat.erreur !== undefined) throw resultat.erreur;
+  if (resultat.fini) return { valeur: undefined, fini: true };
+  return { valeur: resultat.valeur, fini: false };
+}
+
+// Appele par "donne" : envoie la valeur au consommateur puis attend la demande suivante.
+function suspendreGenerateur(g, valeur) {
+  return new Promise(reprise => {
+    g.reprendre = reprise;
+    g.statut = 'suspendu';
+    g.signaler({ valeur: valeur });
+  });
+}
+
+// Valeur d'un "donne ..." : meme ecriture que "retour ..." (une valeur ; plusieurs valeurs separees par des virgules = un texte).
+async function valeurDonnee(reste) {
+  let elements = splitTopLevelComma(reste);
+  if (elements.length === 1) return await evalExpr(reste, ctxExpr);
+  let parties = [];
+  for (let elem of elements) {
+    let e = elem.trim();
+    if (e === "saulig") parties.push("\n");
+    else if (estTexteLitteralComplet(e)) parties.push(await valeurTexteLitteral(e, ctxExpr));
+    else { verifierTexteLitteralFerme(e); parties.push(formatValeur(await evalExpr(e, ctxExpr))); }
+  }
+  return parties.join(" ").replace(/ {2,}/g, " ").replace(/ *\n */g, "\n");
+}
+
+// Toutes les valeurs restantes d'un generateur (liste(g)).
+async function collecterGenerateur(g) {
+  let valeurs = [];
+  while (true) {
+    await respirer();
+    let r = await avancerGenerateur(g);
+    if (r.fini) break;
+    valeurs.push(r.valeur);
+  }
+  return valeurs;
+}
+
+// Dans affi(...), un suivant(g) ECRIT DIRECTEMENT (seul ou dans un calcul, pas dans une autre fonction, pas suivi de [ ])
+// donne la valeur au lieu du paquet. On le reconnait avec le meme decoupage que celui qui extrait les appels d'une expression.
+function reecrireSuivantDirect(str) {
+  if (str.indexOf('suivant') === -1 || nomMasqueParUtilisateur('suivant')) return str;
+  let segments = _obtenirSegmentsExpression(str);
+  let pos = 0, resultat = "", modifie = false;
+  for (let seg of segments) {
+    if (seg.type === 'erreur') return str;
+    if (seg.type === 'texte') { resultat += seg.valeur; pos += seg.valeur.length; continue; }
+    if (seg.type === 'skip') { resultat += str.slice(seg.debut, seg.fin); pos = seg.fin; continue; }
+    let morceau = str.slice(pos, seg.fin);
+    pos = seg.fin;
+    if (seg.type === 'appel' && seg.nom === 'suivant' && !seg.forceNatif && morceau.startsWith('suivant(')) {
+      let apres = str.slice(seg.fin).trimStart();
+      if (apres[0] !== '[') { morceau = '__suivant_affi(' + morceau.slice(8); modifie = true; }
+    }
+    resultat += morceau;
+  }
+  return modifie ? resultat : str;
+}
+
 async function executerCorpsFonction(params, corps, argsVals, nomPourErreur, classeCourante, environnementCapture) {
   // Separe les arguments fournis en POSITIONNELS (valeurs simples, dans l'ordre) et NOMMES
   // (objets {__argNomme, valeur} produits par lireArgument() quand l'appel utilise nom~valeur,
@@ -6001,8 +6172,14 @@ async function executerCorpsFonction(params, corps, argsVals, nomPourErreur, cla
       }
       scope[p.nom] = await evalExpr(p.defautExpr, ctxExpr);
     }
-    let res = await executerTokens(corps, 0, corps.length);
-    resultat = (res.signal && res.signal.type === 'retour') ? res.signal.valeur : undefined;
+    if (corpsEstGenerateur(corps)) {
+      // Fonction qui contient "donne" : on NE l'execute PAS maintenant (execution paresseuse, comme yield
+      // en Python/JS). L'appel renvoie un generateur qui garde ce contexte (arguments deja lies).
+      resultat = creerGenerateur(corps);
+    } else {
+      let res = await executerTokens(corps, 0, corps.length);
+      resultat = (res.signal && res.signal.type === 'retour') ? res.signal.valeur : undefined;
+    }
   } finally {
     scopes = pilePrecedente;
     baseLocale = baseAvant;
@@ -7564,6 +7741,7 @@ function trouverAttributPartage(nomClasse, nomAttr) {
 // corps contient explicitement un "retour" vide (voir estRetourVideDansCorps). Une
 // fonction/methode qui n'a simplement aucun retour (comme une procedure) reste silencieuse.
 function doitAfficherResultatAppel(val, aRetourVide) {
+  if (estGenerateur(val)) return false;   // compte(3) seul sur une ligne : le generateur est cree, rien ne s'execute, rien ne s'affiche
   return val !== undefined || !!aRetourVide;
 }
 
@@ -7779,7 +7957,7 @@ let aideCommandes = [
       "Repete le bloc entre accolades. Trois syntaxes possibles.",
       "1) pou(var, debut, fin, pas) : var prend d'abord la valeur debut, puis debut+pas, et ainsi de suite jusqu'a fin (fin incluse). pas est facultatif : vaut 1 par defaut, et peut etre negatif (pour compter a l'envers).",
       "debut, fin et pas peuvent etre des expressions complexes (avec des parentheses, ^, des appels de fonction, etc.), separees par des virgules.",
-      "2) pou(var dan objet) : var prend tour a tour chaque valeur de objet : chaque element d'un vecteur ou d'une liste(), chaque lettre d'un texte, chaque CLE d'un dictionnai (pas les indices).",
+      "2) pou(var dan objet) : var prend tour a tour chaque valeur de objet : chaque element d'un vecteur ou d'une liste(), chaque lettre d'un texte, chaque CLE d'un dictionnai (pas les indices), chaque valeur donnee par un generateur (voir aide(donne)).",
       "3) pou(a, b dan objet) : DEPAQUETE chaque element de objet dans plusieurs variables, comme for a, b in ... en Python. Chaque element doit etre une liste ou un vecteur contenant exactement autant de valeurs que de variables (2, 3 ou plus). Les noms doivent etre differents.",
       "Pour avoir la position de chaque element : pou(i, x dan enumerer(objet)). Pour avoir les cles et les valeurs d'un dictionnai : pou(k, v dan paires(d)). Voir aide(enumerer).",
       "casse permet d'arreter la boucle avant la fin (voir aide(casse))."
@@ -7979,7 +8157,7 @@ let aideCommandes = [
       "Avec global score, score ~ score + 1 modifie le score du programme. Si score n'existe pas encore, il est cree au programme a la premiere affectation.",
       "Ecrire global apres avoir deja utilise le nom (ou si c'est un parametre) est une erreur claire. Hors d'une fonction, global n'a pas de sens (erreur de syntaxe).",
       "Pour modifier une variable de la fonction qui CONTIENT la tienne (fonction imbriquee), utilise englobant."
-    ], exemple: "score ~ 0\nfonc gagner(){\n    global score\n    score ~ score + 1\n}\nfonc essai(){\n    score ~ 100        ** variable LOCALE : le score du programme ne change pas **\n}\ngagner()\nessai()\naffi(score)   ->   1" },
+    ], exemple: "score ~ 0\nfonc gagner(){\n    global score\n    score ~ score + 1\n}\nfonc test_local(){\n    score ~ 100        ** variable LOCALE : le score du programme ne change pas **\n}\ngagner()\ntest_local()\naffi(score)   ->   1" },
   { noms: ["englobant"], categorie: "Controle", syntaxe: "englobant nom1, nom2", description: [
       "A ecrire au DEBUT d'une fonction definie a l'interieur d'une autre : dit que ces noms designent des variables de la fonction englobante (la plus proche qui les possede).",
       "Les fonctions nommees imbriquees gardent une reference vers les variables de la fonction qui les a creees (fermeture) : chaque appel de la fonction englobante a ses propres variables.",
@@ -8002,6 +8180,20 @@ let aideCommandes = [
       "La valeur renvoyee peut etre un nombre, mais aussi un vecteur ou une matrice (comme en R).",
       "Utilisable uniquement a l'interieur d'une fonction (fonc)."
     ], exemple: "fonc double(x){ retour x*2 }\nfonc doubleVecteur(v){ retour(v*2) }\naffi(doubleVecteur(c(1,2,3)))   ->   2 4 6" },
+  { noms: ["donne"], categorie: "Controle", syntaxe: "donne valeur", description: [
+      "Dans une fonction (fonc), donne valeur met la fonction en pause et envoie la valeur a celui qui la demande, comme yield en Python ou JS.",
+      "Une fonction qui contient donne est un GENERATEUR : l'appeler ne lance PAS son corps, ca renvoie un generateur. Le corps ne s'execute qu'a la demande (pou, liste, suivant) et reprend apres le dernier donne.",
+      "donne s'ecrit librement : plusieurs donne a la suite, dans un si, dans une boucle... Pas besoin d'une boucle. retour arrete le generateur plus tot (sa valeur est ignoree) ; la fin du corps le termine aussi. La fin d'un generateur ne bloque jamais le script.",
+      "Utilisation : pou(x dan g){...} parcourt toutes les valeurs, liste(g) les range dans une liste, suivant(g) donne la valeur suivante (voir aide(suivant)). Un generateur infini (tanqer V{ donne ... }) se lit avec suivant ou pou + casse ; liste(g) ne finirait jamais."
+    ], exemple: "fonc compte(n){\n    pou(i, 1, n){ donne i }\n}\npou(x dan compte(3)){ affi(x) }   ->   1 2 3\naffi(liste(compte(3)))   ->   liste(1, 2, 3)\n\nfonc trois(){\n    donne 1\n    donne 2\n    donne 3\n}\ng ~ trois()\naffi(suivant(g))   ->   1\naffi(suivant(g))   ->   2" },
+  { noms: ["suivant"], categorie: "Controle", syntaxe: "suivant(g)", description: [
+      "Demande la valeur suivante d'un generateur g (le resultat de l'appel d'une fonction qui contient donne).",
+      "suivant(g) renvoie un paquet (un dictionnai, comme { value, done } en JS) avec deux champs : |valeur| (la valeur donnee) et |fini| (VRAI quand le generateur est termine ; |valeur| vaut alors pasdefini). Aucune erreur a la fin, le script continue.",
+      "Lire la valeur : suivant(g)[|valeur|]. Savoir si c'est fini : r ~ suivant(g) puis r[|fini|]. affi(r) affiche tout le paquet.",
+      "Raccourci : ecrit directement dans affi(...), suivant(g) donne la valeur seule (affi(suivant(g)), affi(suivant(g) + 1)). Si le generateur est fini, affi affiche le mot fini.",
+      "Ce raccourci ne vaut que pour un suivant(g) ecrit directement dans affi : pas dans une autre fonction (affi(majuscul(suivant(g))) : ecrire suivant(g)[|valeur|]), et pas apres une affectation (d ~ suivant(g) range le paquet). Ailleurs, x ~ suivant(g)[|valeur|] + 1.",
+      "Un generateur non affecte (compte(3) seul sur une ligne) ne fait rien : il ne s'execute que quand on lui demande une valeur."
+    ], exemple: "g ~ trois()\nr ~ suivant(g)\naffi(r[|valeur|], r[|fini|])   ->   1 FAUX\naffi(suivant(g))   ->   2\naffi(suivant(g))   ->   3\naffi(suivant(g))   ->   fini" },
   { noms: ["classe"], categorie: "Controle", syntaxe: "classe NomClasse [herite NomParent] { fonc init(moi, ...){...} fonc methode(moi, ...){...} }", description: [
       "Definit une classe (comme class en Python) : un modele pour creer des objets (instances).",
       "init(moi, ...) est le constructeur, appele automatiquement a la creation d'une instance.",
@@ -8692,7 +8884,12 @@ function enregistrerFonctionsBase() {
                 partie = (await valeurTexteLitteral(elemTrim, ctxExpr));
             } else {
                 verifierTexteLitteralFerme(elemTrim);
-                partie = await formatPourAffichage(await evalExpr(elemTrim, ctxExpr));
+                try {
+                    partie = await formatPourAffichage(await evalExpr(reecrireSuivantDirect(elemTrim), ctxExpr));
+                } catch (e) {
+                    // suivant(g) direct dans affi, generateur fini : affi affiche le mot "fini" (sans erreur)
+                    if (e instanceof FinGenerateurAffi) partie = "fini"; else throw e;
+                }
             }
             parties.push(marqueurEnAttente + partie);
             marqueurEnAttente = "";
@@ -8749,7 +8946,35 @@ function enregistrerFonctionsBase() {
     fonctionsBase["liste"] = fonctionsExpression["liste"] = async function(args, ctxExpr) {
         let elements = [];
         for (let a of args) elements.push(await evaluerElementBrut(a, ctxExpr));
+        // liste(g) avec UN generateur : toutes ses valeurs restantes (comme list(g) en Python)
+        if (elements.length === 1 && estGenerateur(elements[0])) elements = await collecterGenerateur(elements[0]);
         return { __type: "liste", elements: elements };
+    };
+
+    // suivant(g) : valeur suivante d'un generateur, sous forme de paquet (comme { value, done } en JS) :
+    // un dictionnai avec |valeur| et |fini|. A la fin : |valeur| = pasdefini et |fini| = VRAI (aucune erreur).
+    // Dans affi(...), ecrit directement, il donne la valeur seule (voir reecrireSuivantDirect).
+    async function _lireGenerateurPourSuivant(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("suivant(g) attend exactement 1 argument (un generateur)");
+        let g = await evaluerElementBrut(args[0], ctxExpr);
+        if (!estGenerateur(g)) throw new ErreurTypeInvalide("suivant(...) attend un generateur, c'est-a-dire le resultat de l'appel d'une fonction qui contient donne (recu : " + typeOperande(g) + ")");
+        return g;
+    }
+    fonctionsBase["suivant"] = fonctionsExpression["suivant"] = async function(args, ctxExpr) {
+        let g = await _lireGenerateurPourSuivant(args, ctxExpr);
+        let r = await avancerGenerateur(g);
+        let d = { __type: "dictionnai", entrees: new Map() };
+        dicoEcrire(d, "valeur", r.valeur, "suivant(...)");
+        dicoEcrire(d, "fini", r.fini, "suivant(...)");
+        d.__paquetSuivant = true;   // simple marque (hors entrees) : sert uniquement a un message d'erreur utile
+        return d;
+    };
+    // Forme interne utilisee seulement par affi(...) pour un suivant(g) direct : la valeur seule, ou FinGenerateurAffi a la fin.
+    fonctionsBase["__suivant_affi"] = fonctionsExpression["__suivant_affi"] = async function(args, ctxExpr) {
+        let g = await _lireGenerateurPourSuivant(args, ctxExpr);
+        let r = await avancerGenerateur(g);
+        if (r.fini) throw new FinGenerateurAffi();
+        return r.valeur;
     };
 
     // dictionnai(|cle|: valeur, ...) : cles (texte ou nombres) associees a des valeurs de n'importe quel type.
@@ -13685,6 +13910,10 @@ function verifierSyntaxeProgramme(code, tokens) {
     const nbAvant = erreurs.length;
     let m;
 
+    // affecter un mot reserve (si ~ 1, de ~ 2, V ~ 3, donne ~ 4...) : erreur claire, quelle que soit la forme du mot
+    m = t.match(/^([a-zA-Z_]\w*)\s*~/);
+    if (m && _MOTS_RESERVES.has(m[1])) { err(l, _msgMotReserve(m[1], "variable")); i++; continue; }
+
     if (t === '{') {
       fatal(l, "Accolade { inattendue : elle doit suivre une instruction de bloc (si, sinon, pou, tanqer, fonc, classe, essai, attrape, finalement)");
       break;
@@ -13711,9 +13940,13 @@ function verifierSyntaxeProgramme(code, tokens) {
         i = (tokens[i + 1] && tokens[i + 1].texte === '{') ? ouvrirBloc('fonc', t, i, l, true) : i + 1;
         continue;
       }
+      if (_MOTS_RESERVES.has(m[1])) err(l, _msgMotReserve(m[1], "fonction"));
       try {
         const params = analyserListeParametres(m[2], "fonc " + m[1] + "(...)", l);
-        for (const p of params) if (p.defautExpr !== null) testExpr(p.defautExpr, l, "valeur par defaut du parametre " + p.nom);
+        for (const p of params) {
+          if (_MOTS_RESERVES.has(p.nom)) err(l, _msgMotReserve(p.nom, "parametre"));
+          if (p.defautExpr !== null) testExpr(p.defautExpr, l, "valeur par defaut du parametre " + p.nom);
+        }
       } catch (e) { err(l, e.message); }
       i = ouvrirBloc('fonc', "fonc " + m[1] + "(...)", i, l, erreurs.length > nbAvant);
       continue;
@@ -13725,6 +13958,7 @@ function verifierSyntaxeProgramme(code, tokens) {
         i = (tokens[i + 1] && tokens[i + 1].texte === '{') ? ouvrirBloc('classe', t, i, l, true) : i + 1;
         continue;
       }
+      if (_MOTS_RESERVES.has(m[1])) err(l, _msgMotReserve(m[1], "classe"));
       i = ouvrirBloc('classe', "classe " + m[1], i, l, false);
       continue;
     }
@@ -13750,6 +13984,8 @@ function verifierSyntaxeProgramme(code, tokens) {
       continue;
     }
     if (_RE_ATTRAPE.test(t)) {
+      const mAtt = t.match(_RE_ATTRAPE);
+      for (let q = 1; q <= 2; q++) if (mAtt[q] && _MOTS_RESERVES.has(mAtt[q])) err(l, _msgMotReserve(mAtt[q], "variable"));
       if (!(i > 0 && fermes[i - 1] === 'essai')) err(l, "attrape doit suivre directement un bloc essai{...}, sans instruction entre les deux");
       i = ouvrirBloc('attrape', "attrape", i, l, erreurs.length > nbAvant);
       continue;
@@ -13762,6 +13998,7 @@ function verifierSyntaxeProgramme(code, tokens) {
     if (t.startsWith('pou(') && t.endsWith(')')) {
       try {
         const e = analyserEnTetePou(t);
+        for (const vn of [].concat(e.varNom || [], e.varNoms || [])) if (_MOTS_RESERVES.has(vn)) err(l, _msgMotReserve(vn, "variable de boucle"));
         if (e.type === 'dan' || e.type === 'danN') {
           testExpr(e.objetExpr, l, "objet de pou(... dan ...)");
         } else {
@@ -13822,6 +14059,23 @@ function verifierSyntaxeProgramme(code, tokens) {
       if (reste !== "") {
         const msg = _verifierListeValeurs(reste);
         if (msg !== null) err(l, "valeur de lever.erreur : " + msg);
+      }
+      i++;
+      continue;
+    }
+    if (/^(donne|retour)\s*~/.test(t)) {
+      err(l, _msgMotReserve(t.startsWith('donne') ? 'donne' : 'retour', 'variable'));
+      i++;
+      continue;
+    }
+    if (_tokenDonne(t)) {
+      if (!dansFonction()) err(l, "donne n'est utilisable qu'a l'interieur d'une fonction (fonc) : une fonction qui contient donne devient un generateur");
+      const resteD = t.slice(5).trim();
+      if (resteD !== "") {
+        let msgD = _verifierListeValeurs(resteD);
+        // donne(x*x) : l'execution retire les parentheses englobantes avant d'evaluer
+        if (msgD !== null && /^\(.*\)$/.test(resteD) && _verifierListeValeurs(resteD.slice(1, -1).trim()) === null) msgD = null;
+        if (msgD !== null) err(l, "valeur de donne : " + msgD);
       }
       i++;
       continue;
@@ -13894,7 +14148,7 @@ function verifierInstructionSimple(t, l, err, testExpr, dansClasse) {
     catch (e) { err(l, e.message); return; }
     if (desc) return;
     if (/^import\(/.test(t)) { err(l, "import(...) mal forme : " + _court(t)); return; }
-    // sinon : "de" est ici un simple nom de variable (ex: de ~ 5), on continue normalement
+    // sinon : ce n'est pas un import (de ~ 5 est refuse plus haut, "de" etant un mot reserve) : on continue normalement
   }
 
   const idx = _indexTildeHautNiveau(t);
@@ -13903,8 +14157,10 @@ function verifierInstructionSimple(t, l, err, testExpr, dansClasse) {
     const droite = t.slice(idx + 1).trim();
     if (!/^[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\s*\[.*\])?$/.test(gauche)) {
       err(l, "A gauche de ~ il faut un nom de variable (x ~ 5), un attribut (a.nom ~ 5) ou un indice (v[1] ~ 5) : \"" + gauche + "\"");
-    } else if (gauche.indexOf('[') !== -1) {
-      testExpr(gauche, l, "partie gauche de ~");
+    } else {
+      const racineG = gauche.match(/^[a-zA-Z_]\w*/)[0];
+      if (_MOTS_RESERVES.has(racineG)) err(l, _msgMotReserve(racineG, "variable"));
+      if (gauche.indexOf('[') !== -1) testExpr(gauche, l, "partie gauche de ~");
     }
     if (droite === "") err(l, "Valeur manquante apres ~ : " + _court(t));
     else {
@@ -14163,6 +14419,7 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
           else if (estListe(objetVal)) sequence = objetVal.elements;
           else if (typeof objetVal === 'string') sequence = Array.from(objetVal);
           else if (estDictionnai(objetVal)) sequence = Array.from(objetVal.entrees.values(), e => e.cle);
+          else if (estGenerateur(objetVal)) throw new ErreurTypeInvalide("pou(" + entete.varNoms.join(", ") + " dan generateur) n'est pas possible : parcours le generateur avec pou(x dan g), ou utilise liste(g)");
           else throw new ErreurTypeInvalide("pou(" + entete.varNoms.join(", ") + " dan objet) : objet doit etre un vecteur, une liste, un texte ou un dictionnai");
           let nbVars = entete.varNoms.length, enTetePou = "pou(" + entete.varNoms.join(", ") + " dan ...)";
           for (let k = 0; k < sequence.length; k++) {
@@ -14183,6 +14440,23 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
           }
         } else if (entete.type === 'dan') {
           let objetVal = await evalExpr(entete.objetExpr, ctxExpr);
+          if (estGenerateur(objetVal)) {
+            // pou(x dan g) : x prend chaque valeur donnee par le generateur ; la fin du generateur termine simplement la boucle.
+            while (true) {
+              await respirer();
+              let rGen = await avancerGenerateur(objetVal);
+              if (rGen.fini) break;
+              setVar(entete.varNom, rGen.valeur);
+              let res = await executerTokens(tokens, index + 2, finBloc - 1);
+              if (res.signal) {
+                if (res.signal.type === 'casse') break;
+                if (res.signal.type === 'continu') continue;
+                return res;
+              }
+            }
+            index = finBloc;
+            continue;
+          }
           let iterable;
           if (estVecteur(objetVal)) iterable = objetVal;
           else if (estListe(objetVal)) iterable = objetVal.elements;
@@ -14292,7 +14566,21 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
         throw new ErreurLevee(await evaluerValeurLevee(reste, ctxExpr));
       }
 
+      // donne valeur : met le generateur en pause et envoie la valeur (comme yield en Python/JS).
+      if (_tokenDonne(token)) {
+        if (/^donne\s*~/.test(token)) throw new Error(_msgMotReserve('donne', 'variable'));
+        let g = generateurCourant;
+        if (g === null) throw new Error("donne ne peut s'utiliser que dans une fonction (une fonction qui contient donne devient un generateur)");
+        let resteDonne = token.slice(5).trim();
+        if (/^\(.*\)$/.test(resteDonne)) resteDonne = resteDonne.slice(1, -1).trim();
+        let valeurDonne = resteDonne === "" ? undefined : await valeurDonnee(resteDonne);
+        await suspendreGenerateur(g, valeurDonne);
+        index++;
+        continue;
+      }
+
       if (token === 'retour' || /^retour[\s(]/.test(token)) {
+        if (/^retour\s*~/.test(token)) throw new Error(_msgMotReserve('retour', 'variable'));
         let reste = token.slice(6).trim(); // tout ce qui suit "retour"
         // Si l'expression est entierement entre parentheses (retour(...)), on les retire ;
         // "retour x*x" et "retour(x*x)" sont tous les deux acceptes.
