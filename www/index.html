@@ -1706,6 +1706,7 @@ function annulerAttenteEnCoursMLG() {
   }
 }
 let compteurPas = 0;
+let _dernierYieldPas = 0;   // valeur de compteurPas lors de la derniere cession de la main
 // Cede la main au navigateur SANS passer par setTimeout(0) : les navigateurs
 // imposent un delai minimum d'environ 4ms aux setTimeout imbriques (norme
 // HTML5), ce qui devient catastrophique quand on cede des dizaines de milliers
@@ -1723,15 +1724,23 @@ function cederAuNavigateur() {
     }
   });
 }
-async function respirer(forcer = false) {
+// Chemin rapide SANS Promise : les 299 appels sur 300 ne cedent pas la main, donc ils ne fabriquent plus
+// de Promise (avant, la fonction etait async : une Promise etait allouee a CHAQUE instruction). Tous les
+// appelants font "await respirer()" : un await sur undefined se comporte comme avant (meme ordre, meme
+// exception levee au meme endroit), seul le cout d'allocation disparait.
+function respirer(forcer = false) {
   compteurPas++;
   if (demandeArret) throw new ExecutionInterrompue();
   // Cede moins souvent (tous les 300 pas au lieu de 25) : avec un yield qui ne
   // coute plus 4ms, on peut se permettre d'etre moins frequent, ce qui reduit
   // encore le nombre total de passages par la boucle d'evenements.
-  if (forcer || compteurPas % 300 === 0) {
-    await cederAuNavigateur();
-    if (demandeArret) throw new ExecutionInterrompue();
+  // (Compteur cumule : les corps de boucle synchrones ajoutent leurs instructions a compteurPas.)
+  if (forcer || compteurPas - _dernierYieldPas >= 300) {
+    _dernierYieldPas = compteurPas;
+    return (async () => {
+      await cederAuNavigateur();
+      if (demandeArret) throw new ExecutionInterrompue();
+    })();
   }
 }
 
@@ -3098,6 +3107,9 @@ async function evalExpr(str, ctx) {
 // entr() etc., donc il a reellement besoin d'async -> on retombe alors sur
 // l'ancien parseur async complet, qui sait le gerer.
 class __BesoinAsync extends Error {}
+// Un SEUL objet reutilise : ce n'est qu'un signal interne (jamais montre a l'utilisateur), et fabriquer un
+// Error neuf a chaque appel de fonction capturait une trace de pile couteuse (~1/3 du temps d'un appel).
+const __BESOIN_ASYNC = new __BesoinAsync();
 
 // ===================== AST — cache d'arbre pour le sous-ensemble "pur" des expressions ====================
 // Constat du benchmark_cascade.mlg : "i+i" dans une boucle de 50000 tours est aujourd'hui
@@ -3461,18 +3473,18 @@ function evalExprSansEntreeSync(str, ctx) {
     // parseur lent.
     while (true) {
       // Methodes a nom pointe (avant.dernier, apres.dernier, garder.contenant, enlever.contenant) : parseur lent.
-      if (nomMethodePointee(tokens, pos) !== null && methodeTexteApplicable(valeur)) throw new __BesoinAsync();
+      if (nomMethodePointee(tokens, pos) !== null && methodeTexteApplicable(valeur)) throw __BESOIN_ASYNC;
       // Methodes d'un dictionnai (d.lire/cles/valeurs) : evaluees par le parseur lent (arguments a evaluer).
       if (peek() && peek().type === 'op' && peek().v === '.' &&
           tokens[pos + 1] && tokens[pos + 1].type === 'ident' &&
           tokens[pos + 2] && tokens[pos + 2].type === '(') {
         if (estDictionnai(valeur)) {
           if (!METHODES_DICTIONNAI.has(tokens[pos + 1].v) && !METHODES_TEXTE.has(tokens[pos + 1].v)) throw new Error(messageMethodeDictionnaiInconnue(tokens[pos + 1].v));
-          throw new __BesoinAsync();
+          throw __BESOIN_ASYNC;
         }
         if (tokens[pos + 1].v === 'trier' && (estListe(valeur) || estVecteur(valeur))) throw new Error(MSG_TRIER_EXPRESSION);
         // Methodes de texte/liste (decoup, joindr, remplace, cherch, commence, termine, lon) : arguments a evaluer -> parseur lent.
-        if (METHODES_TEXTE.has(tokens[pos + 1].v) && methodeTexteApplicable(valeur)) throw new __BesoinAsync();
+        if (METHODES_TEXTE.has(tokens[pos + 1].v) && methodeTexteApplicable(valeur)) throw __BESOIN_ASYNC;
       }
       // Attribut/methode d'une instance de classe : a.nom (lecture), a.methode(...) (appel).
       if (peek() && peek().type === 'op' && peek().v === '.' &&
@@ -3481,7 +3493,7 @@ function evalExprSansEntreeSync(str, ctx) {
         if (tokens[pos + 2] && tokens[pos + 2].type === '(') {
           // Appel de methode : execute un corps entier, ca a besoin d'etre async.
           // On laisse la main au parseur lent.
-          throw new __BesoinAsync();
+          throw __BESOIN_ASYNC;
         }
         next(); // '.'
         let nomAttr = next().v;
@@ -3538,7 +3550,7 @@ function evalExprSansEntreeSync(str, ctx) {
     let t = peek();
     if (!t) throw new Error("Expression incomplete");
     if (t.type === 'num') { next(); return t.v; }
-    if (t.type === 'str') { if (t.f) throw new __BesoinAsync(); next(); return t.v; }
+    if (t.type === 'str') { if (t.f) throw __BESOIN_ASYNC; next(); return t.v; }
     if (t.type === '(') {
       next(); let v = parseOr();
       if (!peek() || peek().type !== ')') throw new Error("Parenthese fermante manquante");
@@ -3564,7 +3576,7 @@ function evalExprSansEntreeSync(str, ctx) {
       }
       if (t.v === 'parent' && peek() && peek().type === 'op' && peek().v === '.') {
         // parent.methode(...) execute un corps entier : ca a besoin d'etre async.
-        throw new __BesoinAsync();
+        throw __BESOIN_ASYNC;
       }
       if (Object.prototype.hasOwnProperty.call(classes, t.v) && peek() && peek().type === 'op' && peek().v === '.' &&
           tokens[pos + 1] && tokens[pos + 1].type === 'ident' && !(tokens[pos + 2] && tokens[pos + 2].type === '(')) {
@@ -3580,7 +3592,7 @@ function evalExprSansEntreeSync(str, ctx) {
         // Appel de fonction utilisateur au milieu d'une expression : ca peut
         // executer un corps entier (boucles, entr(), retour...), donc ca a
         // reellement besoin d'etre async. On laisse la main au parseur lent.
-        throw new __BesoinAsync();
+        throw __BESOIN_ASYNC;
       }
       if (peek() && peek().type === '[') {
         next();
@@ -14188,6 +14200,270 @@ function verifierInstructionSimple(t, l, err, testExpr, dansClasse) {
 
 /* ===================== EXECUTION ===================== */
 // Retourne { index, signal } ; signal = {type:'retour', valeur} si un "retour(...)" a ete rencontre
+// ===================== AST DES INSTRUCTIONS (etape 1) ====================
+// Avant : a CHAQUE passage sur une ligne, executerTokens re-testait toute la cascade de formes
+// (fonc, classe, si, essai, ..., retour) et, pour si / pou / tanqer, recherchait de nouveau la fin des
+// blocs (trouverFinBloc) et re-analysait l'en-tete. Maintenant : la nature de chaque instruction et
+// la STRUCTURE des blocs sont calculees UNE seule fois par tableau de jetons (WeakMap), puis reutilisees
+// a chaque tour de boucle. Rien d'autre ne change : memes fonctions d'evaluation, meme ordre
+// d'evaluation, memes messages d'erreur (les erreurs de structure sont recreees a l'identique et
+// declenchees au meme moment qu'avant, jamais mises en cache).
+// Types : 'simple' (aucune forme speciale : va directement a executerCommandeSimple),
+//         'si' / 'pou' / 'tanqer' (structure precalculee), 'autre' (ancienne cascade, inchangee).
+const _noeudsInstr = new WeakMap();   // tableau de jetons -> tableau de noeuds (indexe comme les jetons)
+function _noeudInstruction(tokens, index) {
+  let arr = _noeudsInstr.get(tokens);
+  if (arr === undefined) { arr = new Array(tokens.length); _noeudsInstr.set(tokens, arr); }
+  let nd = arr[index];
+  if (nd === undefined) { nd = _construireNoeudInstruction(tokens, index); arr[index] = nd; }
+  return nd;
+}
+const _NOEUD_AUTRE = { t: 'autre' };
+const _NOEUD_SIMPLE = { t: 'simple' };
+function _construireNoeudInstruction(tokens, index) {
+  const token = tokens[index].texte;
+  const ligne = tokens[index].ligne;
+  // Meme ORDRE que la cascade de executerTokens : le premier test qui reconnait la ligne l'emporte.
+  if (token.startsWith('fonc ') || token.startsWith('classe ')) return _NOEUD_AUTRE;
+  if (token.startsWith('si(') && token.endsWith(')')) return _construireNoeudSi(tokens, index, ligne, token);
+  if (token === 'essai' || token === 'finalement' || token === 'stop' || token === 'casse' ||
+      token === 'quitte' || token === 'quitte()' || token === 'continu') return _NOEUD_AUTRE;
+  if (token.startsWith('pou(') && token.endsWith(')')) {
+    const entete = analyserEnTetePou(token);
+    if (!tokens[index+1] || tokens[index+1].texte !== "{") throw new Error("Manque { apres pou");
+    return { t: 'pou', entete: entete, finBloc: trouverFinBloc(tokens, index + 2, ligne) };
+  }
+  if (token.startsWith('rythme(') && token.endsWith(')')) return _NOEUD_AUTRE;
+  const infinie = /^tanqer\s+(VRAI|V)$/.test(token);
+  if ((token.startsWith('tanqer(') && token.endsWith(')')) || infinie) {
+    if (!tokens[index+1] || tokens[index+1].texte !== "{") throw new Error("Manque { apres tanqer");
+    return { t: 'tanqer', infinie: infinie, condition: infinie ? null : token.slice(7, -1), finBloc: trouverFinBloc(tokens, index + 2, ligne) };
+  }
+  if (/^(global|englobant)\s+[A-Za-z_]\w*(\s*,\s*[A-Za-z_]\w*)*$/.test(token)) return _NOEUD_AUTRE;
+  if (token === 'lever.erreur' || /^lever\.erreur[\s(]/.test(token)) return _NOEUD_AUTRE;
+  if (_tokenDonne(token)) return _NOEUD_AUTRE;
+  if (token === 'retour' || /^retour[\s(]/.test(token)) return _NOEUD_AUTRE;
+  return _NOEUD_SIMPLE;
+}
+// si(...){...} [sinon si(...){...}]* [sinon{...}] : toutes les branches, dans l'ordre. Une anomalie
+// de structure situee APRES la premiere branche (accolade manquante...) n'etait signalee qu'une fois
+// les branches precedentes traitees : elle est donc memorisee sous forme de fabrique (erreurApres)
+// et declenchee au meme moment, avec une erreur neuve a chaque fois.
+function _construireNoeudSi(tokens, index, ligne, token) {
+  if (!tokens[index+1] || tokens[index+1].texte !== "{") throw new Error("Manque { apres si");
+  const finBloc = trouverFinBloc(tokens, index + 2, ligne);
+  const branches = [{ cond: token.slice(3, -1), debut: index + 2, fin: finBloc - 1 }];
+  let curseur = finBloc, erreurApres = null;
+  while (tokens[curseur]) {
+    const texteSuivant = tokens[curseur].texte;
+    const mSinonSi = texteSuivant.match(/^sinon\s+si\((.*)\)$/);
+    if (mSinonSi) {
+      if (!tokens[curseur+1] || tokens[curseur+1].texte !== "{") { erreurApres = () => new Error("Manque { apres sinon si"); break; }
+      let finBlocSi;
+      try { finBlocSi = trouverFinBloc(tokens, curseur + 2, ligne); }
+      catch (_) { erreurApres = () => new ErreurLangage("Accolade fermante manquante", ligne); break; }
+      branches.push({ cond: mSinonSi[1], debut: curseur + 2, fin: finBlocSi - 1 });
+      curseur = finBlocSi;
+      continue;
+    }
+    if (texteSuivant === "sinon") {
+      if (!tokens[curseur+1] || tokens[curseur+1].texte !== "{") { erreurApres = () => new Error("Manque { apres sinon"); break; }
+      let finBlocSinon;
+      try { finBlocSinon = trouverFinBloc(tokens, curseur + 2, ligne); }
+      catch (_) { erreurApres = () => new ErreurLangage("Accolade fermante manquante", ligne); break; }
+      branches.push({ cond: null, debut: curseur + 2, fin: finBlocSinon - 1 });
+      curseur = finBlocSinon;
+    }
+    break;
+  }
+  return { t: 'si', branches: branches, suite: curseur, erreurApres: erreurApres };
+}
+
+// ===================== CHEMIN SYNCHRONE DES CORPS DE BOUCLE (etape 2) ====================
+// Une boucle (pou / tanqer) reste ASYNCHRONE : elle fait "await respirer()" a chaque tour, donc le bouton
+// Arret d'urgence et l'interface restent reactifs. Mais le CORPS d'un tour, quand il ne contient que des
+// affectations "nom ~ expression", des si / sinon si / sinon, casse et continu -- et uniquement des
+// expressions "pures" (arithmetique, comparaisons, variables, indexation : celles que l'arbre rapide sait
+// evaluer) -- est compile une fois en fonctions synchrones : plus de Promise par instruction.
+// Tout corps qui contient autre chose (appel de fonction, affi, essai, retour, boucle imbriquee, texte
+// litteral, ...) n'est PAS compile (resultat null) et passe par l'ancien chemin, inchange. Une boucle
+// imbriquee n'est volontairement jamais synchrone : un morceau synchrone reste donc borne a UN tour de boucle
+// (jamais de gel de l'interface ni d'arret impossible).
+function _erreurInstr(e, ligne) {   // meme enveloppe d'erreur que le catch de executerTokens
+  if (e instanceof ErreurLangage) { if (!e.pile) e.pile = instantanePileAppels(); return e; }
+  if (e instanceof ExecutionInterrompue) return e;
+  let erreurLigne = new ErreurLangage(e.message, ligne);
+  if (e instanceof ErreurCode) erreurLigne.code = e.code;
+  if (e && e.aValeurLevee) { erreurLigne.aValeurLevee = true; erreurLigne.valeurLevee = e.valeurLevee; }
+  erreurLigne.pile = instantanePileAppels();
+  return erreurLigne;
+}
+// Expression pure -> fonction synchrone, ou null si l'expression n'est pas dans le sous-ensemble pur.
+// (Equivalent exact de evalExpr pour ces expressions : aucun appel de fonction => aucun segment special.)
+function _compilerExprPure(str) {
+  let segments;
+  try { segments = _obtenirSegmentsExpression(str); } catch (_) { return null; }
+  let resultat = "";
+  for (const seg of segments) {
+    if (seg.type === 'texte') resultat += seg.valeur;
+    else if (seg.type === 'skip') resultat += str.slice(seg.debut, seg.fin);
+    else return null;
+  }
+  const arbre = _obtenirArbreRapide(resultat);
+  if (arbre === null) return null;
+  return () => evaluerArbreRapide(arbre, ctxExpr);
+}
+function _compilerAffectationSync(token, ligne) {
+  const m = token.match(/^([a-zA-Z_]\w*)\s*~\s*(.*)$/s);
+  if (!m) return null;
+  const nom = m[1], valeur = m[2].trim();
+  if (splitTopLevelComma(valeur).length > 1) return null;
+  if (estTexteLitteralComplet(valeur)) {
+    // Texte |...| ordinaire : sa valeur ne depend de rien (decodage des echappements une fois pour toutes).
+    // f|...| (interpolation) et motifs : ancien chemin.
+    if (prefixeTexteEn(valeur, 0).interp) return null;
+    let constante;
+    try { constante = valeurTexteLitteralSimple(valeur); } catch (_) { return null; }
+    return () => {
+      compteurPas++;
+      ligneExpressionCourante = ligne;
+      try { setVar(nom, constante); } catch (e) { throw _erreurInstr(e, ligne); }
+      return null;
+    };
+  }
+  try { verifierTexteLitteralFerme(valeur); } catch (_) { return null; }
+  const f = _compilerExprPure(valeur);
+  if (f === null) return null;
+  return () => {
+    compteurPas++;
+    ligneExpressionCourante = ligne;
+    try { setVar(nom, f()); } catch (e) { throw _erreurInstr(e, ligne); }
+    return null;
+  };
+}
+// Equivalent synchrone de evaluerElementBrut pour les valeurs pures ; null si non eligible.
+function _compilerElementBrutSync(argStr) {
+  const s = (argStr || "").trim();
+  if (s === "saulig") return () => "\n";
+  if (estTexteLitteralComplet(s)) {
+    if (prefixeTexteEn(s, 0).interp) return null;
+    let constante;
+    try { constante = valeurTexteLitteralSimple(s); } catch (_) { return null; }
+    return () => constante;
+  }
+  try { verifierTexteLitteralFerme(s); } catch (_) { return null; }
+  return _compilerExprPure(s);
+}
+// Ecriture indexee  nom[indice] ~ valeur  (variable simple, UN seul indice) : meme ordre d'evaluation
+// et memes fonctions que la branche crochet de executerCommandeSimple (valeur, puis cible, puis indice).
+// Chemins a points (a.b[i]), indices multiples (m[i,j], l[i][j]) et indice vide : ancien chemin.
+function _compilerEcritureIndexSync(token, ligne) {
+  const m = token.match(/^([a-zA-Z_]\w*)\s*\[/);
+  if (!m) return null;
+  const chemin = m[1];
+  const pos0 = m[0].length - 1;
+  let j = pos0 + 1, depth = 1, dansTexteIdx = false;
+  while (j < token.length && depth > 0) {
+    const ch = token[j];
+    if (dansTexteIdx && ch === '\\') { j += 2; continue; }
+    if (ch === '|' && !dansTexteIdx && barreOuvreTexteF(token, j)) { const fF = finTexteLitteral(token, j); if (fF !== -1) { j = fF + 1; continue; } }
+    if (ch === '|') dansTexteIdx = !dansTexteIdx;
+    else if (!dansTexteIdx) { if (ch === '[') depth++; else if (ch === ']') depth--; }
+    j++;
+  }
+  if (depth !== 0) return null;
+  const groupe = token.slice(pos0 + 1, j - 1);
+  if (token[j] === '[') return null;   // plusieurs groupes de crochets
+  const mTilde = token.slice(j).trim().match(/^~\s*(.*)$/);
+  if (!mTilde) return null;
+  const indices = splitTopLevelComma(groupe);
+  if (indices.length !== 1 || indices[0].trim() === "") return null;
+  const valF = _compilerElementBrutSync(mTilde[1]);
+  if (valF === null) return null;
+  const idxF = _compilerExprPure(indices[0]);
+  if (idxF === null) return null;
+  return () => {
+    compteurPas++;
+    ligneExpressionCourante = ligne;
+    try {
+      const valeur = valF();
+      const cible = resoudreCheminCible(chemin);
+      if (estDictionnai(cible)) { dicoEcrire(cible, idxF(), valeur, chemin); return null; }
+      if (typeof cible === 'string') {
+        const nouveauTexte = affecterTexte(cible, idxF(), valeur, chemin);
+        assignerCheminValeur(chemin, nouveauTexte);
+        return null;
+      }
+      affecterUnique(cible, idxF(), valeur, chemin);
+    } catch (e) { throw _erreurInstr(e, ligne); }
+    return null;
+  };
+}
+// Compile les instructions tokens[debut..fin[ ; renvoie { run } (run() -> null | 'casse' | 'continu') ou null.
+function _compilerBlocSync(tokens, debut, fin) {
+  const etapes = [];
+  let i = debut;
+  while (i < fin) {
+    const texte = tokens[i].texte, ligne = tokens[i].ligne;
+    if (texte === '{') { i++; continue; }
+    if (texte === '}') return null;
+    let nd;
+    try { nd = _noeudInstruction(tokens, i); } catch (_) { return null; }
+    if (nd.t === 'simple') {
+      let e = _compilerAffectationSync(texte, ligne);
+      if (e === null) e = _compilerEcritureIndexSync(texte, ligne);
+      if (e === null) return null;
+      etapes.push(e); i++; continue;
+    }
+    if (nd.t === 'si') {
+      if (nd.erreurApres) return null;
+      const brs = [];
+      for (const br of nd.branches) {
+        let condF = null;
+        if (br.cond !== null) { condF = _compilerExprPure(br.cond); if (condF === null) return null; }
+        const corps = _compilerBlocSync(tokens, br.debut, br.fin);
+        if (corps === null) return null;
+        brs.push({ condF: condF, corps: corps.run });
+      }
+      const n = brs.length;
+      etapes.push(() => {
+        compteurPas++;
+        ligneExpressionCourante = ligne;
+        for (let k = 0; k < n; k++) {
+          const br = brs[k];
+          if (br.condF !== null) {
+            let v;
+            try { v = br.condF(); } catch (e) { throw _erreurInstr(e, ligne); }
+            if (!estVrai(v)) continue;
+          }
+          return br.corps();
+        }
+        return null;
+      });
+      i = nd.suite; continue;
+    }
+    if (texte === 'casse' || texte === 'continu') {
+      etapes.push(() => { compteurPas++; return texte; });
+      i++; continue;
+    }
+    return null;
+  }
+  const nb = etapes.length;
+  return { run: () => {
+    for (let k = 0; k < nb; k++) { const sig = etapes[k](); if (sig !== null) return sig; }
+    return null;
+  } };
+}
+const _RES_AUCUN = { index: 0, signal: null };
+const _RES_CASSE = { index: 0, signal: { type: 'casse' } };
+const _RES_CONTINU = { index: 0, signal: { type: 'continu' } };
+function _resSync(sig) { return sig === null ? _RES_AUCUN : (sig === 'casse' ? _RES_CASSE : _RES_CONTINU); }
+// Corps synchrone d'une boucle (compile une seule fois, memorise dans le noeud) ; null si non eligible.
+function _corpsSyncDe(nd, tokens, index) {
+  if (nd.corpsSync === undefined) nd.corpsSync = _compilerBlocSync(tokens, index + 2, nd.finBloc - 1);
+  return nd.corpsSync;
+}
+
 async function executerTokens(tokens, debut = 0, fin = tokens.length) {
   let index = debut;
   while (index < fin) {
@@ -14201,6 +14477,9 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
     if (token === "{") { index++; continue; }
 
     try {
+      const _nd = _noeudInstruction(tokens, index);
+      if (_nd.t === 'simple') { await executerCommandeSimple(token); index++; continue; }
+
       if (token.startsWith('fonc ')) {
         // Fonction IMBRIQUEE (declaree a l'interieur d'un si/pou/tanqer/essai/autre fonc) :
         // preRegistrerFonctions() ne la voit jamais au demarrage, car des qu'elle rencontre
@@ -14234,48 +14513,18 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
         continue;
       }
 
-      if (token.startsWith('si(') && token.endsWith(')')) {
-        let condition = token.slice(3, -1);
-        if (!tokens[index+1] || tokens[index+1].texte !== "{") throw new Error("Manque { apres si");
-        let finBloc = trouverFinBloc(tokens, index + 2, ligneActuelle);
+      if (_nd.t === 'si') {
+        // Structure deja analysee (voir _construireNoeudSi) : un seul bloc au total est execute.
         let dejaExecute = false;
-
-        if (estVrai(await evalExpr(condition, ctxExpr))) {
-          let res = await executerTokens(tokens, index + 2, finBloc - 1);
+        for (const br of _nd.branches) {
+          if (dejaExecute) break;
+          if (br.cond !== null && !estVrai(await evalExpr(br.cond, ctxExpr))) continue;
+          let res = await executerTokens(tokens, br.debut, br.fin);
           if (res.signal) return res;
           dejaExecute = true;
         }
-
-        // Enchaine sur d'eventuels "sinon si(...)" (comme "else if" en R), puis un
-        // eventuel "sinon{...}" final. Un seul bloc au total est execute.
-        // (sisinon(...) est une fonction a part, pas une structure de bloc : voir plus bas.)
-        let curseur = finBloc;
-        while (tokens[curseur]) {
-          let texteSuivant = tokens[curseur].texte;
-          let mSinonSi = texteSuivant.match(/^sinon\s+si\((.*)\)$/);
-          if (mSinonSi) {
-            if (!tokens[curseur+1] || tokens[curseur+1].texte !== "{") throw new Error("Manque { apres sinon si");
-            let finBlocSi = trouverFinBloc(tokens, curseur + 2, ligneActuelle);
-            if (!dejaExecute && estVrai(await evalExpr(mSinonSi[1], ctxExpr))) {
-              let res = await executerTokens(tokens, curseur + 2, finBlocSi - 1);
-              if (res.signal) return res;
-              dejaExecute = true;
-            }
-            curseur = finBlocSi;
-            continue;
-          }
-          if (texteSuivant === "sinon") {
-            if (!tokens[curseur+1] || tokens[curseur+1].texte !== "{") throw new Error("Manque { apres sinon");
-            let finBlocSinon = trouverFinBloc(tokens, curseur + 2, ligneActuelle);
-            if (!dejaExecute) {
-              let res = await executerTokens(tokens, curseur + 2, finBlocSinon - 1);
-              if (res.signal) return res;
-            }
-            curseur = finBlocSinon;
-          }
-          break;
-        }
-        index = curseur;
+        if (_nd.erreurApres) throw _nd.erreurApres();
+        index = _nd.suite;
         continue;
       }
 
@@ -14406,10 +14655,10 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
         return { index: index + 1, signal: { type: 'continu' } };
       }
 
-      if (token.startsWith('pou(') && token.endsWith(')')) {
-        let entete = analyserEnTetePou(token);
-        if (!tokens[index+1] || tokens[index+1].texte !== "{") throw new Error("Manque { apres pou");
-        let finBloc = trouverFinBloc(tokens, index + 2, ligneActuelle);
+      if (_nd.t === 'pou') {
+        let entete = _nd.entete;
+        let finBloc = _nd.finBloc;
+        const _corps = _corpsSyncDe(_nd, tokens, index);
 
         if (entete.type === 'danN') {
           // pou(a, b, ... dan objet) : chaque element de objet (une liste ou un vecteur de n valeurs) est depaquete dans les n variables.
@@ -14431,7 +14680,7 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
             }
             if (valeurs.length !== nbVars) throw new Error(enTetePou + " : l'element " + (k + 1) + " contient " + valeurs.length + " valeur(s), mais " + nbVars + " variables sont attendues");
             for (let v = 0; v < nbVars; v++) setVar(entete.varNoms[v], valeurs[v]);
-            let res = await executerTokens(tokens, index + 2, finBloc - 1);
+            let res = _corps !== null ? _resSync(_corps.run()) : await executerTokens(tokens, index + 2, finBloc - 1);
             if (res.signal) {
               if (res.signal.type === 'casse') break;
               if (res.signal.type === 'continu') continue;
@@ -14447,7 +14696,7 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
               let rGen = await avancerGenerateur(objetVal);
               if (rGen.fini) break;
               setVar(entete.varNom, rGen.valeur);
-              let res = await executerTokens(tokens, index + 2, finBloc - 1);
+              let res = _corps !== null ? _resSync(_corps.run()) : await executerTokens(tokens, index + 2, finBloc - 1);
               if (res.signal) {
                 if (res.signal.type === 'casse') break;
                 if (res.signal.type === 'continu') continue;
@@ -14466,7 +14715,7 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
           for (let val of iterable) {
             await respirer();
             setVar(entete.varNom, val);
-            let res = await executerTokens(tokens, index + 2, finBloc - 1);
+            let res = _corps !== null ? _resSync(_corps.run()) : await executerTokens(tokens, index + 2, finBloc - 1);
             if (res.signal) {
               if (res.signal.type === 'casse') break;
               if (res.signal.type === 'continu') continue;
@@ -14482,7 +14731,7 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
           for (let val = debutVal; (pasVal > 0 ? val <= finVal : val >= finVal); val += pasVal) {
             await respirer();
             setVar(entete.varNom, val);
-            let res = await executerTokens(tokens, index + 2, finBloc - 1);
+            let res = _corps !== null ? _resSync(_corps.run()) : await executerTokens(tokens, index + 2, finBloc - 1);
             if (res.signal) {
               if (res.signal.type === 'casse') break;
               if (res.signal.type === 'continu') continue;
@@ -14526,14 +14775,14 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
       // tanqer(condition){...} classique, ou tanqer VRAI{...} / tanqer V{...} sans parentheses
       // (raccourci pour une boucle infinie, comme "while True" en Python), sans avoir besoin
       // d'ecrire une condition bidon toujours vraie (ex: tanqer(i==1){...}).
-      let mTanqerBoucleInfinie = /^tanqer\s+(VRAI|V)$/.test(token);
-      if ((token.startsWith('tanqer(') && token.endsWith(')')) || mTanqerBoucleInfinie) {
-        let condition = mTanqerBoucleInfinie ? null : token.slice(7, -1);
-        if (!tokens[index+1] || tokens[index+1].texte !== "{") throw new Error("Manque { apres tanqer");
-        let finBloc = trouverFinBloc(tokens, index + 2, ligneActuelle);
+      if (_nd.t === 'tanqer') {
+        let mTanqerBoucleInfinie = _nd.infinie;
+        let condition = _nd.condition;
+        let finBloc = _nd.finBloc;
+        const _corps = _corpsSyncDe(_nd, tokens, index);
         while (mTanqerBoucleInfinie || estVrai(await evalExpr(condition, ctxExpr))) {
           await respirer();
-          let res = await executerTokens(tokens, index + 2, finBloc - 1);
+          let res = _corps !== null ? _resSync(_corps.run()) : await executerTokens(tokens, index + 2, finBloc - 1);
           if (res.signal) {
             if (res.signal.type === 'casse') break;
             if (res.signal.type === 'continu') continue;
