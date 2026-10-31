@@ -923,6 +923,50 @@ public class MonLangageBridge {
             }
         }
 
+        // Ajoute des OCTETS (donnees recues en base64) a la FIN d'un fichier DEJA existant (ajout.fichier avec des
+        // octets). Renvoie VRAI en cas de succes, FAUX si le fichier n'existe pas ou en cas d'echec.
+        @JavascriptInterface
+        public boolean ajouterFichierOctets(String cheminComplet, String base64) {
+            try {
+                File fichier = new File(cheminComplet);
+                if (!fichier.isFile()) return false;
+                byte[] octets = android.util.Base64.decode(base64, android.util.Base64.DEFAULT);
+                try (FileOutputStream sortie = new FileOutputStream(fichier, true)) {
+                    sortie.write(octets);
+                }
+                return true;
+            } catch (Exception | OutOfMemoryError e) {
+                e.printStackTrace();
+                return false;
+            }
+        }
+
+        // Lit des OCTETS tels quels (lire.fichier avec octets~VRAI) : debut = decalage a partir de 0, longueur = nombre
+        // d'octets (-1 = jusqu'a la fin). Renvoie le morceau en base64 ("" si debut est apres la fin du fichier), ou
+        // null en cas d'echec (fichier introuvable, ou plus de 16 Mo d'un coup : lire par morceaux).
+        @JavascriptInterface
+        public String lireFichierOctets(String cheminComplet, double debut, double longueur) {
+            try {
+                File fichier = new File(cheminComplet);
+                if (!fichier.isFile()) return null;
+                long taille = fichier.length();
+                long d = (long) debut;
+                if (d >= taille) return "";
+                long restant = taille - d;
+                long n = longueur < 0 ? restant : Math.min(restant, (long) longueur);
+                if (n > 16L * 1024L * 1024L) return null;
+                byte[] tampon = new byte[(int) n];
+                try (java.io.RandomAccessFile acces = new java.io.RandomAccessFile(fichier, "r")) {
+                    acces.seek(d);
+                    acces.readFully(tampon);
+                }
+                return android.util.Base64.encodeToString(tampon, android.util.Base64.NO_WRAP);
+            } catch (Exception | OutOfMemoryError e) {
+                e.printStackTrace();
+                return null;
+            }
+        }
+
         // VRAI si un fichier (pas un dossier) existe deja a cet emplacement. Utilise par
         // fichier.existe(...) et par ecrire.fichier(..., ecra~FAUX) pour eviter d'ecraser
         // un fichier existant sans que le codeur l'ait explicitement demande.
