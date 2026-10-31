@@ -2120,6 +2120,9 @@ function analyserMotifF(contenu) {
       }
       lit += c + contenu[i + 1]; i += 2; continue;
     }
+    // {{ et }} = une vraie accolade (comme dans f|...|) : fam|{{2}}| cherche {2}
+    if (c === '{' && contenu[i + 1] === '{') { lit += '\\{'; i += 2; continue; }
+    if (c === '}' && contenu[i + 1] === '}') { lit += '\\}'; i += 2; continue; }
     if (c === '{') {
       let j = finAccoladeF(contenu, i + 1);
       if (j === -1) throw new Error("Motif fam|...| : accolade { jamais fermee (pour une vraie accolade, ecris \\{)");
@@ -8317,7 +8320,7 @@ let aideCommandes = [
       "/.../ s'ecrit comme en JS : /\\d+/, /abc/i, /chat|chien/. Ici | est directement l'alternative, \\| une vraie barre et \\/ une vraie barre oblique. Un / ouvre un motif seulement la ou une valeur est attendue (debut de ligne, apres ( , [ ~ = ou apres et ou non dan retour) et s'il se ferme sur la meme ligne ; ailleurs c'est une division : a / b / c. Dans les messages d'erreur, le motif apparait ecrit m|...|.",
       "x.correspond(motif) renvoie VRAI ou FAUX. x.trouve(motif) renvoie le premier morceau qui correspond, ou un texte vide s'il n'y en a pas (jamais d'erreur). x.trouve.tout(motif) renvoie la liste de tous les morceaux (liste vide s'il n'y en a pas). Un texte ordinaire n'est pas un motif : pour chercher un texte tel quel, ecris fam|{x}|.",
       "Groupes : les parentheses du motif isolent des morceaux. trouve et trouve.tout acceptent apres le motif un numero de groupe (0 = tout le morceau) ou un nom : avec (?<mois>\\d+) dans le motif, x.trouve(motif, |mois|). Groupe inexistant : erreur claire.",
-      "fam|...| : {x} insere la variable x (un texte ou un nombre est cherche tel quel, un motif est insere avec son sens et ses options) ; {x!m} insere un texte comme vrai motif ; {n!c} donne un nombre de repetitions ({3}) et exige un entier positif ; {3} et {2,5} restent le comptage du motif ; \\{ est une vraie accolade ; \\p{L}, \\P{L} et \\u{...} gardent leurs accolades. Un motif refuse par le moteur donne l'erreur « motif invalide : ... ».",
+      "fam|...| : {x} insere la variable x (un texte ou un nombre est cherche tel quel, un motif est insere avec son sens et ses options) ; {x!m} insere un texte comme vrai motif ; {n!c} donne un nombre de repetitions ({3}) et exige un entier positif ; {3} et {2,5} restent le comptage du motif ; {{ et }} (ou \\{ et \\}) donnent une vraie accolade : fam|{{2}}| cherche {2} ; \\p{L}, \\P{L} et \\u{...} gardent leurs accolades. Un motif refuse par le moteur donne l'erreur « motif invalide : ... ».",
       "decoup et remplace acceptent aussi un motif (voir ces commandes)."
     ], exemple: "|Tel 12 et 34|.correspond(m|\\d+|)          ->   VRAI\n|Tel 12 et 34|.trouve(m|\\d+|)              ->   12\n|Tel 12 et 34|.trouve.tout(m|\\d+|)         ->   liste(|12|, |34|)\n|18-10-2026|.trouve(m|(?<mois>\\d+)-(\\d+)|, |mois|)   ->   10\n|18-10-2026|.remplace(m|(\\d+)-(\\d+)-(\\d+)|, |$3-$2-$1|)   ->   2026-10-18\n|Tel 12 et 34|.trouve.tout(/\\d+/)           ->   liste(|12|, |34|)\nn ~ 3   puis   |123|.correspond(fam|^\\d{n!c}$|)   ->   VRAI" },
   { noms: ["seq"], categorie: "Creer un vecteur/une matrice", syntaxe: "seq(debut, fin, pas)", description: [
