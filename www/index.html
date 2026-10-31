@@ -1873,6 +1873,7 @@ function estVrai(v) {
   if (estVecteur(v)) return v.some(x => estVrai(x));
   if (estMatrice(v)) return v.donnees.some(x => estVrai(x));
   if (estListe(v)) return v.elements.length > 0;
+  if (estOctets(v)) return v.d.length > 0;
   if (estDictionnai(v)) return v.entrees.size > 0;
   return !(v === 0 || v === false || v === "" || v === null || v === undefined || (typeof v === "number" && Number.isNaN(v)));
 }
@@ -1894,13 +1895,15 @@ let __cacheTokenizerExpr = new Map();
 // Si un texte litteral commence en s[i] (avec prefixe eventuel), renvoie { brut, interp, debutBarre }, sinon null.
 function prefixeTexteEn(s, i) {
   if (s[i] === '|') return { brut: false, interp: false, debutBarre: i };
-  if (s[i] !== 'r' && s[i] !== 'f' && s[i] !== 'm') return null;
-  let m = /^(fam|rf|fr|r|f|m)\|/.exec(s.slice(i, i + 4));
+  if (s[i] !== 'r' && s[i] !== 'f' && s[i] !== 'm' && s[i] !== 'b') return null;
+  let m = /^(fam|rf|fr|r|f|m|b)\|/.exec(s.slice(i, i + 4));
   if (!m) return null;
   if (i > 0 && /[a-zA-Z0-9_]/.test(s[i - 1])) return null;   // colle a un identifiant : ce n'est pas un prefixe
   // m|...| = MOTIF (expression reguliere) ecrit directement ; fam|...| = motif FABRIQUE avec des {variables}.
   // Dans les deux, les antislashs restent tels quels (brut) : \d est lu par le motif, pas par le texte.
   if (m[1] === 'm') return { brut: true, interp: false, motif: true, debutBarre: i + 1 };
+  // b|...| = OCTETS ecrits directement (\xHH = un octet ; le reste comme un texte, en UTF-8).
+  if (m[1] === 'b') return { brut: true, interp: false, octets: true, debutBarre: i + 1 };
   if (m[1] === 'fam') return { brut: true, interp: true, motif: true, debutBarre: i + 3 };
   return { brut: m[1].includes('r'), interp: m[1].includes('f'), debutBarre: i + m[1].length };
 }
@@ -1975,6 +1978,11 @@ function decoderUneSequence(s, i) {
     case 't': return { texte: '\t', len: 2 };
     case 'r': return { texte: '\r', len: 2 };
     case 's': return { texte: '\u00A0', len: 2 };
+    case 'x': {   // \xHH : le caractere de ce code (00 a FF) ; dans b|...| c'est UN OCTET (voir decoderOctetsLitteral)
+      let mx = /^\\x([0-9a-fA-F]{2})/.exec(s.slice(i, i + 4));
+      if (mx) return { texte: String.fromCharCode(parseInt(mx[1], 16)), len: 4 };
+      return { texte: '\\', len: 1 };
+    }
     case 'u': {
       let m = /^\\u\{([0-9a-fA-F]{1,6})\}/.exec(s.slice(i, i + 10));
       if (m) {
@@ -2048,6 +2056,7 @@ async function evaluerTexteF(parts, ctx) {
 async function valeurTexteLitteral(s, ctx) {
   let p = prefixeTexteEn(s, 0);
   let contenu = s.slice(p.debutBarre + 1, -1);
+  if (p.octets) return creerOctets(decoderOctetsLitteral(contenu));
   if (p.motif) return p.interp ? await evaluerMotifF(analyserMotifF(contenu), '', ctx) : creerMotif(alternativesMotif(contenu), '');
   if (p.interp) return await evaluerTexteF(analyserTexteF(contenu, p.brut), ctx);
   return p.brut ? contenu : decoderEchappements(contenu);
@@ -2056,6 +2065,7 @@ async function valeurTexteLitteral(s, ctx) {
 function valeurTexteLitteralSimple(s) {
   let p = prefixeTexteEn(s, 0);
   let contenu = s.slice(p.debutBarre + 1, -1);
+  if (p.octets) return creerOctets(decoderOctetsLitteral(contenu));
   if (p.motif) { if (p.interp) throw new Error("fam|...| n'est pas utilisable ici"); return creerMotif(alternativesMotif(contenu), ''); }
   if (p.interp) throw new Error("f|...| n'est pas utilisable ici");
   return p.brut ? contenu : decoderEchappements(contenu);
@@ -2233,7 +2243,7 @@ function transformerMotifsSlash(code) {
       while (j < n && code[j] !== '\n') j++;
       out += code.slice(i, j); i = j; continue;
     }
-    if (c === '|' || c === 'r' || c === 'f' || c === 'm') {   // texte litteral (|..|, r|..|, f|..|, m|..|, fam|..|) : copie telle quelle
+    if (c === '|' || c === 'r' || c === 'f' || c === 'm' || c === 'b') {   // texte litteral (|..|, r|..|, f|..|, m|..|, fam|..|) : copie telle quelle
       const p = prefixeTexteEn(code, i);
       if (p) {
         const fin = finTexteLitteral(code, p.debutBarre);
@@ -2289,7 +2299,7 @@ function tokenizerExpr(str) {
       tokens.push({ type: 'num', v: parseFloat(str.slice(i, j)) });
       i = j; continue;
     }
-    if (/[a-zA-Z_]/.test(c) && !((c === 'r' || c === 'f' || c === 'm') && prefixeTexteEn(str, i))) {
+    if (/[a-zA-Z_]/.test(c) && !((c === 'r' || c === 'f' || c === 'm' || c === 'b') && prefixeTexteEn(str, i))) {
       // MOD et ENTI sont des mots-operateurs : on les reconnait meme colles a des
       // chiffres (3mod4, 3MOD4, 3enti4, 3ENTI4) sans obliger a mettre des espaces.
       // On ne les reconnait pas si c'est le debut d'un identifiant plus long
@@ -2318,7 +2328,7 @@ function tokenizerExpr(str) {
       else tokens.push({ type: 'ident', v: mot });
       i = j; continue;
     }
-    if (c === '|' || ((c === 'r' || c === 'f' || c === 'm') && prefixeTexteEn(str, i))) {
+    if (c === '|' || ((c === 'r' || c === 'f' || c === 'm' || c === 'b') && prefixeTexteEn(str, i))) {
       let pref = prefixeTexteEn(str, i);
       let fin = finTexteLitteral(str, pref.debutBarre);
       if (fin < 0) throw new Error("Texte litteral |...| non ferme dans l'expression : \"" + str + "\"");
@@ -2335,6 +2345,7 @@ function tokenizerExpr(str) {
         tokens.push(tok);
         i = q; continue;
       }
+      if (pref.octets) { tok.v = creerOctets(decoderOctetsLitteral(contenu)); tok.octets = true; tokens.push(tok); i = fin + 1; continue; }
       if (pref.interp) { tok.f = analyserTexteF(contenu, pref.brut); tok.v = contenu; }
       else tok.v = pref.brut ? contenu : decoderEchappements(contenu);
       tokens.push(tok);
@@ -3307,7 +3318,7 @@ function _construireArbreRapide(tokens) {
     let t = peek();
     if (!t) return DECLINE;
     if (t.type === 'num') { next(); return { t: 'num', v: t.v }; }
-    if (t.type === 'str') { if (t.f) return DECLINE; next(); return { t: 'str', v: t.v }; }
+    if (t.type === 'str') { if (t.f || t.octets) return DECLINE; next(); return { t: 'str', v: t.v }; }
     if (t.type === '(') {
       next();
       let v = or_();
@@ -3553,7 +3564,7 @@ function evalExprSansEntreeSync(str, ctx) {
     let t = peek();
     if (!t) throw new Error("Expression incomplete");
     if (t.type === 'num') { next(); return t.v; }
-    if (t.type === 'str') { if (t.f) throw __BESOIN_ASYNC; next(); return t.v; }
+    if (t.type === 'str') { if (t.f) throw __BESOIN_ASYNC; next(); return t.octets ? copierOctets(t.v) : t.v; }
     if (t.type === '(') {
       next(); let v = parseOr();
       if (!peek() || peek().type !== ')') throw new Error("Parenthese fermante manquante");
@@ -3853,7 +3864,7 @@ async function evalExprSansEntreeAsync(str, ctx) {
     let t = peek();
     if (!t) throw new Error("Expression incomplete");
     if (t.type === 'num') { next(); return t.v; }
-    if (t.type === 'str') { next(); return t.f ? (t.motifF ? await evaluerMotifF(t.f, t.motifF.flags, ctx) : await evaluerTexteF(t.f, ctx)) : t.v; }
+    if (t.type === 'str') { next(); return t.f ? (t.motifF ? await evaluerMotifF(t.f, t.motifF.flags, ctx) : await evaluerTexteF(t.f, ctx)) : (t.octets ? copierOctets(t.v) : t.v); }
     if (t.type === '(') {
       next(); let v = await parseOr();
       if (!peek() || peek().type !== ')') throw new Error("Parenthese fermante manquante");
@@ -3966,6 +3977,176 @@ function estGenerateur(v) { return v !== null && typeof v === 'object' && v.__ty
 const METHODES_DICTIONNAI = new Set(["lire", "cles", "valeurs", "lon"]);
 const MSG_TRIER_EXPRESSION = ".trier() modifie la liste sur place et ne renvoie rien : ecris-le seul sur sa ligne (l.trier()), ou utilise trier(l) pour obtenir une nouvelle liste triee";
 function estDictionnai(v) { return v !== null && typeof v === 'object' && v.__type === 'dictionnai'; }
+/* ===================== OCTETS : type "octets" (fichiers binaires) =====================
+   Valeur : { __type: "octets", d: Uint8Array }. Se comporte comme une liste : o[i], o[-1], o[i] ~ v, lon(o),
+   o.extrait(debut, longueur), o1 + o2. Ecriture directe : b|...| (\xHH = un octet, le reste comme un texte, en UTF-8).
+   Passages vers/depuis les autres formats : conver.source.cible (texte, liste, vecteu, nombr, octets, hexa, base64, binaire). */
+function estOctets(v) { return v !== null && typeof v === 'object' && v.__type === 'octets'; }
+function creerOctets(u8) { return { __type: "octets", d: u8 }; }
+function copierOctets(o) { return creerOctets(new Uint8Array(o.d)); }
+function concatOctetsBruts(morceaux) {
+  let total = 0;
+  for (const u of morceaux) total += u.length;
+  const r = new Uint8Array(total);
+  let p = 0;
+  for (const u of morceaux) { r.set(u, p); p += u.length; }
+  return r;
+}
+const LIMITE_AFFICHAGE_OCTETS = 100;
+// Ecriture b|...| des octets : lettres lisibles telles quelles, le reste en \xHH ; au-dela de 100 octets l'affichage s'arrete.
+function formatOctets(o, complet) {
+  const d = o.d, n = d.length, m = complet ? n : Math.min(n, LIMITE_AFFICHAGE_OCTETS);
+  let s = '';
+  for (let i = 0; i < m; i++) {
+    const b = d[i];
+    if (b === 92) s += '\\\\';
+    else if (b === 124) s += '\\|';
+    else if (b === 10) s += '\\n';
+    else if (b === 13) s += '\\r';
+    else if (b === 9) s += '\\t';
+    else if (b >= 32 && b <= 126) s += String.fromCharCode(b);
+    else s += '\\x' + (b < 16 ? '0' : '') + b.toString(16).toUpperCase();
+  }
+  let r = 'b|' + s + '|';
+  if (m < n) r += ' ... (' + n + ' octets)';
+  return r;
+}
+// Contenu d'un b|...| : \xHH = un octet ; les autres echappements comme dans un texte (\| \\ \n \t \r \s \u...) ; le reste = UTF-8.
+function decoderOctetsLitteral(contenu) {
+  const morceaux = [], enc = new TextEncoder();
+  let accum = '';
+  const vider = () => { if (accum !== '') { morceaux.push(enc.encode(accum)); accum = ''; } };
+  let i = 0;
+  while (i < contenu.length) {
+    const c = contenu[i];
+    if (c !== '\\') { accum += c; i++; continue; }
+    if (contenu[i + 1] === 'x') {
+      const hh = contenu.slice(i + 2, i + 4);
+      if (!/^[0-9a-fA-F]{2}$/.test(hh)) throw new Error("b|...| : \\x doit etre suivi de 2 chiffres hexadecimaux (ex: \\x89)" + (hh !== '' ? ", recu : \\x" + hh : ""));
+      vider(); morceaux.push(Uint8Array.of(parseInt(hh, 16))); i += 4; continue;
+    }
+    const r = decoderUneSequence(contenu, i);
+    accum += r.texte; i += r.len;
+  }
+  vider();
+  return concatOctetsBruts(morceaux);
+}
+function octetsVersHexa(u8) {
+  let s = '';
+  for (let i = 0; i < u8.length; i++) s += (u8[i] < 16 ? '0' : '') + u8[i].toString(16);
+  return s;
+}
+function hexaVersOctets(t, nom) {
+  const s = t.replace(/\s+/g, '');
+  if (!/^[0-9a-fA-F]*$/.test(s)) throw new ErreurTypeInvalide(nom + "(...) : hexadecimal invalide (seuls 0-9, a-f, A-F et les espaces sont permis)");
+  if (s.length % 2 !== 0) throw new ErreurTypeInvalide(nom + "(...) : hexadecimal invalide (un nombre pair de chiffres est necessaire : 2 par octet, recu " + s.length + ")");
+  const r = new Uint8Array(s.length / 2);
+  for (let i = 0; i < r.length; i++) r[i] = parseInt(s.substr(i * 2, 2), 16);
+  return r;
+}
+function octetsVersBinaire(u8) {
+  let s = '';
+  for (let i = 0; i < u8.length; i++) s += u8[i].toString(2).padStart(8, '0');
+  return s;
+}
+function binaireVersOctets(t, nom) {
+  const s = t.replace(/\s+/g, '');
+  if (!/^[01]*$/.test(s)) throw new ErreurTypeInvalide(nom + "(...) : binaire invalide (seuls 0, 1 et les espaces sont permis)");
+  if (s.length % 8 !== 0) throw new ErreurTypeInvalide(nom + "(...) : binaire invalide (8 bits par octet : il faut un multiple de 8 chiffres, recu " + s.length + ")");
+  const r = new Uint8Array(s.length / 8);
+  for (let i = 0; i < r.length; i++) r[i] = parseInt(s.substr(i * 8, 8), 2);
+  return r;
+}
+function octetsVersBase64(u8) {
+  let bin = '';
+  for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+function base64VersOctets(t, nom) {
+  const s = t.replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/');
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(s)) throw new ErreurTypeInvalide(nom + "(...) : base64 invalide (seuls A-Z, a-z, 0-9, + et / sont permis, avec = en fin)");
+  const sansEgal = s.replace(/=+$/, '');
+  if (sansEgal.length % 4 === 1) throw new ErreurTypeInvalide(nom + "(...) : base64 invalide (longueur impossible)");
+  if (s.length !== sansEgal.length && s.length % 4 !== 0) throw new ErreurTypeInvalide(nom + "(...) : base64 invalide (les = de fin ne completent pas un groupe de 4)");
+  const bin = atob(sansEgal + '='.repeat((4 - sansEgal.length % 4) % 4));
+  const r = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) r[i] = bin.charCodeAt(i);
+  return r;
+}
+function octetsDepuisNombres(elements, nom) {
+  const r = new Uint8Array(elements.length);
+  for (let i = 0; i < elements.length; i++) {
+    let e = elements[i];
+    if (typeof e === 'bigint') e = Number(e);
+    if (typeof e !== 'number' || !Number.isInteger(e) || e < 0 || e > 255) {
+      throw new ErreurTypeInvalide(nom + " : l'element " + (i + 1) + " vaut " + (typeof e === 'number' || typeof e === 'bigint' ? String(e) : formatValeur(elements[i])) + " : un octet est un entier de 0 a 255");
+    }
+    r[i] = e;
+  }
+  return r;
+}
+// Entier (ou reel) sur 1/2/4/8 octets. Gros boutiste par defaut (petit = VRAI : petit boutiste).
+function nombreVersOctets(n, o, nom) {
+  const taille = o.taille !== undefined ? o.taille : (o.reel ? 8 : 4);
+  if (o.reel) {
+    if (taille !== 4 && taille !== 8) throw new Error(nom + "(...) : un nombre a virgule (reel~V) tient sur 4 ou 8 octets (taille~4 ou taille~8), recu : taille~" + taille);
+    if (typeof n === 'bigint') n = Number(n);
+    if (typeof n !== 'number') throw new ErreurTypeInvalide(nom + "(...) attend un nombre (recu : " + nomNature(n) + ")");
+    const dv = new DataView(new ArrayBuffer(taille));
+    if (taille === 4) dv.setFloat32(0, n, o.petit); else dv.setFloat64(0, n, o.petit);
+    return new Uint8Array(dv.buffer);
+  }
+  if (taille !== 1 && taille !== 2 && taille !== 4 && taille !== 8) throw new Error(nom + "(...) : taille~ doit valoir 1, 2, 4 ou 8 (recu : " + taille + ")");
+  if (typeof n === 'number' && !Number.isInteger(n)) throw new ErreurTypeInvalide(nom + "(...) : " + n + " n'est pas un entier (pour un nombre a virgule, ajoute reel~V)");
+  if (typeof n !== 'number' && typeof n !== 'bigint') throw new ErreurTypeInvalide(nom + "(...) attend un nombre (recu : " + nomNature(n) + ")");
+  let v = typeof n === 'bigint' ? n : BigInt(n);
+  const bits = BigInt(8 * taille);
+  const min = o.signe ? -(1n << (bits - 1n)) : 0n, max = o.signe ? (1n << (bits - 1n)) - 1n : (1n << bits) - 1n;
+  if (v < 0n && !o.signe) throw new Error(nom + "(...) : " + v + " est negatif (ajoute signe~V pour ecrire un nombre negatif)");
+  if (v < min || v > max) throw new Error(nom + "(...) : " + v + " ne tient pas sur " + taille + " octet" + (taille > 1 ? "s" : "") + (o.signe ? " (signe~V : de " : " (de ") + min + " a " + max + ")" + (taille < 8 ? " ; essaie une taille~ plus grande" : ""));
+  if (v < 0n) v += 1n << bits;
+  const r = new Uint8Array(taille);
+  for (let i = 0; i < taille; i++) r[i] = Number((v >> BigInt(8 * i)) & 255n);   // r[0] = octet de poids faible
+  if (!o.petit) r.reverse();
+  return r;
+}
+function octetsVersNombre(u8, o, nom) {
+  const taille = o.taille !== undefined ? o.taille : u8.length;
+  const permis = o.reel ? [4, 8] : [1, 2, 4, 8];
+  if (permis.indexOf(taille) === -1) throw new Error(nom + "(...) : " + (o.taille === undefined ? "ces octets sont au nombre de " + u8.length + " : precise taille~ (" + permis.join(", ") + ")" : "taille~ doit valoir " + permis.join(", ") + " (recu : " + taille + ")"));
+  if (u8.length !== taille) throw new Error(nom + "(...) : il faut exactement " + taille + " octet" + (taille > 1 ? "s" : "") + " pour ce nombre (recu : " + u8.length + "). Pour un morceau d'un plus grand lot : o.extrait(debut, " + taille + ")");
+  if (o.reel) {
+    const dv = new DataView(u8.buffer.slice(u8.byteOffset, u8.byteOffset + taille));
+    return taille === 4 ? dv.getFloat32(0, o.petit) : dv.getFloat64(0, o.petit);
+  }
+  const ordre = Array.from(u8);
+  if (!o.petit) ordre.reverse();   // ordre[0] = octet de poids faible
+  let v = 0n;
+  for (let i = taille - 1; i >= 0; i--) v = (v << 8n) | BigInt(ordre[i]);
+  if (o.signe && v >= (1n << BigInt(8 * taille - 1))) v -= 1n << BigInt(8 * taille);
+  return (v >= -9007199254740991n && v <= 9007199254740991n) ? Number(v) : v;
+}
+// Range les arguments : d'abord les positionnels (dans leur ordre), puis les options nom~valeur. Permet d'ecrire une option
+// au DEBUT d'un appel (ecra~V, chemin...) pour les commandes dont le code lit les options apres les valeurs.
+function deplacerOptionsALaFin(args) {
+  const pos = [], opts = [];
+  for (const a of args) (/^\w+\s*~/.test(a.trim()) ? opts : pos).push(a);
+  return pos.concat(opts);
+}
+// Extrait les options nommees (nom~valeur) d'une liste d'arguments BRUTS, ou qu'elles soient (debut, fin, milieu).
+// Renvoie { pos : arguments positionnels (bruts), opts : { nom : expression brute } }.
+function separerOptionsArgs(args, nomCmd, autorisees) {
+  const pos = [], opts = {};
+  for (const a of args) {
+    const m = a.trim().match(/^(\w+)\s*~\s*([\s\S]*)$/);
+    if (!m) { pos.push(a); continue; }
+    if (autorisees.indexOf(m[1]) === -1) throw new Error("Parametre inconnu pour " + nomCmd + "(...) : " + m[1] + (autorisees.length ? " (possibles : " + autorisees.map(x => x + "~").join(", ") + ")" : ""));
+    if (Object.prototype.hasOwnProperty.call(opts, m[1])) throw new Error(nomCmd + "(...) : " + m[1] + "~ est ecrit deux fois");
+    if (m[2].trim() === "") throw new Error(nomCmd + "(...) : " + m[1] + "~ attend une valeur (ex: " + m[1] + "~VRAI)");
+    opts[m[1]] = m[2];
+  }
+  return { pos, opts };
+}
 function descriptionCleDico(cle) { return typeof cle === 'string' ? "|" + cle + "|" : String(cle); }
 function normaliserCleDico(cle, nom) {
   if (typeof cle === 'string') return 's:' + cle;
@@ -4121,6 +4302,7 @@ function copierValeur(v, profond, memo) {
   if (v === null || typeof v !== 'object') return v;
   if (estValeurFonction(v) || v.__module !== undefined) return v;
   if (memo.has(v)) return memo.get(v);
+  if (estOctets(v)) { let c = copierOctets(v); memo.set(v, c); return c; }
   if (estListe(v)) {
     let c = { __type: "liste", elements: [] };
     memo.set(v, c);
@@ -4148,7 +4330,7 @@ function copierValeur(v, profond, memo) {
 function jsonDepuisValeur(valeur) {
   return JSON.stringify(valeur, (k, v) => (estDictionnai(v)
     ? { __type: "dictionnai", entrees: Array.from(v.entrees.values(), e => ({ cle: e.cle, valeur: e.valeur })) }
-    : v));
+    : (estOctets(v) ? { __type: "octets", base64: octetsVersBase64(v.d) } : v)));
 }
 function valeurDepuisJson(texte) {
   return JSON.parse(texte, (k, v) => {
@@ -4162,6 +4344,7 @@ function valeurDepuisJson(texte) {
       }
       return { __type: "dictionnai", entrees: m };
     }
+    if (v.__type === "octets" && typeof v.base64 === "string") return creerOctets(base64VersOctets(v.base64, "sauvegarde"));
     return v;
   });
 }
@@ -4241,6 +4424,7 @@ const METHODES_TEXTE = new Set(["decoup", "joindr", "remplace", "cherch", "comme
 const METHODES_POINTEES = new Map([["avant", ["dernier"]], ["apres", ["dernier"]], ["garder", ["contenant"]], ["enlever", ["contenant"]], ["trouve", ["tout"]], ["inverse", ["text"]], ["cherch", ["dernier"]]]);
 function egalValeursSimples(a, b) {
   if (a === b) return true;
+  if (estOctets(a) && estOctets(b)) return a.d.length === b.d.length && a.d.every((x, i) => x === b.d[i]);
   if ((typeof a === 'number' || typeof a === 'bigint') && (typeof b === 'number' || typeof b === 'bigint')) return Number(a) === Number(b);
   if (a !== null && b !== null && typeof a === 'object' && typeof b === 'object') return formatValeur(a) === formatValeur(b);
   return false;
@@ -4435,6 +4619,7 @@ function coreCherchDernier(cible, m, nomCmd) {
   return 0;
 }
 function coreLon(v) {
+  if (estOctets(v)) return v.d.length;
   if (estListe(v)) return v.elements.length;
   if (estDictionnai(v)) return v.entrees.size;
   if (estVecteur(v)) return v.length;
@@ -4616,8 +4801,8 @@ function appliquerMethodeTexte(v, m, args) {
     // x.extrait(debut, longueur) : morceau d'un texte, d'une liste ou d'un vecteur (positions comptees comme lon et t[i]).
     // debut : a partir de 1 ; negatif = depuis la fin. longueur facultative : jusqu'a la fin si omise ; 0 = vide.
     attend(1, 2, "extrait(debut, longueur)");
-    let taille = typeof v === 'string' ? v.length : (estListe(v) ? v.elements.length : (estVecteur(v) ? v.length : -1));
-    if (taille < 0) throw new ErreurTypeInvalide("extrait : la valeur doit etre un texte, une liste ou un vecteur (recu : " + nomNature(v) + ")");
+    let taille = typeof v === 'string' ? v.length : (estListe(v) ? v.elements.length : (estVecteur(v) ? v.length : (estOctets(v) ? v.d.length : -1)));
+    if (taille < 0) throw new ErreurTypeInvalide("extrait : la valeur doit etre un texte, une liste, un vecteur ou des octets (recu : " + nomNature(v) + ")");
     let debut = exigerEntier(args[0], "extrait", "le debut");
     let longueur = n === 2 ? exigerEntier(args[1], "extrait", "la longueur") : undefined;
     if (longueur !== undefined && longueur < 0) throw new Error("extrait : la longueur ne peut pas etre negative (recu : " + longueur + ")");
@@ -4631,6 +4816,7 @@ function appliquerMethodeTexte(v, m, args) {
     let b = longueur === undefined ? taille : Math.min(taille, a + longueur);
     if (b < a) b = a;
     if (typeof v === 'string') return v.slice(a, b);
+    if (estOctets(v)) return creerOctets(v.d.slice(a, b));
     if (estListe(v)) return { __type: "liste", elements: v.elements.slice(a, b) };
     return v.slice(a, b);
   }
@@ -4699,6 +4885,7 @@ function nomNature(v) {
   if (estListe(v)) return "liste";
   if (estDictionnai(v)) return "dictionnai";
   if (estMotif(v)) return "motif";
+  if (estOctets(v)) return "octets";
   if (estVecteur(v)) return "vecteur";
   if (typeof v === "boolean") return "booleen";
   if (typeof v === "bigint") return "entier";
@@ -4760,7 +4947,7 @@ function appliquerRacineN(n, v) {
 function estTexteLitteralComplet(s) {
   let p = prefixeTexteEn(s, 0);
   if (!p) return false;
-  if (p.motif) return false;   // m|...| et fam|...| sont des MOTIFS (pas des textes) : ils passent par l'evaluation d'expression
+  if (p.motif || p.octets) return false;   // b|...| (octets), m|...| et fam|...| sont des VALEURS autres que du texte (pas des textes) : ils passent par l'evaluation d'expression
   return finTexteLitteral(s, p.debutBarre) === s.length - 1;
 }
 function verifierTexteLitteralFerme(s) {
@@ -4876,6 +5063,7 @@ function unifierTypeVecteur(elements) {
 }
 
 function verifierNombre(v, operateur) {
+  if (estOctets(v)) throw new ErreurTypeInvalide("'" + operateur + "' : un nombre est attendu, mais pas des octets (pour lire un octet : o[1])");
   if (typeof v === 'string') {
     throw new ErreurTypeInvalide("'" + operateur + "' : un nombre est attendu, mais pas du texte (recu : |" + v + "|)");
   }
@@ -4888,6 +5076,11 @@ function verifierNombre(v, operateur) {
 // '==', '!=', '<', '>', '<=', '>=' : element par element sur vecteurs/matrices (comme +/-),
 // renvoie un booleen, un vecteur de booleens, ou une matrice de booleens.
 function combinerComparaison(g, d, op) {
+  if (estOctets(g) || estOctets(d)) {
+    if (op !== '==' && op !== '!=') throw new ErreurTypeInvalide("'" + op + "' : des octets se comparent seulement avec == et != (recu : " + nomNature(g) + " " + op + " " + nomNature(d) + ")");
+    const egal = estOctets(g) && estOctets(d) && g.d.length === d.d.length && g.d.every((b, i) => b === d.d[i]);
+    return op === '==' ? egal : !egal;
+  }
   function cmp2(a, b) {
     // Un grand entier (bigint) et un nombre normal (number) sont deux types JS distincts :
     // "5n === 5" vaut FAUX malgre l'egalite numerique (=== ne convertit jamais). On utilise
@@ -4981,7 +5174,7 @@ function verifierOperandesCalcul(g, d, op) {
     if (estListe(v)) {
       throw new ErreurTypeInvalide("'" + op + "' : une liste ne se calcule pas (avec une liste, seuls + et * marchent : concatenation et repetition). Pour calculer dessus, convertis-la d'abord en vecteur (conver.liste.vecteu(...)) ou en matrice (conver.liste.matric(...)).");
     }
-    throw new ErreurTypeInvalide("'" + op + "' : impossible de calculer avec " + typeOperande(v) + ". Pour le coller dans un texte, utilise texte(...).");
+    throw new ErreurTypeInvalide("'" + op + "' : impossible de calculer avec " + typeOperande(v) + (estOctets(v) ? " (seul + colle deux suites d'octets ; pour calculer sur un octet : o[1])." : ". Pour le coller dans un texte, utilise texte(...)."));
   }
   let estTexte = x => typeof x === 'string';
   let estCollection = x => estVecteur(x) || estMatrice(x);
@@ -5033,6 +5226,12 @@ function operationListe(g, d, op) {
   throw new ErreurTypeInvalide("'" + op + "' : impossible avec une liste (avec une liste, seuls + et * marchent : concatenation et repetition). " + (noms[op] || "Cette operation") + " ne marche qu'entre nombres, vecteurs ou matrices." + (op === '-' ? " Pour retirer un element d'une liste, utilise l.supri(...)." : ""));
 }
 function combinerAddition(g, d, op) {
+  if (estOctets(g) || estOctets(d)) {
+    if (op === '+' && estOctets(g) && estOctets(d)) return creerOctets(concatOctetsBruts([g.d, d.d]));
+    throw new ErreurTypeInvalide("'" + op + "' : " + (op === '+'
+      ? "des octets se collent seulement avec d'autres octets (recu : " + nomNature(g) + " + " + nomNature(d) + "). Pour changer de format : conver.texte.octets(...), conver.liste.octets(...), conver.octets.texte(...)..."
+      : "ce calcul ne marche pas sur des octets (seul + colle deux suites d'octets)"));
+  }
   if (!(typeof g === 'number' && typeof d === 'number')) {
     if (estListe(g) || estListe(d)) return operationListe(g, d, op);
     verifierOperandesCalcul(g, d, op);
@@ -5617,8 +5816,42 @@ function accederTexte(v, indice, nom) {
   let positions = resoudreIndicesVecteur(indice, v.length, nom, true);
   return positions.map(p => v[p]).join("");
 }
+function accederOctets(v, indice, nom) {
+  const d = v.d;
+  if (indice === null) return copierOctets(v);
+  if (typeof indice === 'number') {
+    verifierIndiceEntier(indice, nom);
+    let i0 = indice;
+    indice = indiceDepuisFin(indice, d.length);
+    if (indice < 1 || indice > d.length) throw new Error("Indice " + i0 + " hors limites pour " + nom + " (taille " + d.length + ")");
+    return d[indice - 1];
+  }
+  const positions = resoudreIndicesVecteur(indice, d.length, nom, true);
+  return creerOctets(Uint8Array.from(positions, p => d[p]));
+}
+function affecterOctets(v, indice, valeur, nom) {
+  const d = v.d;
+  let positions;
+  if (indice === null) { positions = []; for (let i = 0; i < d.length; i++) positions.push(i); }
+  else if (typeof indice === 'number') {
+    verifierIndiceEntier(indice, nom);
+    let i0 = indice;
+    indice = indiceDepuisFin(indice, d.length);
+    if (indice < 1 || indice > d.length) throw new ErreurIndexHorsLimite("Indice " + i0 + " hors limites pour " + nom + " (taille " + d.length + ") : des octets ne s'agrandissent pas par indice, utilise + pour en ajouter");
+    positions = [indice - 1];
+  } else positions = resoudreIndicesVecteur(indice, d.length, nom, true);
+  let valeurs;
+  if (estOctets(valeur)) valeurs = Array.from(valeur.d);
+  else if (typeof valeur === 'number' || typeof valeur === 'bigint') valeurs = [valeur];
+  else if (estVecteur(valeur)) valeurs = valeur;
+  else throw new ErreurTypeInvalide(nom + "[...] ~ ... attend un octet (un entier de 0 a 255) ou des octets (recu : " + nomNature(valeur) + ")");
+  if (valeurs.length !== positions.length && valeurs.length !== 1) throw new Error(nom + "[...] ~ ... attend " + positions.length + " valeur(s) (ou une seule repetee), recu " + valeurs.length);
+  const octets = octetsDepuisNombres(valeurs, nom + "[...] ~ ...");
+  for (let i = 0; i < positions.length; i++) d[positions[i]] = octets[i % octets.length];
+}
 function accederUnique(v, indice, nom) {
   if (typeof v === 'string') return accederTexte(v, indice, nom);
+  if (estOctets(v)) return accederOctets(v, indice, nom);
   if (estDictionnai(v)) {
     if (indice === null) throw new ErreurTypeInvalide(nom + "[] : donne une cle entre les crochets (ex: " + nom + "[|nom|])");
     return dicoLire(v, indice, nom);
@@ -5714,6 +5947,7 @@ function affecterTexte(v, indice, valeur, nom) {
   return cars.join("");
 }
 function affecterUnique(v, indice, valeur, nom) {
+  if (estOctets(v)) { affecterOctets(v, indice, valeur, nom); return; }
   if (estListe(v)) {
     let elements = v.elements;
     if (indice === null) {
@@ -5850,6 +6084,7 @@ function formatValeur(v) {
   if (estListe(v)) return formatListe(v);
   if (estDictionnai(v)) return formatDictionnai(v);
   if (estMotif(v)) return "/" + v.source + "/" + v.flags;
+  if (estOctets(v)) return formatOctets(v, false);
   if (estVecteur(v)) return formatVecteur(v);
   if (v === true) return "VRAI";
   if (v === false) return "FAUX";
@@ -7817,16 +8052,21 @@ let aideCommandes = [
       "creer.dossier(chemin) cree le dossier a ce chemin complet (avec des '/'), ainsi que les dossiers parents qui manquent. Renvoie VRAI.",
       "ecra~FAUX par defaut : si quelque chose existe deja a cet endroit, la creation est REFUSEE (erreur, a intercepter avec essai/attrape). ecra~VRAI : si le DOSSIER existe deja, pas d'erreur et creer.dossier renvoie FAUX. ecra~VRAI ne supprime et ne modifie jamais rien.",
       "Si un FICHIER occupe deja l'emplacement, c'est une erreur dans tous les cas : un dossier ne peut pas le remplacer.",
-      "Ne fonctionne que dans l'app installee (pas en previsualisation navigateur)."
+      "Ne fonctionne que dans l'app installee (pas en previsualisation navigateur).",
+      "ecra~ peut aussi s'ecrire AVANT le chemin : creer.dossier(ecra~VRAI, chemin) est identique a creer.dossier(chemin, ecra~VRAI)."
     ], exemple: "creer.dossier(|/storage/emulated/0/Documents/Mes_scripts|)\ncreer.dossier(|/storage/emulated/0/Documents/Mes_scripts|, ecra~VRAI)   ->   FAUX (il existe deja)" },
-  { noms: ["ecrire.fichier"], categorie: "Sauvegarde", syntaxe: "ecrire.fichier(nom, valeur, ecra~FAUX)  ou  ecrire.fichier(chemin, val1, val2, ..., ecra~FAUX)", description: [
+  { noms: ["ecrire.fichier"], categorie: "Sauvegarde", syntaxe: "ecrire.fichier(nom, valeur, ecra~FAUX)  ou  ecrire.fichier(chemin, val1, val2, ..., ecra~FAUX)  ou  ecrire.fichier(chemin, o1, o2, ...)  (octets)", description: [
       "ecrire.fichier(nom, valeur) : ouvre le navigateur de fichiers integre pour choisir ou enregistrer un vrai fichier .mld.",
       "ecrire.fichier(chemin, valeur) : si nom contient un '/', ecriture DIRECTE a cet emplacement, sans rien afficher a l'ecran.",
       "Avec plusieurs valeurs, elles sont regroupees comme une liste() (meme regle que ecrire.cle()).",
       "ecra~FAUX par defaut : si le fichier existe deja, l'ecriture est REFUSEE (erreur, a intercepter avec essai/attrape). ecra~VRAI ecrase sans verifier.",
       "Le chemin direct et la verification ecra ne fonctionnent que dans l'app installee (pas en previsualisation navigateur).",
       "Contrairement a ecrire.cle(), le fichier peut ensuite etre partage, copie, deplace hors de l'app.",
-      "Un TEXTE est enregistre tel quel, avec ses vraies lignes (un journal reste lisible dans l'IDE) ; une liste ou un dictionnai est ecrit sur plusieurs lignes. lire.fichier(...) renvoie toujours la valeur d'origine."
+      "Un TEXTE est enregistre tel quel, avec ses vraies lignes (un journal reste lisible dans l'IDE) ; une liste ou un dictionnai est ecrit sur plusieurs lignes. lire.fichier(...) renvoie toujours la valeur d'origine.",
+      "Avec des OCTETS (voir aide(octets)) : ecrire.fichier(chemin, o) ecrit les octets TELS QUELS, sans format MLG, l'un apres l'autre si tu en donnes plusieurs : ecrire.fichier(|/storage/emulated/0/Download/test.bin|, b|\\x89PNG|, b|\\x0D\\x0A|).",
+      "Sans extension dans le nom, .bin est ajoute pour des octets (et non .mld, reserve aux donnees MLG) : ecrire.fichier(|/sdcard/donnees|, o) ecrit donnees.bin ; image.png reste image.png.",
+      "On ne melange pas texte et octets dans un meme appel : erreur claire (conver.texte.octets(...) ou conver.octets.texte(...) pour convertir). octets~VRAI est facultatif : il verifie que toutes les valeurs sont des octets.",
+      "Les options ecra~ et octets~ s'ecrivent au debut ou a la fin de l'appel : ecrire.fichier(ecra~VRAI, chemin, o) est identique a ecrire.fichier(chemin, o, ecra~VRAI)."
     ], exemple: "ecrire.fichier(|sauvegarde_banque|, moi, ecra~VRAI)\nsi(fichier.existe(|/storage/emulated/0/Download/banque.mld|)) { affi(|deja present|) }\nsinon { ecrire.fichier(|/storage/emulated/0/Download/banque.mld|, moi) }" },
   { noms: ["fichier.existe"], categorie: "Sauvegarde", syntaxe: "fichier.existe(chemin)", description: [
       "Renvoie VRAI si un FICHIER existe vraiment a ce CHEMIN COMPLET (avec '/'), FAUX sinon (FAUX aussi si le chemin est un dossier).",
@@ -7838,11 +8078,14 @@ let aideCommandes = [
       "Renvoie VRAI si un DOSSIER existe vraiment a ce CHEMIN COMPLET (avec '/'), FAUX sinon (FAUX aussi si le chemin est un fichier).",
       "Disponible uniquement dans l'app installee (pas en previsualisation navigateur)."
     ], exemple: "si(non dossier.existe(|/storage/emulated/0/Download/Mes_scripts|)){ creer.dossier(|/storage/emulated/0/Download/Mes_scripts|) }" },
-  { noms: ["lire.fichier"], categorie: "Sauvegarde", syntaxe: "lire.fichier()  ou  lire.fichier(chemin)", description: [
+  { noms: ["lire.fichier"], categorie: "Sauvegarde", syntaxe: "lire.fichier()  ou  lire.fichier(chemin)  ou  lire.fichier(chemin, octets~VRAI, debut~1, longueur~1000)", description: [
       "lire.fichier() : ouvre le navigateur de fichiers du telephone et attend que l'utilisateur choisisse un fichier sauvegarde avec ecrire.fichier(...).",
       "lire.fichier(chemin) : lit DIRECTEMENT le fichier a ce chemin, sans rien afficher a l'ecran.",
       "Le chemin direct ne fonctionne que dans l'app installee (pas en previsualisation navigateur).",
-      "Renvoie la valeur sauvegardee dans ce fichier."
+      "Renvoie la valeur sauvegardee dans ce fichier.",
+      "lire.fichier(chemin, octets~VRAI) lit le fichier TEL QUEL et renvoie des OCTETS (voir aide(octets)), sans le decoder : image, son, archive, fichier texte... Sans chemin, lire.fichier(octets~VRAI) ouvre le navigateur de fichiers.",
+      "Par morceaux (gros fichiers) : debut~ (a partir de 1, comme lon et x[i]) et longueur~ : lire.fichier(chemin, octets~VRAI, debut~1, longueur~1000) lit 1000 octets. Un debut~ apres la fin du fichier donne des octets vides, une longueur~ trop grande s'arrete a la fin du fichier, sans erreur : avance debut~ a chaque tour jusqu'a recevoir des octets vides. Un seul appel lit au plus 16 Mo.",
+      "Les options (octets~, debut~, longueur~) s'ecrivent au debut ou a la fin de l'appel : lire.fichier(octets~VRAI, chemin) est identique a lire.fichier(chemin, octets~VRAI). debut~ et longueur~ exigent octets~VRAI."
     ], exemple: "c ~ lire.fichier()\nc ~ lire.fichier(|/storage/emulated/0/Download/banque.mld|)" },
   { noms: ["ajout.cle"], categorie: "Sauvegarde", syntaxe: "ajout.cle(cle, valeur, ...)", description: [
       "Ajoute une ou plusieurs valeurs a une cle DEJA SAUVEGARDEE avec ecrire.cle(...), sans rien ecraser.",
@@ -7851,12 +8094,14 @@ let aideCommandes = [
       "Si la cle contient deja une liste(), les nouvelles valeurs s'y ajoutent simplement.",
       "Sinon (nombre, texte, booleen, matrice, instance), l'ancienne valeur devient le premier element d'une nouvelle liste()."
     ], exemple: "ecrire.cle(|notes|, c(12,15))\najout.cle(|notes|, 9, 18)   ** notes reste un vecteur : 12 15 9 18 **\necrire.cle(|score|, 12)\najout.cle(|score|, 15, 9)   ** score devient une liste() : 12, 15, 9 **" },
-  { noms: ["ajout.fichier"], categorie: "Sauvegarde", syntaxe: "ajout.fichier(nom, valeur, ...)  ou  ajout.fichier(chemin, valeur, ...)", description: [
+  { noms: ["ajout.fichier"], categorie: "Sauvegarde", syntaxe: "ajout.fichier(nom, valeur, ...)  ou  ajout.fichier(chemin, valeur, ...)  ou  ajout.fichier(chemin, o)  (octets)", description: [
       "Ajoute une ou plusieurs valeurs a un fichier DEJA SAUVEGARDE avec ecrire.fichier(...), sans l'ecraser.",
       "ajout.fichier(nom, ...) : ouvre le navigateur de fichiers integre pour choisir le fichier existant a completer.",
       "ajout.fichier(chemin, ...) : si nom contient un '/', le fichier doit deja exister exactement a cet emplacement.",
       "Meme logique de fusion que ajout.cle(cle, ...) ci-dessus.",
-      "Disponible uniquement dans l'app installee (pas de repli en previsualisation navigateur, contrairement a ecrire.fichier())."
+      "Disponible uniquement dans l'app installee (pas de repli en previsualisation navigateur, contrairement a ecrire.fichier()).",
+      "Avec des OCTETS : ajout.fichier(chemin, o) ajoute les octets TELS QUELS a la FIN du fichier (qui doit deja exister : cree-le avec ecrire.fichier(chemin, ...)). Il n'y a pas de fusion en liste : un equivalent de ajout.Tfichier n'est donc pas necessaire pour les octets.",
+      "Sans '/' le navigateur de fichiers s'ouvre. Texte (ou autre valeur) et octets ne se melangent pas dans un meme appel. octets~ (facultatif) s'ecrit au debut ou a la fin."
     ], exemple: "ajout.fichier(|/storage/emulated/0/Download/scores.mld|, 15, 9)" },
   { noms: ["ajout.Tfichier"], categorie: "Sauvegarde", syntaxe: "ajout.Tfichier(nom, valeur, ...)  ou  ajout.Tfichier(chemin, valeur, ...)", description: [
       "Variante de ajout.fichier(...) reservee aux fichiers dont le contenu sauvegarde est du TEXTE (cree avec ecrire.fichier(chemin, |...|)).",
@@ -7865,6 +8110,14 @@ let aideCommandes = [
       "Erreur si le fichier n'existe pas encore, ou si son contenu sauvegarde n'est pas du texte (utiliser ajout.fichier() dans ce cas).",
       "Meme regle nom/chemin que ajout.fichier(...) : sans '/' ouvre le navigateur integre, avec '/' chemin direct."
     ], exemple: "ecrire.fichier(|/sdcard/historique.mld|, ||)\najout.Tfichier(|/sdcard/historique.mld|, texte(|# Depot: |, 500, saulig))" },
+  { noms: ["octets"], categorie: "Sauvegarde", syntaxe: "b|...|  /  o[i]  /  o[i] ~ valeur  /  lon(o)  /  o.extrait(debut, longueur)  /  o1 + o2", description: [
+      "Des OCTETS sont une suite de nombres de 0 a 255 : le contenu brut d'un fichier (image, son, archive...). C'est un type a part, plus leger qu'une liste de nombres ; natu(o) donne |octets|.",
+      "b|...| ecrit des octets directement, comme |...| ecrit un texte. \\xHH donne UN octet en hexadecimal : b|\\x89PNG| donne 137, 80, 78, 71. Les caracteres normaux comptent pour leur code, en UTF-8 : b|é| donne 2 octets. Les echappements \\| \\\\ \\n \\t \\r marchent comme dans un texte.",
+      "Comme une liste : o[1] est le premier octet (positions a partir de 1), o[-1] le dernier, o[2:3] plusieurs ; o[1] ~ 255 modifie un octet (erreur si la valeur n'est pas un entier de 0 a 255, ou si la position depasse la taille : des octets ne s'agrandissent pas par indice, utilise +) ; lon(o) donne la taille ; o.extrait(debut, longueur) decoupe et rend des octets ; o1 + o2 colle deux suites d'octets ; == et != comparent ; pou(x dan o) parcourt les octets ; est.vide(o) ; si(o) est faux quand o est vide.",
+      "Les octets ne se melangent pas avec du texte : o + |a| donne une erreur claire. Pour changer de format : conver.texte.octets, conver.octets.texte, conver.liste.octets, conver.octets.hexa, conver.nombr.octets... (voir aide(conver.octets.hexa)).",
+      "affi(o) et texte(o) montrent les octets en ecriture b|...| : les lettres lisibles telles quelles, le reste en \\xHH (au-dela de 100 octets : ... (N octets) ; lon(o) donne toujours la taille complete). Ca ne decode pas : pour obtenir le texte cache dans des octets, conver.octets.texte(o).",
+      "Fichiers : lire.fichier(chemin, octets~VRAI) lit un fichier tel quel (par morceaux avec debut~ et longueur~), ecrire.fichier(chemin, o) et ajout.fichier(chemin, o) ecrivent les octets tels quels, sans format MLG (voir aide(lire.fichier), aide(ecrire.fichier))."
+    ], exemple: "o ~ b|\\x89PNG\\r\\n|\naffi(o)            ->   b|\\x89PNG\\r\\n|\naffi(lon(o))       ->   6\naffi(o[1])         ->   137\no[1] ~ 0\naffi(o.extrait(2, 3))   ->   b|PNG|\naffi(o + b|!|)\nsi(o.extrait(2, 3) == b|PNG|){ affi(|signature PNG|) }\npou(x dan b|AB|){ affi(x) }   ->   65 puis 66" },
   { noms: ["voir.cle"], categorie: "Sauvegarde", syntaxe: "voir.cle()", description: [
       "Renvoie un vecteur avec les NOMS de toutes les cles actuellement sauvegardees avec ecrire.cle(...) (pas leur contenu).",
       "Permet de savoir ce qui existe sans devoir tout effacer via 'Effacer donnees utilisateur' de l'app (qui vide TOUTES les cles a la fois).",
@@ -7884,7 +8137,8 @@ let aideCommandes = [
       "supri.dossier(chemin) supprime le dossier a ce chemin complet (avec des '/'), seulement s'il est VIDE : sinon erreur claire. Renvoie VRAI s'il a ete supprime, FAUX s'il n'existait pas (pas d'erreur).",
       "tout~VRAI supprime le dossier ET tout ce qu'il contient (fichiers et sous-dossiers), SANS RETOUR POSSIBLE. tout~FAUX par defaut.",
       "Chemins toujours refuses, meme avec tout~VRAI : la racine du stockage, ses dossiers standards (Documents, Download, DCIM, Pictures, Music, Movies...), le dossier Android et tout ce qui est hors du stockage partage du telephone. Un chemin avec '..' est refuse. Un fichier est refuse aussi (voir supri.fichier).",
-      "Ne fonctionne que dans l'app installee (pas en previsualisation navigateur)."
+      "Ne fonctionne que dans l'app installee (pas en previsualisation navigateur).",
+      "tout~ peut aussi s'ecrire AVANT le chemin : supri.dossier(tout~VRAI, chemin) est identique a supri.dossier(chemin, tout~VRAI)."
     ], exemple: "supri.dossier(|/storage/emulated/0/Documents/Mes_scripts|)\nsupri.dossier(|/storage/emulated/0/Documents/Mes_scripts|, tout~VRAI)   ->   VRAI (tout est supprime)" },
   { noms: ["supri.fichier"], categorie: "Sauvegarde", syntaxe: "supri.fichier(nom)  ou  supri.fichier(chemin)", description: [
       "Supprime UN fichier precis, sans toucher aux autres.",
@@ -8312,7 +8566,8 @@ let aideCommandes = [
   { noms: ["extrait"], categorie: "Texte", syntaxe: "x.extrait(debut, longueur)  /  x.extrait(debut)", description: [
       "x.extrait(debut, longueur) donne le morceau de x qui commence a la position debut (a partir de 1) et fait longueur elements : |abcdef|.extrait(2, 3) donne bcd. x peut etre un texte (le resultat est un texte), une liste ou un vecteur (le resultat est une liste ou un vecteur).",
       "La longueur est facultative : sans elle, on va jusqu'a la fin. Une longueur trop grande s'arrete a la fin sans erreur : |abcdef|.extrait(5, 10) donne ef. Une longueur 0 donne un morceau vide ; une longueur negative donne une erreur.",
-      "Un debut negatif compte depuis la fin : |abcdef|.extrait(-3, 2) donne de, et |abcdef|.extrait(-1) donne f. Un debut apres la fin donne un morceau vide ; un debut 0 donne une erreur. Les positions sont comptees comme lon(x), x[i] et cherch : un retour a la ligne compte pour un caractere."
+      "Un debut negatif compte depuis la fin : |abcdef|.extrait(-3, 2) donne de, et |abcdef|.extrait(-1) donne f. Un debut apres la fin donne un morceau vide ; un debut 0 donne une erreur. Les positions sont comptees comme lon(x), x[i] et cherch : un retour a la ligne compte pour un caractere.",
+      "Sur des OCTETS (voir aide(octets)), x.extrait(debut, longueur) rend aussi des octets : b|ABCD|.extrait(2, 2) donne b|BC|."
     ], exemple: "|abcdef|.extrait(2, 3)      ->   bcd\n|abcdef|.extrait(5, 10)     ->   ef\n|abcdef|.extrait(3)         ->   cdef\n|abcdef|.extrait(-3, 2)     ->   de\n|abcdef|.extrait(3, 0)      ->   (vide)\nliste(1, 2, 3, 4).extrait(2, 2)   ->   liste(2, 3)" },
   { noms: ["correspond", "trouve", "trouve.tout"], categorie: "Texte", syntaxe: "x.correspond(motif)  /  x.trouve(motif)  /  x.trouve(motif, groupe)  /  x.trouve.tout(motif)  /  x.trouve.tout(motif, groupe)", description: [
       "Un MOTIF (expression reguliere) decrit une forme de texte. m|\\d+| (ou /\\d+/ comme en JS) est un motif qui trouve un nombre ; m|abc|i (ou /abc/i) ignore les majuscules ; fam|...| fabrique un motif avec des {variables}. Options apres la barre fermante : i (ignorer les majuscules), m (^ et $ ligne par ligne), s (le point accepte aussi le saut de ligne), u (Unicode : \\p{L} trouve les lettres accentuees, un emoji compte pour un seul caractere ; si un motif insere dans fam|...| a besoin de u, ecris u apres fam|...|).",
@@ -8370,7 +8625,8 @@ let aideCommandes = [
   { noms: ["lon"], categorie: "Infos sur un vecteur/une matrice", syntaxe: "lon(v)  /  v.lon()", description: [
       "Renvoie le nombre d'elements d'un vecteur, d'une matrice, d'une liste ou d'un dictionnai, ou le nombre de caracteres d'un texte.",
       "Renvoie 1 pour une simple valeur (un nombre).",
-      "lon(v) et v.lon() sont equivalents ; la forme methode s'enchaine : texte.suprespac().lon()."
+      "lon(v) et v.lon() sont equivalents ; la forme methode s'enchaine : texte.suprespac().lon().",
+      "Pour des octets (voir aide(octets)), renvoie leur nombre."
     ], exemple: "lon(c(1,2,3))   ->   3\n|bonjour|.lon()   ->   7\n|  salut  |.suprespac().lon()   ->   5" },
   { noms: ["dim"], categorie: "Infos sur un vecteur/une matrice", syntaxe: "dim(m)", description: [
       "Renvoie les dimensions d'une matrice.",
@@ -8588,6 +8844,12 @@ let aideCommandes = [
       "Les conversions peuvent aussi etre faites dans l'autre sens : conver.seconde.heure(3600) -> 1 ; conver.seconde.ms(1) -> 1000 ; conver.Mo.Ko(1) -> 1024.",
       "La valeur doit etre un nombre positif ou nul. Le resultat peut etre fractionnaire (pas d'arrondi, meme quand ca ne tombe pas juste, ex: conver.ms.jour(...))."
     ], exemple: "conver.minute.seconde(5)  ->  300\nconver.heure.seconde(2)    ->  7200\nconver.ms.seconde(500)     ->  0.5\nconver.seconde.heure(3600)  ->  1\nconver.jour.heure(1)       ->  24\nconver.octet.Ko(1024)      ->  1\nconver.Mo.Ko(1)            ->  1024" },
+  { noms: ["conver.octets.octets", "conver.octets.hexa", "conver.octets.base64", "conver.octets.binaire", "conver.octets.texte", "conver.octets.liste", "conver.octets.vecteu", "conver.octets.nombr", "conver.hexa.octets", "conver.hexa.hexa", "conver.hexa.base64", "conver.hexa.binaire", "conver.hexa.texte", "conver.hexa.liste", "conver.hexa.vecteu", "conver.hexa.nombr", "conver.base64.octets", "conver.base64.hexa", "conver.base64.base64", "conver.base64.binaire", "conver.base64.texte", "conver.base64.liste", "conver.base64.vecteu", "conver.base64.nombr", "conver.binaire.octets", "conver.binaire.hexa", "conver.binaire.base64", "conver.binaire.binaire", "conver.binaire.texte", "conver.binaire.liste", "conver.binaire.vecteu", "conver.binaire.nombr", "conver.texte.octets", "conver.texte.hexa", "conver.texte.base64", "conver.texte.binaire", "conver.liste.octets", "conver.liste.hexa", "conver.liste.base64", "conver.liste.binaire", "conver.vecteu.octets", "conver.vecteu.hexa", "conver.vecteu.base64", "conver.vecteu.binaire", "conver.nombr.octets", "conver.nombr.hexa", "conver.nombr.base64", "conver.nombr.binaire"], categorie: "Base", syntaxe: "conver.source.cible(valeur)   avec source et cible parmi : texte, liste, vecteu, nombr, octets, hexa, base64, binaire", description: [
+      "Passe d'un format a un autre : texte (UTF-8), liste ou vecteu de nombres de 0 a 255, nombr (un nombre sur 1, 2, 4 ou 8 octets), octets (le type octets, voir aide(octets)), hexa (89504e47), base64 (iVBORw==) et binaire (les bits : 10001001). Toute conversion passe par les octets : conver.texte.hexa(|Hi|) donne 4869, conver.hexa.base64(|4869|) donne SGk=.",
+      "Les formes lues sont tolerantes : hexa et binaire acceptent des espaces (|89 50 4e 47|), base64 accepte les espaces et le = final facultatif. Les formes ecrites sont compactes : hexa en minuscules, binaire a 8 chiffres par octet. Une valeur invalide donne une erreur claire (nombre hors de 0 a 255, hexa de longueur impaire, octets qui ne forment pas un texte UTF-8...).",
+      "conver.nombr.octets(n) ecrit un entier sur 4 octets, gros boutiste par defaut (258 donne 00 00 01 02) ; conver.octets.nombr(o) relit un entier. Options : taille~1, 2, 4 ou 8 (octets ; sans taille~ a la lecture, la taille des octets donnes), signe~VRAI (nombres negatifs), reel~VRAI (nombre a virgule sur 4 ou 8 octets, 8 par defaut), petit~VRAI (petit boutiste : 258 donne 02 01). Un nombre qui ne tient pas dans la taille donne une erreur claire.",
+      "Les conversions entre texte, liste, vecteu et nombr (sans octets, hexa, base64 ni binaire) gardent leur comportement d'origine : voir aide(conver.texte.nombr). Les conver.x.x d'un meme format verifient la valeur et la renvoient (copie pour les octets, forme compacte pour hexa et binaire)."
+    ], exemple: "conver.texte.octets(|Salut|)       ->   b|Salut|\nconver.octets.texte(b|Salut|)       ->   Salut\nconver.octets.hexa(b|\\x89PNG|)      ->   89504e47\nconver.hexa.octets(|89 50 4e 47|)   ->   b|\\x89PNG|\nconver.octets.liste(b|AB|)          ->   liste(65, 66)\nconver.nombr.octets(258)            ->   b|\\x00\\x00\\x01\\x02|\nconver.nombr.octets(258, petit~V, taille~2)   ->   b|\\x02\\x01|\nconver.octets.nombr(b|\\xFE|, signe~V)         ->   -2" },
   { noms: ["conver.cara.code", "conver.code.cara"], categorie: "Base", syntaxe: "conver.cara.code(caractere)  /  conver.code.cara(code)", description: [
       "conver.cara.code(|A|) donne le code du caractere (ici 65). Il faut un texte d'un seul caractere ; un emoji compte pour un seul caractere (code Unicode).",
       "conver.code.cara(65) fait l'inverse : donne le caractere de ce code (ici A). Le code doit etre un entier de 0 a 1114111."
@@ -8603,7 +8865,7 @@ let aideCommandes = [
     ], exemple: "ligne ~ texte(|+ Depot: |, montant, | F|, saulig)\necrire.fichier(|/sdcard/historique.mld|, h + ligne)" },
 
   { noms: ["echappement", "antislash", "r|...|", "f|...|", "rf|...|", "fr|...|"], categorie: "Base", syntaxe: "|texte\\n|    r|texte brut|    f|texte {expression}|    rf|...|", description: [
-      "Dans un texte |...|, l'antislash \\ introduit une sequence : \\| une barre |, \\\\ un antislash, \\n saut de ligne, \\t tabulation, \\r retour chariot, \\s espace insecable, \\uXXXX et \\u{...} un caractere Unicode (\\u00e9 donne e accent aigu, \\u{1F600} donne un emoji).",
+      "Dans un texte |...|, l'antislash \\ introduit une sequence : \\| une barre |, \\\\ un antislash, \\n saut de ligne, \\t tabulation, \\r retour chariot, \\s espace insecable, \\uXXXX et \\u{...} un caractere Unicode (\\u00e9 donne e accent aigu, \\u{1F600} donne un emoji). \\xHH donne le caractere de ce code, de 00 a FF (\\xe9 donne e accent aigu) ; dans b|...| (octets, voir aide(octets)), \\xHH est un octet.",
       "Un antislash suivi d'un autre caractere (ex: \\b) reste tel quel, sans avertissement. Le texte se ferme a la premiere barre NON echappee : un texte ne peut donc pas finir par un seul antislash, ecris \\\\ (|C:\\\\dossier\\\\|).",
       "r|...| : texte BRUT, rien n'est interprete (\\n reste \\ puis n). Pratique pour un chemin : r|C:\\nouveau\\texte|. La barre \\| ne ferme pas le texte mais garde ses deux caracteres.",
       "f|...| : insere des valeurs. {expression} est remplace par sa valeur, affichee comme dans affi() : f|Total : {prix*qte} euros|. Toute expression est permise, y compris un appel de fonction avec des textes en arguments : f|{compte(|bob|)}|. Seul un texte |...| SEUL dans les accolades est une erreur : f|{|e|}| (les accolades servent a inserer une variable ou un resultat, pas un texte).",
@@ -8837,7 +9099,8 @@ let aideCommandes = [
       "Enregistre en image (.png ou .jpg) le graphique de la zone active, avec TOUTES ses courbes superposees, sa legende, sa grille, son titre et ses noms d'axes. C'est une photo du moment : ce que tu traces apres n'y est pas.",
       "Fond blanc par defaut (theme~|clair|) ; theme~|sombre| donne l'aspect de la console. Les courbes blanches deviennent sombres sur fond blanc pour rester visibles.",
       "largeur~ et hauteur~ : taille de la mise en page, en points de dessin (par defaut largeur 640 et hauteur 416 ; chacune entre 100 et 8000). resolution~ : nombre de pixels par point (2 par defaut, de 1 a 8). Taille de l'image finale, en pixels : largeur finale = largeur~ multipliee par resolution~, et hauteur finale = hauteur~ multipliee par resolution~. Par defaut : 640 multiplie par 2 = 1280 pixels de large, et 416 multiplie par 2 = 832 pixels de haut. Plus la mise en page est grande, plus le texte parait petit ; une resolution plus haute rend le meme dessin plus net, sans changer sa disposition. Maximum : 16 millions de pixels au total (largeur finale multipliee par hauteur finale).",
-      "Chemin complet avec / (ex: |/sdcard/Download/courbe.png|), ou juste un nom : une fenetre propose l'emplacement. Un fichier existant est refuse sauf ecra~VRAI. Sans extension, .png est ajoute. Dans l'app installee seulement (dans un navigateur, l'image est telechargee)."
+      "Chemin complet avec / (ex: |/sdcard/Download/courbe.png|), ou juste un nom : une fenetre propose l'emplacement. Un fichier existant est refuse sauf ecra~VRAI. Sans extension, .png est ajoute. Dans l'app installee seulement (dans un navigateur, l'image est telechargee).",
+      "Les options (largeur~, hauteur~, resolution~, theme~, ecra~) peuvent aussi s'ecrire AVANT le chemin : trac.enregistre(ecra~VRAI, chemin)."
     ], exemple: "x ~ seq(-3,3,0.1)\ntrac(x, x*x, legende~|x^2|, titre~|Deux courbes|)\ntrac(x, x*x*x, legende~|x^3|)\ntrac.enregistre(|/sdcard/Download/courbes.png|, largeur~800, resolution~3)" },
   { noms: ["feuille.enregistre"], categorie: "Graphique", syntaxe: "feuille.enregistre(chemin, ...)  ou  feuille.enregistre(n, chemin, ...)", description: [
       "Enregistre en UNE image toute la feuille : tous les graphiques de sa grille (trac.diviser), chacun avec ses courbes. Sans numero, la feuille active ; avec n, la feuille numero n. Une case jamais utilisee reste vide.",
@@ -9511,19 +9774,14 @@ function enregistrerFonctionsBase() {
     // erreur dans tous les cas. Renvoie VRAI si le dossier vient d'etre cree, FAUX s'il existait deja (avec ecra~VRAI).
     // Necessite l'app installee (code Android : window.MonLangage.creerDossier).
     fonctionsBase["creer.dossier"] = fonctionsExpression["creer.dossier"] = async function(args, ctxExpr) {
-        if (args.length < 1 || args.length > 2) throw new Error("creer.dossier(chemin, ecra~FAUX) attend 1 ou 2 arguments (ecra est facultatif)");
-        let chemin = await evalExpr(args[0], ctxExpr);
+        const { pos: posD, opts: optsD } = separerOptionsArgs(args, "creer.dossier", ["ecra"]);   // ecra~ au debut ou a la fin
+        if (posD.length !== 1) throw new Error("creer.dossier(chemin, ecra~FAUX) attend le chemin (et ecra~ en plus, facultatif, au debut ou a la fin)");
+        let chemin = await evalExpr(posD[0], ctxExpr);
         if (typeof chemin !== 'string') throw new ErreurTypeInvalide("creer.dossier(chemin) : chemin doit etre du texte");
         if (chemin.indexOf("/") === -1) {
             throw new Error("creer.dossier(chemin) : il faut un chemin complet (avec '/'), comme pour ecrire.fichier(chemin, valeur)");
         }
-        let ecra = false;
-        if (args.length === 2) {
-            let mParam = args[1].trim().match(/^(\w+)\s*~\s*(.*)$/);
-            if (!mParam) throw new Error("creer.dossier(chemin, ecra~VRAI) : le 2e argument doit etre ecra~VRAI ou ecra~FAUX");
-            if (mParam[1] !== "ecra") throw new Error("Parametre inconnu pour creer.dossier(...) : " + mParam[1]);
-            ecra = estVrai(await evalExpr(mParam[2], ctxExpr));
-        }
+        let ecra = optsD.ecra !== undefined ? estVrai(await evalExpr(optsD.ecra, ctxExpr)) : false;
         if (!(window.MonLangage && typeof window.MonLangage.creerDossier === "function")) {
             throw new ErreurIndisponibleHorsApp("creer.dossier(...) : disponible uniquement dans l'app installee (rebuild requis)");
         }
@@ -9560,24 +9818,101 @@ function enregistrerFonctionsBase() {
     // web (pas d'app native), il n'existe aucun moyen de verifier un fichier existant depuis
     // la page, donc ecra n'a pas d'effet dans ce cas precis (le navigateur gere lui-meme les
     // doublons de nom au telechargement).
+    // ---- Fichiers d'OCTETS (binaires, tels quels) : ecriture, ajout a la fin, lecture (en entier ou par morceaux) ----
+    // Le pont natif echange les octets en base64 : ecrireFichierOctets(chemin, b64), ajouterFichierOctets(chemin, b64),
+    // lireFichierOctets(chemin, debut0, longueur) (debut0 = decalage a partir de 0 ; longueur -1 = jusqu'a la fin).
+    async function ecrireOctetsFichier(nomCmd, nom, u8, ecra) {
+        const mExt = nom.match(/\.[a-zA-Z0-9]+$/);
+        const dejaExiste = (chemin) => !ecra && typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(chemin);
+        const natif = window.MonLangage && typeof window.MonLangage.ecrireFichierOctets === "function";
+        if (nom.indexOf("/") !== -1) {
+            if (!natif) {
+                throw new ErreurIndisponibleHorsApp(nomCmd + "(chemin, octets) : l'ecriture directe par chemin n'est possible que dans l'app installee (utilise " + nomCmd + "(nom, octets) sans '/' en previsualisation navigateur)");
+            }
+            if (!verifierPermissionStockage()) {
+                throw new ErreurPermissionRefusee(nomCmd + "(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
+            }
+            const cheminDirect = mExt ? nom : nom + ".bin";
+            if (dejaExiste(cheminDirect)) {
+                throw new ErreurFichierDejaExistant(nomCmd + "(...) : le fichier '" + cheminDirect + "' existe deja (utilise ecra~VRAI pour l'ecraser, ou fichier.existe(...) pour verifier avant)");
+            }
+            if (!window.MonLangage.ecrireFichierOctets(cheminDirect, octetsVersBase64(u8))) throw new Error(nomCmd + "(...) : echec de l'ecriture sur '" + cheminDirect + "'");
+            return true;
+        }
+        if (natif) {
+            const cheminComplet = await demanderEmplacementEcritureFichier(mExt ? nom.slice(0, -mExt[0].length) : nom, mExt ? mExt[0] : ".bin");
+            if (dejaExiste(cheminComplet)) {
+                throw new ErreurFichierDejaExistant(nomCmd + "(...) : le fichier '" + cheminComplet + "' existe deja (utilise ecra~VRAI pour l'ecraser, ou fichier.existe(...) pour verifier avant)");
+            }
+            if (!window.MonLangage.ecrireFichierOctets(cheminComplet, octetsVersBase64(u8))) throw new Error(nomCmd + "(...) : echec de l'ecriture sur le telephone");
+            return true;
+        }
+        // Repli navigateur (previsualisation hors app) : telechargement classique ; ecra est ignore.
+        const blob = new Blob([u8], { type: "application/octet-stream" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = mExt ? nom : nom + ".bin";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        return true;
+    }
+    async function ajouterOctetsFichier(nomCmd, nom, u8) {
+        if (!(window.MonLangage && typeof window.MonLangage.ajouterFichierOctets === "function")) {
+            throw new ErreurIndisponibleHorsApp(nomCmd + "(...) : l'ajout d'octets est disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        if (!verifierPermissionStockage()) {
+            throw new ErreurPermissionRefusee(nomCmd + "(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
+        }
+        let cheminComplet;
+        if (nom.indexOf("/") !== -1) {
+            cheminComplet = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".bin";
+            if (!(typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminComplet))) {
+                throw new ErreurFichierIntrouvable(nomCmd + "(...) : le fichier '" + cheminComplet + "' n'existe pas (utilise ecrire.fichier(...) pour le creer)");
+            }
+        } else {
+            cheminComplet = await demanderEmplacementLectureFichier();
+        }
+        if (!window.MonLangage.ajouterFichierOctets(cheminComplet, octetsVersBase64(u8))) throw new Error(nomCmd + "(...) : echec de l'ajout sur '" + cheminComplet + "'");
+        return true;
+    }
+    async function lireOctetsFichier(nomCmd, chemin, debut, longueur) {
+        if (!(window.MonLangage && typeof window.MonLangage.lireFichierOctets === "function")) {
+            throw new ErreurIndisponibleHorsApp(nomCmd + "(..., octets~VRAI) : la lecture d'octets est disponible uniquement dans l'app installee (rebuild requis)");
+        }
+        if (!verifierPermissionStockage()) {
+            throw new ErreurPermissionRefusee(nomCmd + "(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
+        }
+        if (chemin === undefined) chemin = await demanderEmplacementLectureFichier();
+        const b64 = window.MonLangage.lireFichierOctets(chemin, debut - 1, longueur === undefined ? -1 : longueur);
+        if (b64 === null || b64 === undefined) throw new Error(nomCmd + "(...) : impossible de lire '" + chemin + "' (introuvable, ou plus de 16 Mo d'un coup : lis par morceaux avec debut~ et longueur~)");
+        return creerOctets(base64VersOctets(String(b64), nomCmd));
+    }
+
     fonctionsBase["ecrire.fichier"] = fonctionsExpression["ecrire.fichier"] = async function(args, ctxExpr) {
+        // Options nommees (ecra~, octets~) : au debut ou a la fin de l'appel.
+        const { pos: posE, opts: optsE } = separerOptionsArgs(args, "ecrire.fichier", ["ecra", "octets"]);
+        args = posE;
         if (args.length < 2) throw new Error("ecrire.fichier(nom, valeur, ...) attend au moins 2 arguments");
         let nom = await evalExpr(args[0], ctxExpr);
         if (typeof nom !== 'string') throw new ErreurTypeInvalide("ecrire.fichier(nom, valeur, ...) : nom doit etre du texte");
 
-        let ecra = false, valeursBrutes = [];
-        for (let i = 1; i < args.length; i++) {
-            let argStr = args[i].trim();
-            let mParam = argStr.match(/^(\w+)\s*~\s*(.*)$/);
-            if (mParam) {
-                let paramNom = mParam[1];
-                if (paramNom !== "ecra") throw new Error("Parametre inconnu pour ecrire.fichier(...) : " + paramNom);
-                ecra = estVrai(await evalExpr(mParam[2], ctxExpr));
-            } else {
-                valeursBrutes.push(await evaluerElementBrut(argStr, ctxExpr));
+        let ecra = optsE.ecra !== undefined ? estVrai(await evalExpr(optsE.ecra, ctxExpr)) : false, valeursBrutes = [];
+        for (let i = 1; i < args.length; i++) valeursBrutes.push(await evaluerElementBrut(args[i].trim(), ctxExpr));
+        if (valeursBrutes.length === 0) throw new Error("ecrire.fichier(nom, valeur, ...) : au moins une valeur est attendue");
+        {   // OCTETS : ecrits tels quels, l'un apres l'autre (jamais melanges avec du texte)
+            const nbOctets = valeursBrutes.filter(estOctets).length;
+            const veutOctets = optsE.octets !== undefined ? estVrai(await evalExpr(optsE.octets, ctxExpr)) : null;
+            if (veutOctets === false && nbOctets > 0) throw new ErreurTypeInvalide("ecrire.fichier(...) : octets~FAUX demande du texte, mais la valeur est faite d'octets");
+            if (nbOctets > 0 || veutOctets === true) {
+                if (nbOctets !== valeursBrutes.length) {
+                    throw new ErreurTypeInvalide("ecrire.fichier(...) : on ne mele pas du texte (ou autre chose) et des octets dans un meme appel (recu : " + valeursBrutes.map(nomNature).join(", ") + "). Pour convertir : conver.texte.octets(...) ou conver.octets.texte(...)");
+                }
+                return await ecrireOctetsFichier("ecrire.fichier", nom, concatOctetsBruts(valeursBrutes.map(v => v.d)), ecra);
             }
         }
-        if (valeursBrutes.length === 0) throw new Error("ecrire.fichier(nom, valeur, ...) : au moins une valeur est attendue");
         let valeur = valeursBrutes.length === 1 ? valeursBrutes[0] : { __type: "liste", elements: valeursBrutes };
 
         let texte;
@@ -9687,6 +10022,8 @@ function enregistrerFonctionsBase() {
     // Necessite l'app native (lecture + reecriture reelles sur le stockage) : pas de repli
     // navigateur web, contrairement a ecrire.fichier().
     fonctionsBase["ajout.fichier"] = fonctionsExpression["ajout.fichier"] = async function(args, ctxExpr) {
+        const { pos: posA, opts: optsA } = separerOptionsArgs(args, "ajout.fichier", ["octets"]);
+        args = posA;
         if (args.length < 2) throw new Error("ajout.fichier(nom, valeur, ...) attend au moins 2 arguments");
         let nom = await evalExpr(args[0], ctxExpr);
         if (typeof nom !== 'string') throw new ErreurTypeInvalide("ajout.fichier(nom, valeur, ...) : nom doit etre du texte");
@@ -9698,6 +10035,17 @@ function enregistrerFonctionsBase() {
         }
         let nouvelles = [];
         for (let i = 1; i < args.length; i++) nouvelles.push(await evaluerElementBrut(args[i], ctxExpr));
+        {   // OCTETS : ajoutes tels quels a la FIN du fichier (pas de fusion en liste, donc pas besoin d'un equivalent de ajout.Tfichier)
+            const nbOctets = nouvelles.filter(estOctets).length;
+            const veutOctets = optsA.octets !== undefined ? estVrai(await evalExpr(optsA.octets, ctxExpr)) : null;
+            if (veutOctets === false && nbOctets > 0) throw new ErreurTypeInvalide("ajout.fichier(...) : octets~FAUX demande une sauvegarde MLG, mais la valeur est faite d'octets");
+            if (nbOctets > 0 || veutOctets === true) {
+                if (nbOctets !== nouvelles.length) {
+                    throw new ErreurTypeInvalide("ajout.fichier(...) : on ne mele pas du texte (ou autre chose) et des octets dans un meme appel (recu : " + nouvelles.map(nomNature).join(", ") + "). Pour convertir : conver.texte.octets(...) ou conver.octets.texte(...)");
+                }
+                return await ajouterOctetsFichier("ajout.fichier", nom, concatOctetsBruts(nouvelles.map(v => v.d)));
+            }
+        }
 
         let cheminComplet;
         if (nom.indexOf("/") !== -1) {
@@ -9744,6 +10092,7 @@ function enregistrerFonctionsBase() {
 
         let nouvelles = [];
         for (let i = 1; i < args.length; i++) nouvelles.push(await evaluerElementBrut(args[i], ctxExpr));
+        if (nouvelles.some(estOctets)) throw new ErreurTypeInvalide("ajout.Tfichier(...) : cette commande ajoute du TEXTE ; pour des octets, utilise ajout.fichier(chemin, octets)");
 
         let cheminComplet;
         if (nom.indexOf("/") !== -1) {
@@ -9870,8 +10219,9 @@ function enregistrerFonctionsBase() {
     // meme avec tout~VRAI (racine du stockage, Documents, Download, DCIM..., tout ce qui est hors du stockage partage).
     // Renvoie VRAI si le dossier a ete supprime, FAUX s'il n'existait pas (pas d'erreur). Necessite l'app installee.
     fonctionsBase["supri.dossier"] = fonctionsExpression["supri.dossier"] = async function(args, ctxExpr) {
-        if (args.length < 1 || args.length > 2) throw new Error("supri.dossier(chemin, tout~FAUX) attend 1 ou 2 arguments (tout est facultatif)");
-        let chemin = await evalExpr(args[0], ctxExpr);
+        const { pos: posS, opts: optsS } = separerOptionsArgs(args, "supri.dossier", ["tout"]);   // tout~ au debut ou a la fin
+        if (posS.length !== 1) throw new Error("supri.dossier(chemin, tout~FAUX) attend le chemin (et tout~ en plus, facultatif, au debut ou a la fin)");
+        let chemin = await evalExpr(posS[0], ctxExpr);
         if (typeof chemin !== 'string') throw new ErreurTypeInvalide("supri.dossier(chemin) : chemin doit etre du texte");
         if (chemin.indexOf("/") === -1) {
             throw new Error("supri.dossier(chemin) : il faut un chemin complet (avec '/'), comme pour creer.dossier(chemin)");
@@ -9879,13 +10229,7 @@ function enregistrerFonctionsBase() {
         let segments = chemin.split("/").filter(x => x !== "");
         if (segments.length === 0) throw new Error("supri.dossier(chemin) : ce chemin designe la racine, il est protege");
         if (segments.indexOf("..") !== -1) throw new Error("supri.dossier(chemin) : le chemin ne doit pas contenir '..' (ecris le chemin complet du dossier)");
-        let tout = false;
-        if (args.length === 2) {
-            let mParam = args[1].trim().match(/^(\w+)\s*~\s*(.*)$/);
-            if (!mParam) throw new Error("supri.dossier(chemin, tout~VRAI) : le 2e argument doit etre tout~VRAI ou tout~FAUX");
-            if (mParam[1] !== "tout") throw new Error("Parametre inconnu pour supri.dossier(...) : " + mParam[1]);
-            tout = estVrai(await evalExpr(mParam[2], ctxExpr));
-        }
+        let tout = optsS.tout !== undefined ? estVrai(await evalExpr(optsS.tout, ctxExpr)) : false;
         if (!(window.MonLangage && typeof window.MonLangage.supprimerDossier === "function")) {
             throw new ErreurIndisponibleHorsApp("supri.dossier(...) : disponible uniquement dans l'app installee (rebuild requis)");
         }
@@ -9914,6 +10258,30 @@ function enregistrerFonctionsBase() {
     // uniquement possible dans l'app native (le chemin direct necessite window.MonLangage ;
     // un navigateur web ne peut pas lire un fichier arbitraire sans selecteur, par securite).
     fonctionsBase["lire.fichier"] = fonctionsExpression["lire.fichier"] = async function(args, ctxExpr) {
+        // Options nommees (octets~, debut~, longueur~) : au debut ou a la fin de l'appel.
+        const { pos: posL, opts: optsL } = separerOptionsArgs(args, "lire.fichier", ["octets", "debut", "longueur"]);
+        args = posL;
+        const veutOctetsL = optsL.octets !== undefined ? estVrai(await evalExpr(optsL.octets, ctxExpr)) : false;
+        if (!veutOctetsL && (optsL.debut !== undefined || optsL.longueur !== undefined)) {
+            throw new Error("lire.fichier(...) : debut~ et longueur~ ne servent qu'a lire des octets (ajoute octets~VRAI)");
+        }
+        if (veutOctetsL) {   // lecture TELLE QUELLE, en octets : en entier, ou par morceaux avec debut~ (a partir de 1) et longueur~
+            let cheminO;
+            if (args.length >= 1) {
+                cheminO = await evalExpr(args[0], ctxExpr);
+                if (typeof cheminO !== 'string') throw new ErreurTypeInvalide("lire.fichier(chemin) : chemin doit etre du texte");
+            }
+            let debutO = 1, longueurO;
+            if (optsL.debut !== undefined) {
+                debutO = await evalExpr(optsL.debut, ctxExpr);
+                if (!(typeof debutO === 'number' && Number.isInteger(debutO) && debutO >= 1)) throw new ErreurTypeInvalide("lire.fichier(...) : debut~ attend un entier a partir de 1 (recu : " + formatValeur(debutO) + ")");
+            }
+            if (optsL.longueur !== undefined) {
+                longueurO = await evalExpr(optsL.longueur, ctxExpr);
+                if (!(typeof longueurO === 'number' && Number.isInteger(longueurO) && longueurO >= 0)) throw new ErreurTypeInvalide("lire.fichier(...) : longueur~ attend un entier positif ou nul (recu : " + formatValeur(longueurO) + ")");
+            }
+            return await lireOctetsFichier("lire.fichier", cheminO, debutO, longueurO);
+        }
         if (args.length >= 1) {
             let chemin = await evalExpr(args[0], ctxExpr);
             if (typeof chemin !== 'string') throw new ErreurTypeInvalide("lire.fichier(chemin) : chemin doit etre du texte");
@@ -11021,6 +11389,61 @@ function enregistrerFonctionsBase() {
         return { __type: "liste", elements: lignes };
     });
 
+    // -- Formats d'OCTETS : conver.<source>.<cible>(valeur) avec source et cible parmi texte, liste, vecteu, nombr, octets,
+    // hexa, base64, binaire. Toute conversion passe par les octets (source -> octets -> cible). Les paires entre texte, liste,
+    // vecteu et nombr existaient deja : elles gardent leur comportement d'origine. Pour nombr : taille~ (1, 2, 4 ou 8 octets),
+    // signe~V (negatifs), reel~V (nombre a virgule, 4 ou 8 octets), petit~V (petit boutiste ; gros boutiste par defaut).
+    (function() {
+        const nouveaux = ["octets", "hexa", "base64", "binaire"], anciens = ["texte", "liste", "vecteu", "nombr"];
+        const toutes = nouveaux.concat(anciens);
+        const exiger = (ok, nom, quoi, v) => { if (!ok) throw new ErreurTypeInvalide(nom + "(...) attend " + quoi + " (recu : " + nomNature(v) + ")"); };
+        const versOctets = {
+            octets: (v, nom) => { exiger(estOctets(v), nom, "des octets", v); return v.d; },
+            texte: (v, nom) => { exiger(typeof v === 'string', nom, "un texte", v); return new TextEncoder().encode(v); },
+            liste: (v, nom) => { exiger(estListe(v), nom, "une liste de nombres", v); return octetsDepuisNombres(v.elements, nom + "(...)"); },
+            vecteu: (v, nom) => { exiger(estVecteur(v), nom, "un vecteur de nombres", v); return octetsDepuisNombres(v, nom + "(...)"); },
+            nombr: (v, nom, o) => nombreVersOctets(v, o, nom),
+            hexa: (v, nom) => { exiger(typeof v === 'string', nom, "un texte hexadecimal", v); return hexaVersOctets(v, nom); },
+            base64: (v, nom) => { exiger(typeof v === 'string', nom, "un texte base64", v); return base64VersOctets(v, nom); },
+            binaire: (v, nom) => { exiger(typeof v === 'string', nom, "un texte de 0 et de 1", v); return binaireVersOctets(v, nom); }
+        };
+        const depuisOctets = {
+            octets: (u8) => creerOctets(new Uint8Array(u8)),
+            texte: (u8, nom) => {
+                try { return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(u8); }
+                catch (e) { throw new ErreurTypeInvalide(nom + "(...) : ces octets ne forment pas un texte UTF-8 valide (conver.octets.hexa(...) permet de les voir)"); }
+            },
+            liste: (u8) => ({ __type: "liste", elements: Array.from(u8) }),
+            vecteu: (u8) => Array.from(u8),
+            nombr: (u8, nom, o) => octetsVersNombre(u8, o, nom),
+            hexa: (u8) => octetsVersHexa(u8),
+            base64: (u8) => octetsVersBase64(u8),
+            binaire: (u8) => octetsVersBinaire(u8)
+        };
+        for (const source of toutes) {
+            for (const cible of toutes) {
+                if (anciens.indexOf(source) !== -1 && anciens.indexOf(cible) !== -1) continue;   // deja enregistrees plus haut
+                const nom = "conver." + source + "." + cible;
+                const permises = (source === "nombr" || cible === "nombr") ? ["taille", "signe", "reel", "petit"] : [];
+                fonctionsBase[nom] = fonctionsExpression[nom] = async function(args, ctxExpr) {
+                    const { pos, opts } = separerOptionsArgs(args, nom, permises);
+                    if (pos.length !== 1) throw new Error(nom + "(...) attend exactement 1 valeur" + (permises.length ? " (et, au choix : taille~, signe~, reel~, petit~)" : ""));
+                    const o = { taille: undefined, signe: false, reel: false, petit: false };
+                    for (const k of permises) {
+                        if (opts[k] === undefined) continue;
+                        const val = await evalExpr(opts[k], ctxExpr);
+                        if (k === "taille") {
+                            if (typeof val !== 'number' || !Number.isInteger(val)) throw new ErreurTypeInvalide(nom + "(...) : taille~ attend un entier (1, 2, 4 ou 8), recu : " + formatValeur(val));
+                            o.taille = val;
+                        } else o[k] = estVrai(val);
+                    }
+                    const v = await evalExpr(pos[0], ctxExpr);
+                    return depuisOctets[cible](versOctets[source](v, nom, o), nom, o);
+                };
+            }
+        }
+    })();
+
     // est.nombr(var) / est.text(var) / est.vecteu(var) / est.matric(var) : verification de type.
     fonctionsBase["est.nombr"] = fonctionsExpression["est.nombr"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("est.nombr(...) attend exactement 1 argument");
@@ -11073,6 +11496,7 @@ function enregistrerFonctionsBase() {
         if (estListe(v)) return v.elements.length === 0;
         if (estDictionnai(v)) return v.entrees.size === 0;
         if (estMatrice(v)) return v.donnees.length === 0;
+        if (estOctets(v)) return v.d.length === 0;
         return false;
     };
     fonctionsBase["est.liste"] = fonctionsExpression["est.liste"] = async function(args, ctxExpr) {
@@ -12031,6 +12455,7 @@ function enregistrerFonctionsBase() {
     }
 
     fonctionsBase["trac.enregistre"] = async function(args, ctxExpr) {
+        args = deplacerOptionsALaFin(args);   // les options (ecra~...) peuvent aussi s'ecrire avant le chemin
         if (args.length < 1) throw new Error("trac.enregistre(chemin, ...) attend au moins le chemin du fichier");
         let chemin = await evalExpr(args[0], ctxExpr);
         if (typeof chemin !== "string" || chemin.trim() === "") throw new ErreurTypeInvalide("trac.enregistre(...) : chemin doit etre du texte");
@@ -12050,6 +12475,7 @@ function enregistrerFonctionsBase() {
     };
 
     fonctionsBase["feuille.enregistre"] = async function(args, ctxExpr) {
+        args = deplacerOptionsALaFin(args);   // les options (ecra~...) peuvent aussi s'ecrire avant le chemin
         if (args.length < 1) throw new Error("feuille.enregistre([n,] chemin, ...) attend au moins le chemin du fichier");
         let premier = await evalExpr(args[0], ctxExpr);
         let numero = null, chemin, debutOptions;
@@ -13855,6 +14281,9 @@ function _verifierTextesF(code) {
     if (!p) continue;
     const fin = finTexteLitteral(c, p.debutBarre);
     if (fin === -1) return null;   // texte non ferme : deja signale par _trouverTexteNonFerme
+    if (p.octets) {
+      try { decoderOctetsLitteral(c.slice(p.debutBarre + 1, fin)); } catch (e) { return { ligne: ligne, message: e.message }; }
+    }
     if (p.interp || p.motif) {
       const contenu = c.slice(p.debutBarre + 1, fin);
       try {
@@ -14714,7 +15143,8 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
           else if (estListe(objetVal)) iterable = objetVal.elements;
           else if (typeof objetVal === 'string') iterable = Array.from(objetVal); // chaque lettre
           else if (estDictionnai(objetVal)) iterable = Array.from(objetVal.entrees.values(), e => e.cle); // parcourt les CLES
-          else throw new ErreurTypeInvalide("pou(var dan objet) : objet doit etre un vecteur, une liste, un texte ou un dictionnai");
+          else if (estOctets(objetVal)) iterable = Array.from(objetVal.d); // chaque octet (un nombre de 0 a 255)
+          else throw new ErreurTypeInvalide("pou(var dan objet) : objet doit etre un vecteur, une liste, des octets, un texte ou un dictionnai");
           for (let val of iterable) {
             await respirer();
             setVar(entete.varNom, val);
