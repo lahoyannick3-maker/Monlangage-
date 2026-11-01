@@ -3338,6 +3338,7 @@ function _construireArbreRapide(tokens) {
       // bon comportement (ou le bon message d'erreur).
       if (tokens[pos + 1] && tokens[pos + 1].type === '(') return DECLINE;
       if (t.v === 'pasdefini') { next(); return { t: 'lit', v: undefined }; }
+      if (t.v === 'pi') { next(); return { t: 'lit', v: Math.PI }; }
       if (CODES_ERREUR_RECONNUS.has(t.v)) { next(); return { t: 'lit', v: t.v }; }
       // Suivi de '.' : attribut de classe, variable de module, methode de texte -- decline
       // (voir commentaire dans primary_()).
@@ -3358,7 +3359,7 @@ function evaluerArbreRapide(noeud, ctx) {
   switch (noeud.t) {
     case 'num': case 'str': case 'lit': return noeud.v;
     case 'var': return ctx.getVar(noeud.nom);
-    case 'neg': { let v = evaluerArbreRapide(noeud.v, ctx); verifierNombre(v, '-'); return -v; }
+    case 'neg': { let v = evaluerArbreRapide(noeud.v, ctx); return oppose(v); }
     case 'not': return !estVrai(evaluerArbreRapide(noeud.v, ctx));
     case 'or': { let g = evaluerArbreRapide(noeud.g, ctx); if (estVrai(g)) return true; return estVrai(evaluerArbreRapide(noeud.d, ctx)); }
     case 'and': { let g = evaluerArbreRapide(noeud.g, ctx); if (!estVrai(g)) return false; return estVrai(evaluerArbreRapide(noeud.d, ctx)); }
@@ -3467,7 +3468,7 @@ function evalExprSansEntreeSync(str, ctx) {
     return g;
   }
   function parseUnary() {
-    if (peek() && peek().type === 'op' && peek().v === '-') { next(); let v = parseUnary(); verifierNombre(v, '-'); return -v; }
+    if (peek() && peek().type === 'op' && peek().v === '-') { next(); let v = parseUnary(); return oppose(v); }
     return parsePow();
   }
   function parsePow() {
@@ -3579,6 +3580,10 @@ function evalExprSansEntreeSync(str, ctx) {
       }
       if (t.v === 'VRAI') return true;
       if (t.v === 'FAUX') return false;
+      if (t.v === 'pi') {
+        if (peek() && peek().type === '(') throw new Error("pi est une constante (comme VRAI/FAUX), pas une fonction : ecris-la sans parentheses, \"pi\" au lieu de \"pi()\"");
+        return Math.PI;
+      }
       if (CODES_ERREUR_RECONNUS.has(t.v)) return t.v;
       if (t.v === 'pasdefini') {
         if (peek() && peek().type === '(') throw new Error(t.v + " est une constante (comme VRAI/FAUX), pas une fonction : ecris-la sans parentheses, \"" + t.v + "\" au lieu de \"" + t.v + "()\"");
@@ -3738,7 +3743,7 @@ async function evalExprSansEntreeAsync(str, ctx) {
     return g;
   }
   async function parseUnary() {
-    if (peek() && peek().type === 'op' && peek().v === '-') { next(); let v = await parseUnary(); verifierNombre(v, '-'); return -v; }
+    if (peek() && peek().type === 'op' && peek().v === '-') { next(); let v = await parseUnary(); return oppose(v); }
     return await parsePow();
   }
   async function parsePow() {
@@ -3879,6 +3884,10 @@ async function evalExprSansEntreeAsync(str, ctx) {
       }
       if (t.v === 'VRAI') return true;
       if (t.v === 'FAUX') return false;
+      if (t.v === 'pi') {
+        if (peek() && peek().type === '(') throw new Error("pi est une constante (comme VRAI/FAUX), pas une fonction : ecris-la sans parentheses, \"pi\" au lieu de \"pi()\"");
+        return Math.PI;
+      }
       if (CODES_ERREUR_RECONNUS.has(t.v)) return t.v;
       if (t.v === 'pasdefini') {
         if (peek() && peek().type === '(') throw new Error(t.v + " est une constante (comme VRAI/FAUX), pas une fonction : ecris-la sans parentheses, \"" + t.v + "\" au lieu de \"" + t.v + "()\"");
@@ -4087,7 +4096,7 @@ function octetsDepuisNombres(elements, nom) {
 }
 // Entier (ou reel) sur 1/2/4/8 octets. Gros boutiste par defaut (petit = VRAI : petit boutiste).
 function nombreVersOctets(n, o, nom) {
-  const taille = o.taille !== undefined ? o.taille : (o.reel ? 8 : 4);
+  const taille = o.taille !== undefined ? o.taille : (o.reel ? 8 : 1);
   if (o.reel) {
     if (taille !== 4 && taille !== 8) throw new Error(nom + "(...) : un nombre a virgule (reel~V) tient sur 4 ou 8 octets (taille~4 ou taille~8), recu : taille~" + taille);
     if (typeof n === 'bigint') n = Number(n);
@@ -4103,7 +4112,7 @@ function nombreVersOctets(n, o, nom) {
   const bits = BigInt(8 * taille);
   const min = o.signe ? -(1n << (bits - 1n)) : 0n, max = o.signe ? (1n << (bits - 1n)) - 1n : (1n << bits) - 1n;
   if (v < 0n && !o.signe) throw new Error(nom + "(...) : " + v + " est negatif (ajoute signe~V pour ecrire un nombre negatif)");
-  if (v < min || v > max) throw new Error(nom + "(...) : " + v + " ne tient pas sur " + taille + " octet" + (taille > 1 ? "s" : "") + (o.signe ? " (signe~V : de " : " (de ") + min + " a " + max + ")" + (taille < 8 ? " ; essaie une taille~ plus grande" : ""));
+  if (v < min || v > max) throw new Error(nom + "(...) : " + v + " ne tient pas sur " + taille + " octet" + (taille > 1 ? "s" : "") + (o.signe ? " (signe~V : de " : " (de ") + min + " a " + max + ")" + (function() { for (const t of [2, 4, 8]) { if (t <= taille) continue; const b = BigInt(8 * t); const mn = o.signe ? -(1n << (b - 1n)) : 0n, mx = o.signe ? (1n << (b - 1n)) - 1n : (1n << b) - 1n; if (v >= mn && v <= mx) return " : ajoute taille~ " + t; } return ""; })());
   if (v < 0n) v += 1n << bits;
   const r = new Uint8Array(taille);
   for (let i = 0; i < taille; i++) r[i] = Number((v >> BigInt(8 * i)) & 255n);   // r[0] = octet de poids faible
@@ -4111,10 +4120,10 @@ function nombreVersOctets(n, o, nom) {
   return r;
 }
 function octetsVersNombre(u8, o, nom) {
-  const taille = o.taille !== undefined ? o.taille : u8.length;
+  const taille = o.taille !== undefined ? o.taille : (o.reel ? 8 : 1);
   const permis = o.reel ? [4, 8] : [1, 2, 4, 8];
-  if (permis.indexOf(taille) === -1) throw new Error(nom + "(...) : " + (o.taille === undefined ? "ces octets sont au nombre de " + u8.length + " : precise taille~ (" + permis.join(", ") + ")" : "taille~ doit valoir " + permis.join(", ") + " (recu : " + taille + ")"));
-  if (u8.length !== taille) throw new Error(nom + "(...) : il faut exactement " + taille + " octet" + (taille > 1 ? "s" : "") + " pour ce nombre (recu : " + u8.length + "). Pour un morceau d'un plus grand lot : o.extrait(debut, " + taille + ")");
+  if (permis.indexOf(taille) === -1) throw new Error(nom + "(...) : taille~ doit valoir " + permis.join(", ") + " (recu : " + taille + ")");
+  if (u8.length !== taille) throw new Error(nom + "(...) : " + u8.length + " octet" + (u8.length > 1 ? "s" : "") + " donne" + (u8.length > 1 ? "s" : "") + ", mais taille~ vaut " + taille + (o.taille === undefined ? " (valeur par defaut)" : "") + (permis.indexOf(u8.length) !== -1 ? " : ajoute taille~ " + u8.length : " : pour un morceau d'un plus grand lot, utilise o.extrait(debut, " + taille + ")"));
   if (o.reel) {
     const dv = new DataView(u8.buffer.slice(u8.byteOffset, u8.byteOffset + taille));
     return taille === 4 ? dv.getFloat32(0, o.petit) : dv.getFloat64(0, o.petit);
@@ -4125,6 +4134,57 @@ function octetsVersNombre(u8, o, nom) {
   for (let i = taille - 1; i >= 0; i--) v = (v << 8n) | BigInt(ordre[i]);
   if (o.signe && v >= (1n << BigInt(8 * taille - 1))) v -= 1n << BigInt(8 * taille);
   return (v >= -9007199254740991n && v <= 9007199254740991n) ? Number(v) : v;
+}
+// Plusieurs nombres (vecteu, liste) <-> octets : chaque valeur est ecrite avec les memes options que conver.nombr.octets
+// (taille~ 1 par defaut, signe~, petit~, reel~). A la lecture, les octets sont decoupes en groupes de taille~ octets.
+function nombresVersOctets(elements, o, nom) {
+  const taille = o.taille !== undefined ? o.taille : (o.reel ? 8 : 1);
+  nombreVersOctets(0, o, nom);   // verifie taille~ / reel~ une seule fois (erreur sans numero d'element)
+  if (!o.reel && (taille === 1 || taille === 2 || taille === 4)) {
+    // chemin rapide (entiers sur 1, 2 ou 4 octets) : pas de BigInt ; au moindre doute on passe par le chemin general (erreurs precises)
+    const bits = 8 * taille, mod = Math.pow(2, bits);
+    const min = o.signe ? -mod / 2 : 0, max = o.signe ? mod / 2 - 1 : mod - 1;
+    const r = new Uint8Array(elements.length * taille);
+    let ok = true;
+    for (let i = 0; i < elements.length; i++) {
+      const n = elements[i];
+      if (typeof n !== 'number' || !Number.isInteger(n) || n < min || n > max) { ok = false; break; }
+      let v = n < 0 ? n + mod : n;
+      for (let k = 0; k < taille; k++) { const b = v % 256; v = (v - b) / 256; r[i * taille + (o.petit ? k : taille - 1 - k)] = b; }
+    }
+    if (ok) return r;
+  }
+  const morceaux = [];
+  let total = 0;
+  for (let i = 0; i < elements.length; i++) {
+    let m;
+    try { m = nombreVersOctets(elements[i], o, nom); }
+    catch (e) { if (e && typeof e.message === 'string') e.message += " [element " + (i + 1) + "]"; throw e; }
+    morceaux.push(m); total += m.length;
+  }
+  const r = new Uint8Array(total);
+  let p = 0;
+  for (const m of morceaux) { r.set(m, p); p += m.length; }
+  return r;
+}
+function octetsVersNombres(u8, o, nom) {
+  const taille = o.taille !== undefined ? o.taille : (o.reel ? 8 : 1);
+  const permis = o.reel ? [4, 8] : [1, 2, 4, 8];
+  if (permis.indexOf(taille) === -1) throw new Error(nom + "(...) : taille~ doit valoir " + permis.join(", ") + " (recu : " + taille + ")");
+  if (u8.length % taille !== 0) throw new Error(nom + "(...) : " + u8.length + " octet" + (u8.length > 1 ? "s" : "") + " ne se decoupe" + (u8.length > 1 ? "nt" : "") + " pas en nombres de " + taille + " octet" + (taille > 1 ? "s" : "") + (o.taille === undefined ? " (taille~ par defaut)" : ""));
+  const n = u8.length / taille, r = new Array(n);
+  if (!o.reel && taille <= 4) {
+    const mod = Math.pow(2, 8 * taille);
+    for (let i = 0; i < n; i++) {
+      let v = 0;
+      for (let k = 0; k < taille; k++) v = v * 256 + u8[i * taille + (o.petit ? taille - 1 - k : k)];
+      if (o.signe && v >= mod / 2) v -= mod;
+      r[i] = v;
+    }
+    return r;
+  }
+  for (let i = 0; i < n; i++) r[i] = octetsVersNombre(u8.subarray(i * taille, (i + 1) * taille), o, nom);
+  return r;
 }
 // Range les arguments : d'abord les positionnels (dans leur ordre), puis les options nom~valeur. Permet d'ecrire une option
 // au DEBUT d'un appel (ecra~V, chemin...) pour les commandes dont le code lit les options apres les valeurs.
@@ -5062,6 +5122,13 @@ function unifierTypeVecteur(elements) {
   return elements.map(e => coercerValeur(e, typeCible));
 }
 
+// -v : l'oppose d'un nombre, ou de chaque valeur d'un vecteur / d'une matrice.
+function oppose(v) {
+  function un(x) { verifierNombre(x, '-'); return -x; }
+  if (estMatrice(v)) return { __type: "matrice", nlig: v.nlig, ncol: v.ncol, donnees: v.donnees.map(un) };
+  if (estVecteur(v)) return v.map(un);
+  return un(v);
+}
 function verifierNombre(v, operateur) {
   if (estOctets(v)) throw new ErreurTypeInvalide("'" + operateur + "' : un nombre est attendu, mais pas des octets (pour lire un octet : o[1])");
   if (typeof v === 'string') {
@@ -6201,7 +6268,7 @@ const _MOTS_RESERVES = new Set([
   'pou', 'tanqer', 'si', 'sinon', 'essai', 'attrape', 'finalement', 'rythme', 'fonc', 'classe', 'herite',
   'retour', 'donne', 'casse', 'continu', 'quitte', 'lever', 'global', 'englobant', 'import', 'de',
   'et', 'ou', 'non', 'dan', 'VRAI', 'V', 'FAUX', 'F', 'pasdefini',
-  'sisinon', 'lettr', 'Lettr'
+  'sisinon', 'lettr', 'Lettr', 'pi'
 ]);
 function _msgMotReserve(nom, role) {
   const python = nom === 'donne' ? " (comme yield en Python)" : (nom === 'retour' ? " (comme return en Python)" : "");
@@ -8596,6 +8663,12 @@ let aideCommandes = [
       "Comme alea(...), mais AVEC remise : un meme element/nombre peut sortir plusieurs fois.",
       "x peut donc depasser le nombre d'elements disponibles (contrairement a alea())."
     ], exemple: "ralea(1,6,10)          ->   10 lancers de de a 6 faces (repetitions possibles)\nralea(c(|pile|,|face|),5)  ->   5 tirages a pile ou face" },
+  { noms: ["hasard"], categorie: "Creer un vecteur/une matrice", syntaxe: "hasard()  ou  hasard(debut, fin, x)", description: [
+      "hasard() donne UN nombre a virgule au hasard, entre 0 (inclus) et 1 (exclu).",
+      "hasard(debut, fin, x) donne un vecteur de x nombres a virgule au hasard entre debut et fin. Les repetitions sont possibles (autant dire jamais, avec des decimaux).",
+      "Pour avoir plusieurs valeurs, il faut les trois arguments : hasard(5) et hasard(2, 8) donnent une erreur claire, pour ne pas confondre \"5 nombres\" et \"un nombre jusqu'a 5\". Pour des entiers, utilise alea(...) (sans remise) ou ralea(...) (avec remise).",
+      "x peut aller jusqu'a 10 000 000. Un seul appel pour tout un vecteur est bien plus rapide qu'une boucle."
+    ], exemple: "hasard()               ->   0.7312... (entre 0 et 1)\nhasard(-1, 1, 1000)    ->   1000 nombres entre -1 et 1 (du bruit, par exemple)\n5 + 3 * hasard()       ->   un nombre entre 5 et 8\nsi(hasard() < 0.5){ affi(|pile|) }" },
   { noms: [":"], categorie: "Creer un vecteur/une matrice", syntaxe: "debut:fin", description: [
       "Raccourci rapide pour creer une suite de nombres entiers, avec un pas de 1.",
       "Si fin est plus petit que debut, compte a l'envers (pas de -1)."
@@ -8635,6 +8708,11 @@ let aideCommandes = [
   { noms: ["som"], categorie: "Infos sur un vecteur/une matrice", syntaxe: "som(v)", description: [
       "Additionne tous les elements d'un vecteur et renvoie le resultat."
     ], exemple: "som(c(1,2,3))   ->   6" },
+  { noms: ["cumsom"], categorie: "Infos sur un vecteur/une matrice", syntaxe: "cumsom(v)  ou  cumsom(m, parlig~VRAI)", description: [
+      "Somme cumulee : chaque element est remplace par la somme de lui-meme et de tous ceux qui le precedent. Un nombre seul revient tel quel.",
+      "Sur une matrice, la somme se cumule par COLONNE (de haut en bas) ; avec parlig~VRAI, elle se cumule par LIGNE (de gauche a droite), comme parlig~ dans matrice(...).",
+      "parlig~ sur autre chose qu'une matrice, ou un vecteur qui contient du texte : erreur claire. Utile pour une phase (cumsom des frequences) ou un total courant."
+    ], exemple: "cumsom(c(1,2,3,4))   ->   [1] 1 3 6 10\ncumsom(matrice(c(1,3,2,4), nlig~2, parlig~V))   ->   colonnes cumulees : 1 3 / 3 7\ncumsom(matrice(c(1,3,2,4), nlig~2, parlig~V), parlig~V)   ->   lignes cumulees : 1 4 / 2 6" },
   { noms: ["moy"], categorie: "Infos sur un vecteur/une matrice", syntaxe: "moy(v)", description: [
       "Renvoie la moyenne des elements d'un vecteur (ou d'une matrice, elements confondus)."
     ], exemple: "moy(c(1,2,3))   ->   2" },
@@ -8701,8 +8779,9 @@ let aideCommandes = [
       "Soustrait deux nombres, deux vecteurs de MEME longueur (element par element) ou deux matrices de memes dimensions.",
       "Nombre - vecteur ou vecteur - nombre : applique a chaque element. Nombre et matrice (dans un sens ou dans l'autre) : erreur claire.",
       "Avec du texte (texte - nombre, nombre - texte, texte - texte) : erreur claire. La soustraction ne marche qu'entre nombres.",
-      "Deux vecteurs de longueurs differentes, un vecteur/une matrice qui contient du texte, une liste : erreur claire (voir +). Pour retirer un element d'une liste, utilise l.supri(...)."
-    ], exemple: "c(10,20,30) - c(1,2,3)   ->   [1] 9 18 27\n10 - c(1,2)   ->   [1] 9 8\n|a| - 1   ->   erreur : impossible de soustraire avec du texte" },
+      "Deux vecteurs de longueurs differentes, un vecteur/une matrice qui contient du texte, une liste : erreur claire (voir +). Pour retirer un element d'une liste, utilise l.supri(...).",
+      "Devant une seule valeur, - donne l'oppose : -5, -x, et aussi -v pour un vecteur ou une matrice (l'oppose de chaque element)."
+    ], exemple: "-c(1,-2,3)   ->   [1] -1 2 -3\nc(10,20,30) - c(1,2,3)   ->   [1] 9 18 27\n10 - c(1,2)   ->   [1] 9 8\n|a| - 1   ->   erreur : impossible de soustraire avec du texte" },
   { noms: ["*"], categorie: "Operateurs", syntaxe: "a * b", description: [
       "Multiplie deux nombres.",
       "Nombre * vecteur (ou vecteur * nombre) : chaque element est multiplie. Vecteur * vecteur : produit element par element (meme longueur obligatoire, sinon erreur claire).",
@@ -8776,6 +8855,15 @@ let aideCommandes = [
       "Utilises typiquement dans si(...), tanqer(...), sisinon(...)."
     ], exemple: "si(x>0 et x<10){ affi(|entre 0 et 10|) }\nsi(jour==|samedi| ou jour==|dimanche|){ affi(|weekend|) }\nsi(non estVide){ affi(|il y a des elements|) }\nsi(x!=0 et 10/x>2){ affi(|sans risque de division par zero|) }" },
 
+  { noms: ["abs"], categorie: "Fonctions mathematiques", syntaxe: "abs(x)", description: [
+      "Valeur absolue de x : x sans son signe (abs(-3) donne 3).",
+      "Fonctionne aussi element par element si x est un vecteur ou une matrice."
+    ], exemple: "abs(-3)              ->   3\nabs(c(-3, 2, -0.5))  ->   [1] 3 2 0.5" },
+  { noms: ["borne"], categorie: "Fonctions mathematiques", syntaxe: "borne(v, bas, haut)", description: [
+      "Ramene chaque valeur dans l'intervalle [bas, haut] : une valeur trop basse devient bas, une valeur trop haute devient haut, les autres ne changent pas.",
+      "v peut etre un nombre, un vecteur ou une matrice (element par element) ; bas et haut sont des nombres. Si bas est plus grand que haut : erreur claire.",
+      "Pour n'imposer qu'une seule limite, donne une valeur tres large a l'autre (ex: borne(v, 2, max(v)) : aucune valeur sous 2)."
+    ], exemple: "borne(120, 0, 100)           ->   100\nborne(c(-5, 3, 20), 0, 10)   ->   [1] 0 3 10\nvie ~ borne(vie + 30, 0, 100)" },
   { noms: ["sin"], categorie: "Fonctions mathematiques", syntaxe: "sin(x)", description: [
       "Sinus de x (x en radians).",
       "Fonctionne aussi element par element si x est un vecteur ou une matrice."
@@ -8814,6 +8902,10 @@ let aideCommandes = [
       "C'est ce que renvoie un retour sans valeur (ou l'absence de retour) dans une fonction perso.",
       "Utilisable dans une comparaison : si(x == pasdefini){ ... }."
     ], exemple: "fonc f(){ retour }\nf()   ->   pasdefini" },
+  { noms: ["pi"], categorie: "Constantes", syntaxe: "pi", description: [
+      "Le nombre pi (3.141592653589793), comme VRAI/FAUX : une constante, ecrite sans parentheses.",
+      "On ne peut pas la modifier : pi ~ 3 donne une erreur (pi est un mot reserve, il ne peut servir de nom de variable, de fonction ni de parametre)."
+    ], exemple: "pi        ->   3.141592653589793\n2 * pi * 5   ->   31.41592653589793" },
 
   { noms: ["DIVISION_ZERO", "FICHIER_INTROUVABLE", "FICHIER_DEJA_EXISTANT", "FICHIER_INVALIDE",
       "CLE_INTROUVABLE", "VARIABLE_INCONNUE", "FONCTION_INCONNUE", "ATTRIBUT_INCONNU",
@@ -8845,11 +8937,13 @@ let aideCommandes = [
       "La valeur doit etre un nombre positif ou nul. Le resultat peut etre fractionnaire (pas d'arrondi, meme quand ca ne tombe pas juste, ex: conver.ms.jour(...))."
     ], exemple: "conver.minute.seconde(5)  ->  300\nconver.heure.seconde(2)    ->  7200\nconver.ms.seconde(500)     ->  0.5\nconver.seconde.heure(3600)  ->  1\nconver.jour.heure(1)       ->  24\nconver.octet.Ko(1024)      ->  1\nconver.Mo.Ko(1)            ->  1024" },
   { noms: ["conver.octets.octets", "conver.octets.hexa", "conver.octets.base64", "conver.octets.binaire", "conver.octets.texte", "conver.octets.liste", "conver.octets.vecteu", "conver.octets.nombr", "conver.hexa.octets", "conver.hexa.hexa", "conver.hexa.base64", "conver.hexa.binaire", "conver.hexa.texte", "conver.hexa.liste", "conver.hexa.vecteu", "conver.hexa.nombr", "conver.base64.octets", "conver.base64.hexa", "conver.base64.base64", "conver.base64.binaire", "conver.base64.texte", "conver.base64.liste", "conver.base64.vecteu", "conver.base64.nombr", "conver.binaire.octets", "conver.binaire.hexa", "conver.binaire.base64", "conver.binaire.binaire", "conver.binaire.texte", "conver.binaire.liste", "conver.binaire.vecteu", "conver.binaire.nombr", "conver.texte.octets", "conver.texte.hexa", "conver.texte.base64", "conver.texte.binaire", "conver.liste.octets", "conver.liste.hexa", "conver.liste.base64", "conver.liste.binaire", "conver.vecteu.octets", "conver.vecteu.hexa", "conver.vecteu.base64", "conver.vecteu.binaire", "conver.nombr.octets", "conver.nombr.hexa", "conver.nombr.base64", "conver.nombr.binaire"], categorie: "Base", syntaxe: "conver.source.cible(valeur)   avec source et cible parmi : texte, liste, vecteu, nombr, octets, hexa, base64, binaire", description: [
-      "Passe d'un format a un autre : texte (UTF-8), liste ou vecteu de nombres de 0 a 255, nombr (un nombre sur 1, 2, 4 ou 8 octets), octets (le type octets, voir aide(octets)), hexa (89504e47), base64 (iVBORw==) et binaire (les bits : 10001001). Toute conversion passe par les octets : conver.texte.hexa(|Hi|) donne 4869, conver.hexa.base64(|4869|) donne SGk=.",
+      "Passe d'un format a un autre : texte (UTF-8), liste ou vecteu de nombres (de 0 a 255 par defaut, un octet chacun ; plus avec taille~), nombr (un nombre sur 1, 2, 4 ou 8 octets), octets (le type octets, voir aide(octets)), hexa (89504e47), base64 (iVBORw==) et binaire (les bits : 10001001). Toute conversion passe par les octets : conver.texte.hexa(|Hi|) donne 4869, conver.hexa.base64(|4869|) donne SGk=.",
       "Les formes lues sont tolerantes : hexa et binaire acceptent des espaces (|89 50 4e 47|), base64 accepte les espaces et le = final facultatif. Les formes ecrites sont compactes : hexa en minuscules, binaire a 8 chiffres par octet. Une valeur invalide donne une erreur claire (nombre hors de 0 a 255, hexa de longueur impaire, octets qui ne forment pas un texte UTF-8...).",
-      "conver.nombr.octets(n) ecrit un entier sur 4 octets, gros boutiste par defaut (258 donne 00 00 01 02) ; conver.octets.nombr(o) relit un entier. Options : taille~1, 2, 4 ou 8 (octets ; sans taille~ a la lecture, la taille des octets donnes), signe~VRAI (nombres negatifs), reel~VRAI (nombre a virgule sur 4 ou 8 octets, 8 par defaut), petit~VRAI (petit boutiste : 258 donne 02 01). Un nombre qui ne tient pas dans la taille donne une erreur claire.",
+      "Tout ce qui passe entre des NOMBRES et des octets (nombr, vecteu, liste, vers ou depuis octets, hexa, base64, binaire) accepte les memes options : taille~1, 2, 4 ou 8 (octets par nombre, 1 par defaut PARTOUT), signe~VRAI (nombres negatifs), reel~VRAI (nombre a virgule sur 4 ou 8 octets, 8 par defaut), petit~VRAI (petit boutiste : 258 sur 2 octets donne 02 01 ; gros boutiste par defaut : 01 02).",
+      "Ecriture : conver.nombr.octets(65) donne 1 octet ; conver.nombr.octets(258, taille~2) donne 2 octets. conver.vecteu.octets(v, taille~2, signe~V) ecrit tout le vecteur d'un coup, chaque valeur sur 2 octets (liste de meme). Une valeur qui ne tient pas dans la taille donne une erreur claire qui dit quelle taille~ ajouter, jamais un arrondi silencieux.",
+      "Lecture, un nombre seul : conver.octets.nombr(o) exige exactement taille~ octets (1 par defaut) ; avec 2 octets, ecris taille~2, sinon erreur claire. Lecture, plusieurs nombres : conver.octets.vecteu(o, taille~2) decoupe les octets par groupes de 2 (erreur claire si le nombre d'octets n'est pas un multiple de la taille) ; idem pour liste, et pour hexa, base64 et binaire en entree.",
       "Les conversions entre texte, liste, vecteu et nombr (sans octets, hexa, base64 ni binaire) gardent leur comportement d'origine : voir aide(conver.texte.nombr). Les conver.x.x d'un meme format verifient la valeur et la renvoient (copie pour les octets, forme compacte pour hexa et binaire)."
-    ], exemple: "conver.texte.octets(|Salut|)       ->   b|Salut|\nconver.octets.texte(b|Salut|)       ->   Salut\nconver.octets.hexa(b|\\x89PNG|)      ->   89504e47\nconver.hexa.octets(|89 50 4e 47|)   ->   b|\\x89PNG|\nconver.octets.liste(b|AB|)          ->   liste(65, 66)\nconver.nombr.octets(258)            ->   b|\\x00\\x00\\x01\\x02|\nconver.nombr.octets(258, petit~V, taille~2)   ->   b|\\x02\\x01|\nconver.octets.nombr(b|\\xFE|, signe~V)         ->   -2" },
+    ], exemple: "conver.texte.octets(|Salut|)       ->   b|Salut|\nconver.octets.texte(b|Salut|)       ->   Salut\nconver.octets.hexa(b|\\x89PNG|)      ->   89504e47\nconver.hexa.octets(|89 50 4e 47|)   ->   b|\\x89PNG|\nconver.octets.liste(b|AB|)          ->   liste(65, 66)\nconver.nombr.octets(65)             ->   b|A|\nconver.nombr.octets(258, taille~2)   ->   b|\\x01\\x02|\nconver.nombr.octets(258, petit~V, taille~2)   ->   b|\\x02\\x01|\nconver.octets.nombr(b|\\xFE|, signe~V)         ->   -2\nconver.vecteu.octets(c(258,772), taille~2)   ->   b|\\x01\\x02\\x03\\x04|\nconver.octets.vecteu(b|\\x01\\x02\\x03\\x04|, taille~2)   ->   [1] 258 772" },
   { noms: ["conver.cara.code", "conver.code.cara"], categorie: "Base", syntaxe: "conver.cara.code(caractere)  /  conver.code.cara(code)", description: [
       "conver.cara.code(|A|) donne le code du caractere (ici 65). Il faut un texte d'un seul caractere ; un emoji compte pour un seul caractere (code Unicode).",
       "conver.code.cara(65) fait l'inverse : donne le caractere de ce code (ici A). Le code doit etre un entier de 0 a 1114111."
@@ -10505,6 +10599,97 @@ function enregistrerFonctionsBase() {
         return surUnNombre(v);
     }
 
+    // Applique f a un nombre, ou element par element a un vecteur/une matrice (grands entiers acceptes).
+    function surNombresOuCollection(nom, v, f) {
+        function un(x) {
+            if (typeof x !== 'number' && typeof x !== 'bigint') throw new ErreurTypeInvalide(nom + "(...) attend un nombre, un vecteur ou une matrice de nombres (recu : " + nomNature(x) + ")");
+            return f(x);
+        }
+        if (estMatrice(v)) return { __type: "matrice", nlig: v.nlig, ncol: v.ncol, donnees: v.donnees.map(un) };
+        if (estVecteur(v)) return v.map(un);
+        return un(v);
+    }
+
+    // abs(x) : valeur absolue. Fonctionne aussi element par element sur un vecteur/une matrice.
+    fonctionsBase["abs"] = fonctionsExpression["abs"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("abs(...) attend exactement 1 argument");
+        return surNombresOuCollection("abs", await evalExpr(args[0], ctxExpr), x => typeof x === 'bigint' ? (x < 0n ? -x : x) : Math.abs(x));
+    };
+
+    // borne(v, bas, haut) : ramene chaque valeur dans [bas, haut] (trop bas -> bas, trop haut -> haut).
+    fonctionsBase["borne"] = fonctionsExpression["borne"] = async function(args, ctxExpr) {
+        if (args.length !== 3) throw new Error("borne(...) attend exactement 3 arguments : borne(v, bas, haut)");
+        const v = await evalExpr(args[0], ctxExpr);
+        const bas = await evalExpr(args[1], ctxExpr), haut = await evalExpr(args[2], ctxExpr);
+        for (const [nomB, b] of [["bas", bas], ["haut", haut]]) {
+            if (typeof b !== 'number' && typeof b !== 'bigint') throw new ErreurTypeInvalide("borne(v, bas, haut) : " + nomB + " doit etre un nombre (recu : " + nomNature(b) + ")");
+        }
+        if (bas > haut) throw new Error("borne(v, bas, haut) : bas (" + bas + ") doit etre inferieur ou egal a haut (" + haut + ")");
+        return surNombresOuCollection("borne", v, x => x < bas ? bas : (x > haut ? haut : x));
+    };
+
+    // hasard() : un decimal entre 0 (inclus) et 1 (exclu). hasard(debut, fin, x) : x decimaux entre debut et fin.
+    // Un ou deux arguments sont refuses : hasard(5) pourrait etre pris pour "5 nombres" ou "un nombre jusqu'a 5".
+    fonctionsBase["hasard"] = fonctionsExpression["hasard"] = async function(args, ctxExpr) {
+        const a = (args.length === 1 && args[0].trim() === "") ? [] : args;
+        if (a.length === 0) return Math.random();
+        if (a.length !== 3) throw new Error("hasard(...) attend soit hasard() (un decimal entre 0 et 1), soit hasard(debut, fin, x) (x decimaux entre debut et fin) : " + a.length + " argument" + (a.length > 1 ? "s" : "") + " ne marche pas");
+        const lire = async (i, nomArg) => {
+            let n = await evalExpr(a[i], ctxExpr);
+            if (typeof n === 'bigint') n = Number(n);
+            if (typeof n !== 'number' || !Number.isFinite(n)) throw new ErreurTypeInvalide("hasard(debut, fin, x) : " + nomArg + " doit etre un nombre (recu : " + nomNature(n) + ")");
+            return n;
+        };
+        const debut = await lire(0, "debut"), fin = await lire(1, "fin");
+        const x = versEntierUsage(await evalExpr(a[2], ctxExpr), "hasard(debut, fin, x)");
+        if (fin < debut) throw new Error("hasard(debut, fin, x) : fin doit etre superieur ou egal a debut");
+        if (x < 0) throw new Error("hasard(...) : x doit etre positif");
+        if (x > 10000000) throw new Error("hasard(...) : x trop grand (10 000 000 au maximum)");
+        const r = new Array(x);
+        for (let i = 0; i < x; i++) r[i] = debut + (fin - debut) * Math.random();
+        return r;
+    };
+
+    // cumsom(v) : somme cumulee d'un vecteur (cumsom(c(1,2,3,4)) -> c(1,3,6,10)). Un nombre seul revient tel quel.
+    // Matrice : par colonne par defaut, par ligne avec parlig~V (meme nom que dans matrice(...)).
+    fonctionsBase["cumsom"] = fonctionsExpression["cumsom"] = async function(args, ctxExpr) {
+        const { pos, opts } = separerOptionsArgs(args, "cumsom", ["parlig"]);
+        if (pos.length !== 1) throw new Error("cumsom(...) attend exactement 1 valeur (et, pour une matrice, parlig~V pour cumuler par ligne)");
+        const v = await evalExpr(pos[0], ctxExpr);
+        const parligDonne = opts.parlig !== undefined;
+        const parlig = parligDonne ? estVrai(await evalExpr(opts.parlig, ctxExpr)) : false;
+        function cumuler(tab) {
+            let toutBigint = tab.length > 0 && tab.every(e => typeof e === 'bigint');
+            let s = toutBigint ? 0n : 0;
+            const r = new Array(tab.length);
+            for (let i = 0; i < tab.length; i++) { s += toutBigint ? tab[i] : (typeof tab[i] === 'bigint' ? Number(tab[i]) : tab[i]); r[i] = s; }
+            return r;
+        }
+        function verifier(tab) {
+            for (const e of tab) if (typeof e !== 'number' && typeof e !== 'bigint') throw new ErreurTypeInvalide("cumsom(...) : tous les elements doivent etre numeriques (recu : " + nomNature(e) + ")");
+        }
+        if (typeof v === 'number' || typeof v === 'bigint') {
+            if (parligDonne) throw new Error("cumsom(...) : parlig~ ne s'applique qu'a une matrice");
+            return v;
+        }
+        if (estVecteur(v)) {
+            if (parligDonne) throw new Error("cumsom(...) : parlig~ ne s'applique qu'a une matrice");
+            verifier(v);
+            return cumuler(v);
+        }
+        if (estMatrice(v)) {
+            verifier(v.donnees);
+            const nl = v.nlig, nc = v.ncol, d = new Array(v.donnees.length);
+            if (!parlig) {
+                for (let c = 0; c < nc; c++) { const col = cumuler(v.donnees.slice(c * nl, (c + 1) * nl)); for (let l = 0; l < nl; l++) d[c * nl + l] = col[l]; }
+            } else {
+                for (let l = 0; l < nl; l++) { const lig = []; for (let c = 0; c < nc; c++) lig.push(v.donnees[c * nl + l]); const cum = cumuler(lig); for (let c = 0; c < nc; c++) d[c * nl + l] = cum[c]; }
+            }
+            return { __type: "matrice", nlig: nl, ncol: nc, donnees: d };
+        }
+        throw new ErreurTypeInvalide("cumsom(...) attend un nombre, un vecteur ou une matrice de nombres (recu : " + nomNature(v) + ")");
+    };
+
     // sin(...) : sinus (en radians). Fonctionne aussi element par element sur un vecteur/une matrice.
     fonctionsBase["sin"] = fonctionsExpression["sin"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("sin(...) attend exactement 1 argument");
@@ -11400,8 +11585,8 @@ function enregistrerFonctionsBase() {
         const versOctets = {
             octets: (v, nom) => { exiger(estOctets(v), nom, "des octets", v); return v.d; },
             texte: (v, nom) => { exiger(typeof v === 'string', nom, "un texte", v); return new TextEncoder().encode(v); },
-            liste: (v, nom) => { exiger(estListe(v), nom, "une liste de nombres", v); return octetsDepuisNombres(v.elements, nom + "(...)"); },
-            vecteu: (v, nom) => { exiger(estVecteur(v), nom, "un vecteur de nombres", v); return octetsDepuisNombres(v, nom + "(...)"); },
+            liste: (v, nom, o) => { exiger(estListe(v), nom, "une liste de nombres", v); return nombresVersOctets(v.elements, o, nom); },
+            vecteu: (v, nom, o) => { exiger(estVecteur(v), nom, "un vecteur de nombres", v); return nombresVersOctets(v, o, nom); },
             nombr: (v, nom, o) => nombreVersOctets(v, o, nom),
             hexa: (v, nom) => { exiger(typeof v === 'string', nom, "un texte hexadecimal", v); return hexaVersOctets(v, nom); },
             base64: (v, nom) => { exiger(typeof v === 'string', nom, "un texte base64", v); return base64VersOctets(v, nom); },
@@ -11413,8 +11598,8 @@ function enregistrerFonctionsBase() {
                 try { return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(u8); }
                 catch (e) { throw new ErreurTypeInvalide(nom + "(...) : ces octets ne forment pas un texte UTF-8 valide (conver.octets.hexa(...) permet de les voir)"); }
             },
-            liste: (u8) => ({ __type: "liste", elements: Array.from(u8) }),
-            vecteu: (u8) => Array.from(u8),
+            liste: (u8, nom, o) => ({ __type: "liste", elements: octetsVersNombres(u8, o, nom) }),
+            vecteu: (u8, nom, o) => octetsVersNombres(u8, o, nom),
             nombr: (u8, nom, o) => octetsVersNombre(u8, o, nom),
             hexa: (u8) => octetsVersHexa(u8),
             base64: (u8) => octetsVersBase64(u8),
@@ -11424,7 +11609,8 @@ function enregistrerFonctionsBase() {
             for (const cible of toutes) {
                 if (anciens.indexOf(source) !== -1 && anciens.indexOf(cible) !== -1) continue;   // deja enregistrees plus haut
                 const nom = "conver." + source + "." + cible;
-                const permises = (source === "nombr" || cible === "nombr") ? ["taille", "signe", "reel", "petit"] : [];
+                const numeriques = ["nombr", "vecteu", "liste"];
+                const permises = ((numeriques.indexOf(source) !== -1 && nouveaux.indexOf(cible) !== -1) || (nouveaux.indexOf(source) !== -1 && numeriques.indexOf(cible) !== -1)) ? ["taille", "signe", "reel", "petit"] : [];
                 fonctionsBase[nom] = fonctionsExpression[nom] = async function(args, ctxExpr) {
                     const { pos, opts } = separerOptionsArgs(args, nom, permises);
                     if (pos.length !== 1) throw new Error(nom + "(...) attend exactement 1 valeur" + (permises.length ? " (et, au choix : taille~, signe~, reel~, petit~)" : ""));
