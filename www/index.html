@@ -8944,6 +8944,23 @@ let aideCommandes = [
       "Lecture, un nombre seul : conver.octets.nombr(o) exige exactement taille~ octets (1 par defaut) ; avec 2 octets, ecris taille~2, sinon erreur claire. Lecture, plusieurs nombres : conver.octets.vecteu(o, taille~2) decoupe les octets par groupes de 2 (erreur claire si le nombre d'octets n'est pas un multiple de la taille) ; idem pour liste, et pour hexa, base64 et binaire en entree.",
       "Les conversions entre texte, liste, vecteu et nombr (sans octets, hexa, base64 ni binaire) gardent leur comportement d'origine : voir aide(conver.texte.nombr). Les conver.x.x d'un meme format verifient la valeur et la renvoient (copie pour les octets, forme compacte pour hexa et binaire)."
     ], exemple: "conver.texte.octets(|Salut|)       ->   b|Salut|\nconver.octets.texte(b|Salut|)       ->   Salut\nconver.octets.hexa(b|\\x89PNG|)      ->   89504e47\nconver.hexa.octets(|89 50 4e 47|)   ->   b|\\x89PNG|\nconver.octets.liste(b|AB|)          ->   liste(65, 66)\nconver.nombr.octets(65)             ->   b|A|\nconver.nombr.octets(258, taille~2)   ->   b|\\x01\\x02|\nconver.nombr.octets(258, petit~V, taille~2)   ->   b|\\x02\\x01|\nconver.octets.nombr(b|\\xFE|, signe~V)         ->   -2\nconver.vecteu.octets(c(258,772), taille~2)   ->   b|\\x01\\x02\\x03\\x04|\nconver.octets.vecteu(b|\\x01\\x02\\x03\\x04|, taille~2)   ->   [1] 258 772" },
+  { noms: ["bit.et", "bit.ou", "bit.diff"], categorie: "Base", syntaxe: "bit.et(a, b, ...)   /   bit.ou(a, b, ...)   /   bit.diff(a, b, ...)   (option : signe~V)", description: [
+      "Operations sur les BITS de nombres entiers (32 bits). Chaque nombre est ecrit en binaire (12 = 1100, 10 = 1010) et on compare colonne par colonne : bit.et donne 1 si les DEUX bits valent 1 (12 et 10 -> 1000 = 8), bit.ou donne 1 si AU MOINS UN vaut 1 (-> 1110 = 14), bit.diff donne 1 si les deux bits sont DIFFERENTS (-> 0110 = 6, le 'ou exclusif'). Ce ne sont pas les 'et' / 'ou' des conditions : le resultat est un nombre.",
+      "Nombre de valeurs variable : bit.ou(1, 2, 4) combine de gauche a droite (donne 7). Une seule valeur revient telle quelle, aucune valeur donne une erreur claire.",
+      "Valeurs permises : entiers de -2147483648 a 4294967295 (les negatifs s'ecrivent en complement a deux). Un decimal ou une valeur trop grande donne une erreur claire. Le resultat est POSITIF par defaut (de 0 a 4294967295) ; signe~V le lit avec le signe : bit.diff(5, -1) donne 4294967290, bit.diff(5, -1, signe~V) donne -6."
+    ], exemple: "bit.et(12, 10)        ->   8\nbit.ou(12, 10)        ->   14\nbit.diff(12, 10)      ->   6\nbit.ou(1, 2, 4)       ->   7\nbit.et(300, 255)      ->   44   (le dernier octet de 300)\nbit.diff(5, -1, signe~V)   ->   -6" },
+  { noms: ["bit.gauche", "bit.droite"], categorie: "Base", syntaxe: "bit.gauche(valeur, places)   /   bit.droite(valeur, places)   (option : signe~V)", description: [
+      "Decale les bits de valeur de 'places' places. bit.gauche multiplie par 2 a chaque place : bit.gauche(1, 5) donne 32 (1 devient 100000). bit.droite divise par 2 a chaque place et jette le reste : bit.droite(13, 2) donne 3. Exactement 2 valeurs (valeur et places), sinon erreur claire. places va de 0 a 31.",
+      "Si le resultat de bit.gauche depasse les 32 bits (ex: bit.gauche(1, 32)), c'est une erreur claire : aucun bit n'est perdu en silence. bit.droite lit la valeur sur 32 bits et remplit de 0 a gauche. Entiers seulement, resultat positif par defaut, signe~V pour le lire avec le signe (comme bit.et)."
+    ], exemple: "bit.gauche(1, 5)      ->   32\nbit.gauche(3, 2)      ->   12\nbit.droite(32, 5)     ->   1\nbit.droite(13, 2)     ->   3" },
+  { noms: ["signatu.crc32", "signatu.crc64", "signatu.sha256"], categorie: "Base", syntaxe: "signatu.crc32(octets)   /   signatu.crc64(octets)   /   signatu.sha256(octets)", description: [
+      "Une SIGNATURE est un petit resume de taille fixe calcule a partir de TOUS les octets donnes : le meme contenu donne toujours la meme signature, un seul octet different la change completement, et on ne peut pas retrouver le contenu a partir d'elle. Elle sert a comparer (==) ou a reconnaitre un contenu, pas a calculer.",
+      "Elles prennent des OCTETS (pour un texte : signatu.crc32(conver.texte.octets(|abc|))) et renvoient un TEXTE hexadecimal en minuscules : 8 caracteres pour crc32 (controle d'erreur rapide, exige par les zip), 16 pour crc64 (variante CRC-64/XZ), 64 pour sha256 (signature solide, pour verifier qu'un fichier n'a pas ete modifie). Pour un nombre : conver.hexa.nombr(...) ; pour des octets : conver.hexa.octets(...)."
+    ], exemple: "signatu.crc32(conver.texte.octets(|a|))     ->   e8b7be43\nsignatu.crc64(conver.texte.octets(|a|))     ->   330284772e652b05\nsignatu.sha256(conver.texte.octets(|abc|))  ->   ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" },
+  { noms: ["creer.zip", "lire.zip"], categorie: "Sauvegarde", syntaxe: "creer.zip(d)   ou   creer.zip(d, compress~VRAI)   /   lire.zip(octets)", description: [
+      "creer.zip(d) fabrique un fichier zip. d est un dictionnai dont chaque cle est le nom du fichier dans le zip (un '/' cree un dossier : |dos/b.txt|) et chaque valeur son contenu EN OCTETS (conver.texte.octets(...) pour un texte). Elle renvoie les octets du zip, a ecrire avec ecrire.fichier. L'ordre du dictionnai est conserve. Sans compression par defaut ; compress~VRAI active la compression (compress~ peut aussi s'ecrire avant d).",
+      "lire.zip(octets) fait l'inverse : elle prend les octets d'un fichier zip (lire.fichier(chemin, octets~VRAI)) et renvoie un dictionnai nom : octets. Elle decompresse (zip d'Excel, de Word...). Des octets qui ne sont pas un zip, un fichier abime (signature CRC32 differente) ou protege par mot de passe donnent une erreur claire. Les dossiers vides sont ignores."
+    ], exemple: "d ~ dictionnai(|a.txt|: conver.texte.octets(|Bonjour|))\nz ~ creer.zip(d)\necrire.fichier(|/storage/emulated/0/Download/test.zip|, z, ecra~VRAI)\nc ~ lire.zip(lire.fichier(|/storage/emulated/0/Download/test.zip|, octets~VRAI))\naffi(conver.octets.texte(c[|a.txt|]))   ->   Bonjour" },
   { noms: ["conver.cara.code", "conver.code.cara"], categorie: "Base", syntaxe: "conver.cara.code(caractere)  /  conver.code.cara(code)", description: [
       "conver.cara.code(|A|) donne le code du caractere (ici 65). Il faut un texte d'un seul caractere ; un emoji compte pour un seul caractere (code Unicode).",
       "conver.code.cara(65) fait l'inverse : donne le caractere de ce code (ici A). Le code doit etre un entier de 0 a 1114111."
@@ -11628,6 +11645,346 @@ function enregistrerFonctionsBase() {
                 };
             }
         }
+    })();
+
+    // ===================== Bits, signatures et zip (nov 2026) =====================
+    // Bits : bit.et(a, b, ...), bit.ou(a, b, ...), bit.diff(a, b, ...) (nombre de valeurs variable : une seule valeur revient
+    // telle quelle, aucune valeur = erreur), bit.gauche(valeur, places), bit.droite(valeur, places) (exactement 2 valeurs).
+    // Entiers de -2147483648 a 4294967295 (32 bits, complement a deux pour les negatifs). Resultat positif par defaut ;
+    // signe~V le lit avec le signe. Decimaux refuses. Depassement des 32 bits : erreur claire, jamais de perte silencieuse.
+    // Signatures : signatu.crc32 / signatu.crc64 (CRC-64/XZ) / signatu.sha256 (octets en entree, texte hexadecimal minuscule en sortie).
+    // Zip : creer.zip(d, compress~FAUX) (d = dictionnai nom : octets) et lire.zip(octets) (renvoie un dictionnai nom : octets).
+    (function() {
+        const nomsBits = [];
+        function entier32(v, nom) {
+            if (typeof v !== 'number') throw new ErreurTypeInvalide(nom + "(...) attend des nombres entiers (recu : " + nomNature(v) + ")");
+            if (!Number.isFinite(v)) throw new ErreurTypeInvalide(nom + "(...) attend des nombres entiers (recu : " + formatValeur(v) + ")");
+            if (!Number.isInteger(v)) throw new ErreurTypeInvalide(nom + "(...) attend des nombres ENTIERS : " + formatValeur(v) + " a une virgule (les bits d'un decimal ne sont pas geres par bit.*)");
+            if (v < -2147483648 || v > 4294967295) throw new Error(nom + "(...) : " + formatValeur(v) + " depasse les 32 bits (valeurs permises : de -2147483648 a 4294967295)");
+            return v;
+        }
+        function sortieBits(r, signe) { return signe ? (r | 0) : (r >>> 0); }
+        async function lireSigne(opts, ctxExpr) { return opts.signe === undefined ? false : estVrai(await evalExpr(opts.signe, ctxExpr)); }
+        function enregistrerBit(nom, op) {
+            nomsBits.push(nom);
+            fonctionsBase[nom] = fonctionsExpression[nom] = async function(args, ctxExpr) {
+                const { pos, opts } = separerOptionsArgs(args, nom, ["signe"]);
+                if (pos.length === 0) throw new Error(nom + "(...) attend au moins 1 valeur (et signe~V en plus, facultatif)");
+                let r = 0;
+                for (let i = 0; i < pos.length; i++) {
+                    const u = entier32(await evalExpr(pos[i], ctxExpr), nom) >>> 0;
+                    r = (i === 0) ? u : (op(r, u) >>> 0);
+                }
+                return sortieBits(r, await lireSigne(opts, ctxExpr));
+            };
+        }
+        enregistrerBit("bit.et", (a, b) => a & b);
+        enregistrerBit("bit.ou", (a, b) => a | b);
+        enregistrerBit("bit.diff", (a, b) => a ^ b);
+        function lirePlaces(v, nom) {
+            if (typeof v !== 'number' || !Number.isInteger(v)) throw new ErreurTypeInvalide(nom + "(valeur, places) : places doit etre un nombre entier (recu : " + (typeof v === 'number' ? formatValeur(v) : nomNature(v)) + ")");
+            if (v < 0) throw new Error(nom + "(valeur, places) : places ne peut pas etre negatif (pour decaler dans l'autre sens, utilise " + (nom === "bit.gauche" ? "bit.droite" : "bit.gauche") + ")");
+            if (v > 31) throw new Error(nom + "(valeur, places) : places va de 0 a 31 (recu : " + v + ")");
+            return v;
+        }
+        function enregistrerDecalage(nom, fn) {
+            fonctionsBase[nom] = fonctionsExpression[nom] = async function(args, ctxExpr) {
+                const { pos, opts } = separerOptionsArgs(args, nom, ["signe"]);
+                if (pos.length !== 2) throw new Error(nom + "(valeur, places) attend exactement 2 valeurs (recu : " + pos.length + ") (et signe~V en plus, facultatif)");
+                const v = entier32(await evalExpr(pos[0], ctxExpr), nom);
+                const p = lirePlaces(await evalExpr(pos[1], ctxExpr), nom);
+                return sortieBits(fn(v, p, nom), await lireSigne(opts, ctxExpr));
+            };
+        }
+        enregistrerDecalage("bit.gauche", (v, p, nom) => {
+            const r = BigInt(v) * (1n << BigInt(p));
+            if (r < -2147483648n || r > 4294967295n) throw new Error(nom + "(valeur, places) : le resultat " + r.toString() + " depasse les 32 bits (aucun bit n'est perdu en silence : reduis places ou valeur)");
+            return Number(BigInt.asUintN(32, r));
+        });
+        enregistrerDecalage("bit.droite", (v, p) => (v >>> 0) >>> p);
+
+        // ---- Signatures ----
+        function octetsEntree(v, nom) {
+            if (!estOctets(v)) throw new ErreurTypeInvalide(nom + "(...) attend des octets (recu : " + nomNature(v) + "). Pour un texte : " + nom + "(conver.texte.octets(texte))");
+            return v.d;
+        }
+        const hex8 = (n) => (n >>> 0).toString(16).padStart(8, "0");
+        let tableCrc32 = null;
+        function crc32(u8) {
+            if (tableCrc32 === null) {
+                tableCrc32 = new Uint32Array(256);
+                for (let i = 0; i < 256; i++) { let c = i; for (let k = 0; k < 8; k++) c = (c & 1) ? ((c >>> 1) ^ 0xEDB88320) : (c >>> 1); tableCrc32[i] = c >>> 0; }
+            }
+            let crc = 0xFFFFFFFF;
+            for (let i = 0; i < u8.length; i++) crc = tableCrc32[(crc ^ u8[i]) & 0xFF] ^ (crc >>> 8);
+            return (crc ^ 0xFFFFFFFF) >>> 0;
+        }
+        let tableCrc64Hi = null, tableCrc64Lo = null;
+        function crc64xz(u8) {
+            if (tableCrc64Hi === null) {
+                tableCrc64Hi = new Uint32Array(256); tableCrc64Lo = new Uint32Array(256);
+                for (let i = 0; i < 256; i++) {
+                    let hi = 0, lo = i;
+                    for (let k = 0; k < 8; k++) {
+                        const bas = lo & 1;
+                        lo = ((lo >>> 1) | (hi << 31)) >>> 0; hi = hi >>> 1;
+                        if (bas) { hi = (hi ^ 0xC96C5795) >>> 0; lo = (lo ^ 0xD7870F42) >>> 0; }
+                    }
+                    tableCrc64Hi[i] = hi; tableCrc64Lo[i] = lo;
+                }
+            }
+            let hi = 0xFFFFFFFF, lo = 0xFFFFFFFF;
+            for (let i = 0; i < u8.length; i++) {
+                const idx = (lo ^ u8[i]) & 0xFF;
+                lo = (((lo >>> 8) | (hi << 24)) ^ tableCrc64Lo[idx]) >>> 0;
+                hi = ((hi >>> 8) ^ tableCrc64Hi[idx]) >>> 0;
+            }
+            return hex8(hi ^ 0xFFFFFFFF) + hex8(lo ^ 0xFFFFFFFF);
+        }
+        const K256 = new Uint32Array([
+            0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+            0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+            0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+            0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
+        function sha256(u8) {
+            const h = new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]);
+            const n = u8.length, total = (((n + 9 + 63) >> 6) << 6);
+            const m = new Uint8Array(total); m.set(u8); m[n] = 0x80;
+            const dv = new DataView(m.buffer);
+            dv.setUint32(total - 8, Math.floor(n / 0x20000000), false); dv.setUint32(total - 4, (n << 3) >>> 0, false);
+            const w = new Uint32Array(64);
+            const rot = (x, k) => (x >>> k) | (x << (32 - k));
+            for (let off = 0; off < total; off += 64) {
+                for (let i = 0; i < 16; i++) w[i] = dv.getUint32(off + i * 4, false);
+                for (let i = 16; i < 64; i++) {
+                    const s0 = rot(w[i - 15], 7) ^ rot(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+                    const s1 = rot(w[i - 2], 17) ^ rot(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+                    w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+                }
+                let a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+                for (let i = 0; i < 64; i++) {
+                    const S1 = rot(e, 6) ^ rot(e, 11) ^ rot(e, 25), ch = (e & f) ^ (~e & g);
+                    const t1 = (hh + S1 + ch + K256[i] + w[i]) >>> 0;
+                    const S0 = rot(a, 2) ^ rot(a, 13) ^ rot(a, 22), mj = (a & b) ^ (a & c) ^ (b & c);
+                    const t2 = (S0 + mj) >>> 0;
+                    hh = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+                }
+                h[0] = (h[0] + a) >>> 0; h[1] = (h[1] + b) >>> 0; h[2] = (h[2] + c) >>> 0; h[3] = (h[3] + d) >>> 0;
+                h[4] = (h[4] + e) >>> 0; h[5] = (h[5] + f) >>> 0; h[6] = (h[6] + g) >>> 0; h[7] = (h[7] + hh) >>> 0;
+            }
+            let s = ""; for (let i = 0; i < 8; i++) s += hex8(h[i]);
+            return s;
+        }
+        function enregistrerSignature(nom, fn) {
+            fonctionsBase[nom] = fonctionsExpression[nom] = async function(args, ctxExpr) {
+                if (args.length !== 1) throw new Error(nom + "(...) attend exactement 1 valeur : des octets");
+                return fn(octetsEntree(await evalExpr(args[0], ctxExpr), nom));
+            };
+        }
+        enregistrerSignature("signatu.crc32", (u8) => hex8(crc32(u8)));
+        enregistrerSignature("signatu.crc64", crc64xz);
+        enregistrerSignature("signatu.sha256", sha256);
+
+        // ---- Zip ----
+        function inflateRaw(src, tailleAttendue) {
+            let pos = 0, bitbuf = 0, bitcnt = 0;
+            let sortie = new Uint8Array(Math.max(tailleAttendue || 0, 1024)), sp = 0;
+            const ERR = "donnees compressees invalides";
+            function place(n) { if (sp + n > sortie.length) { const nb = new Uint8Array(Math.max(sortie.length * 2, sp + n)); nb.set(sortie.subarray(0, sp)); sortie = nb; } }
+            function bits(n) {
+                while (bitcnt < n) { if (pos >= src.length) throw new Error(ERR); bitbuf |= src[pos++] << bitcnt; bitcnt += 8; }
+                const v = bitbuf & ((1 << n) - 1); bitbuf >>>= n; bitcnt -= n; return v;
+            }
+            function construire(lon, off, n) {
+                const count = new Uint16Array(16), symbol = new Uint16Array(n), offs = new Uint16Array(16);
+                for (let i = 0; i < n; i++) count[lon[off + i]]++;
+                count[0] = 0;
+                for (let l = 1; l < 15; l++) offs[l + 1] = offs[l] + count[l];
+                for (let s = 0; s < n; s++) if (lon[off + s]) symbol[offs[lon[off + s]]++] = s;
+                return { count, symbol };
+            }
+            function decoder(h) {
+                let code = 0, first = 0, index = 0;
+                for (let l = 1; l <= 15; l++) {
+                    code |= bits(1);
+                    const c = h.count[l];
+                    if (code - c < first) return h.symbol[index + (code - first)];
+                    index += c; first += c; first <<= 1; code <<= 1;
+                }
+                throw new Error(ERR);
+            }
+            const LB = [3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258];
+            const LE = [0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0];
+            const DB = [1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577];
+            const DE = [0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13];
+            const ORDRE = [16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15];
+            let dernier;
+            do {
+                dernier = bits(1);
+                const type = bits(2);
+                if (type === 0) {
+                    bitbuf = 0; bitcnt = 0;
+                    if (pos + 4 > src.length) throw new Error(ERR);
+                    const len = src[pos] | (src[pos + 1] << 8), nlen = src[pos + 2] | (src[pos + 3] << 8);
+                    if ((len ^ 0xFFFF) !== nlen) throw new Error(ERR);
+                    pos += 4;
+                    if (pos + len > src.length) throw new Error(ERR);
+                    place(len); sortie.set(src.subarray(pos, pos + len), sp); sp += len; pos += len;
+                } else if (type === 1 || type === 2) {
+                    let lit, dis;
+                    if (type === 1) {
+                        const l = new Uint8Array(288);
+                        for (let i = 0; i < 144; i++) l[i] = 8;
+                        for (let i = 144; i < 256; i++) l[i] = 9;
+                        for (let i = 256; i < 280; i++) l[i] = 7;
+                        for (let i = 280; i < 288; i++) l[i] = 8;
+                        lit = construire(l, 0, 288);
+                        dis = construire(new Uint8Array(30).fill(5), 0, 30);
+                    } else {
+                        const hlit = bits(5) + 257, hdist = bits(5) + 1, hclen = bits(4) + 4;
+                        const cl = new Uint8Array(19);
+                        for (let i = 0; i < hclen; i++) cl[ORDRE[i]] = bits(3);
+                        const clh = construire(cl, 0, 19);
+                        const lens = new Uint8Array(hlit + hdist);
+                        let idx = 0;
+                        while (idx < hlit + hdist) {
+                            const sym = decoder(clh);
+                            if (sym < 16) lens[idx++] = sym;
+                            else {
+                                let rep, val = 0;
+                                if (sym === 16) { if (idx === 0) throw new Error(ERR); val = lens[idx - 1]; rep = 3 + bits(2); }
+                                else if (sym === 17) rep = 3 + bits(3);
+                                else rep = 11 + bits(7);
+                                if (idx + rep > hlit + hdist) throw new Error(ERR);
+                                while (rep--) lens[idx++] = val;
+                            }
+                        }
+                        lit = construire(lens, 0, hlit);
+                        dis = construire(lens, hlit, hdist);
+                    }
+                    for (;;) {
+                        let sym = decoder(lit);
+                        if (sym < 256) { place(1); sortie[sp++] = sym; }
+                        else if (sym === 256) break;
+                        else {
+                            sym -= 257;
+                            if (sym >= 29) throw new Error(ERR);
+                            const len = LB[sym] + bits(LE[sym]);
+                            const ds = decoder(dis);
+                            if (ds >= 30) throw new Error(ERR);
+                            const dist = DB[ds] + bits(DE[ds]);
+                            if (dist > sp) throw new Error(ERR);
+                            place(len);
+                            for (let k = 0; k < len; k++) { sortie[sp] = sortie[sp - dist]; sp++; }
+                        }
+                    }
+                } else throw new Error(ERR);
+            } while (!dernier);
+            return sortie.slice(0, sp);
+        }
+        async function deflateRaw(u8, nom) {
+            if (typeof CompressionStream === 'undefined') throw new Error(nom + "(...) : compress~VRAI n'est pas disponible sur ce telephone (CompressionStream absent) ; utilise creer.zip(d) sans compression");
+            const flux = new Blob([u8]).stream().pipeThrough(new CompressionStream("deflate-raw"));
+            return new Uint8Array(await new Response(flux).arrayBuffer());
+        }
+        function dateHeureDos() {
+            const d = new Date();
+            const an = Math.min(Math.max(d.getFullYear(), 1980), 2107);
+            return { date: ((an - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate(), heure: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1) };
+        }
+        async function fabriquerZip(d, compresser, nom) {
+            const enc = new TextEncoder();
+            const dh = dateHeureDos();
+            const locaux = [], centraux = [];
+            let offset = 0, nb = 0;
+            for (const e of d.entrees.values()) {
+                if (typeof e.cle !== 'string' || e.cle === "") throw new ErreurTypeInvalide(nom + "(...) : chaque nom de fichier du zip doit etre un texte non vide (recu : " + descriptionCleDico(e.cle) + ")");
+                if (!estOctets(e.valeur)) throw new ErreurTypeInvalide(nom + "(...) : le contenu de " + descriptionCleDico(e.cle) + " doit etre en octets (recu : " + nomNature(e.valeur) + "). Pour un texte : conver.texte.octets(...)");
+                const nomO = enc.encode(e.cle), brut = e.valeur.d;
+                if (nomO.length > 65535) throw new Error(nom + "(...) : nom de fichier trop long : " + descriptionCleDico(e.cle));
+                const crc = crc32(brut);
+                let methode = 0, data = brut;
+                if (compresser && brut.length > 0) {
+                    const c = await deflateRaw(brut, nom);
+                    if (c.length < brut.length) { methode = 8; data = c; }
+                }
+                if (data.length > 0xFFFFFFFF || offset > 0xFFFFFFFF) throw new Error(nom + "(...) : zip trop gros (limite de 4 Go, zip64 non gere)");
+                const flags = (nomO.length !== e.cle.length) ? 0x0800 : 0;
+                const lh = new Uint8Array(30 + nomO.length), lv = new DataView(lh.buffer);
+                lv.setUint32(0, 0x04034b50, true); lv.setUint16(4, 20, true); lv.setUint16(6, flags, true); lv.setUint16(8, methode, true);
+                lv.setUint16(10, dh.heure, true); lv.setUint16(12, dh.date, true); lv.setUint32(14, crc, true);
+                lv.setUint32(18, data.length, true); lv.setUint32(22, brut.length, true); lv.setUint16(26, nomO.length, true); lv.setUint16(28, 0, true);
+                lh.set(nomO, 30);
+                const ch = new Uint8Array(46 + nomO.length), cv = new DataView(ch.buffer);
+                cv.setUint32(0, 0x02014b50, true); cv.setUint16(4, 20, true); cv.setUint16(6, 20, true); cv.setUint16(8, flags, true); cv.setUint16(10, methode, true);
+                cv.setUint16(12, dh.heure, true); cv.setUint16(14, dh.date, true); cv.setUint32(16, crc, true);
+                cv.setUint32(20, data.length, true); cv.setUint32(24, brut.length, true); cv.setUint16(28, nomO.length, true);
+                cv.setUint32(42, offset, true);
+                ch.set(nomO, 46);
+                locaux.push(lh, data); centraux.push(ch);
+                offset += lh.length + data.length; nb++;
+            }
+            if (nb > 65535) throw new Error(nom + "(...) : trop de fichiers (limite de 65535, zip64 non gere)");
+            let tailleCentral = 0; for (const c of centraux) tailleCentral += c.length;
+            const fin = new Uint8Array(22), fv = new DataView(fin.buffer);
+            fv.setUint32(0, 0x06054b50, true); fv.setUint16(8, nb, true); fv.setUint16(10, nb, true); fv.setUint32(12, tailleCentral, true); fv.setUint32(16, offset, true);
+            const morceaux = locaux.concat(centraux, [fin]);
+            let total = 0; for (const m of morceaux) total += m.length;
+            const r = new Uint8Array(total); let p = 0;
+            for (const m of morceaux) { r.set(m, p); p += m.length; }
+            return r;
+        }
+        function lireZip(u8, nom) {
+            const PAS_ZIP = nom + "(...) : ce ne sont pas les octets d'un fichier zip valide";
+            let e = -1;
+            for (let i = u8.length - 22; i >= 0 && i >= u8.length - 22 - 65535; i--) {
+                if (u8[i] === 0x50 && u8[i + 1] === 0x4b && u8[i + 2] === 5 && u8[i + 3] === 6) { e = i; break; }
+            }
+            if (e < 0) throw new ErreurTypeInvalide(PAS_ZIP + " (lis le fichier avec lire.fichier(chemin, octets~VRAI))");
+            const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+            const n = dv.getUint16(e + 10, true), tailleCentral = dv.getUint32(e + 12, true);
+            let p = dv.getUint32(e + 16, true);
+            if (n === 0xFFFF || p === 0xFFFFFFFF || tailleCentral === 0xFFFFFFFF) throw new Error(nom + "(...) : zip64 (plus de 4 Go ou 65535 fichiers) non gere");
+            const dico = { __type: "dictionnai", entrees: new Map() };
+            const dec = new TextDecoder("utf-8");
+            for (let i = 0; i < n; i++) {
+                if (p + 46 > u8.length || dv.getUint32(p, true) !== 0x02014b50) throw new Error(PAS_ZIP + " (repertoire central abime)");
+                const flags = dv.getUint16(p + 8, true), methode = dv.getUint16(p + 10, true), crc = dv.getUint32(p + 16, true);
+                const csize = dv.getUint32(p + 20, true), usize = dv.getUint32(p + 24, true);
+                const nlen = dv.getUint16(p + 28, true), elen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true), lho = dv.getUint32(p + 42, true);
+                if (p + 46 + nlen > u8.length) throw new Error(PAS_ZIP + " (repertoire central abime)");
+                const nomEntree = dec.decode(u8.subarray(p + 46, p + 46 + nlen));
+                p += 46 + nlen + elen + clen;
+                if (nomEntree.endsWith("/")) continue;
+                if (flags & 1) throw new Error(nom + "(...) : " + descriptionCleDico(nomEntree) + " est protege par un mot de passe (non gere)");
+                if (methode !== 0 && methode !== 8) throw new Error(nom + "(...) : " + descriptionCleDico(nomEntree) + " utilise une compression non geree (methode " + methode + ") ; seules 'stockage' et 'deflate' sont gerees");
+                if (lho + 30 > u8.length || dv.getUint32(lho, true) !== 0x04034b50) throw new Error(PAS_ZIP + " (en-tete de " + descriptionCleDico(nomEntree) + " abime)");
+                const debut = lho + 30 + dv.getUint16(lho + 26, true) + dv.getUint16(lho + 28, true);
+                if (debut + csize > u8.length) throw new Error(PAS_ZIP + " (fichier tronque : " + descriptionCleDico(nomEntree) + ")");
+                const brut = u8.subarray(debut, debut + csize);
+                let contenu;
+                if (methode === 0) contenu = brut.slice();
+                else { try { contenu = inflateRaw(brut, usize); } catch (err) { throw new Error(nom + "(...) : " + descriptionCleDico(nomEntree) + " : donnees compressees abimees"); } }
+                if (contenu.length !== usize || crc32(contenu) !== crc) throw new Error(nom + "(...) : " + descriptionCleDico(nomEntree) + " est abime (la signature CRC32 ne correspond pas)");
+                dicoEcrire(dico, nomEntree, creerOctets(contenu), nom);
+            }
+            return dico;
+        }
+        fonctionsBase["creer.zip"] = fonctionsExpression["creer.zip"] = async function(args, ctxExpr) {
+            const { pos, opts } = separerOptionsArgs(args, "creer.zip", ["compress"]);   // compress~ au debut ou a la fin
+            if (pos.length !== 1) throw new Error("creer.zip(d) attend exactement 1 dictionnai nom : octets (et compress~VRAI en plus, facultatif)");
+            const d = await evalExpr(pos[0], ctxExpr);
+            if (!estDictionnai(d)) throw new ErreurTypeInvalide("creer.zip(d) attend un dictionnai nom : octets (recu : " + nomNature(d) + ")");
+            const compresser = opts.compress === undefined ? false : estVrai(await evalExpr(opts.compress, ctxExpr));
+            return creerOctets(await fabriquerZip(d, compresser, "creer.zip"));
+        };
+        fonctionsBase["lire.zip"] = fonctionsExpression["lire.zip"] = async function(args, ctxExpr) {
+            if (args.length !== 1) throw new Error("lire.zip(octets) attend exactement 1 valeur : les octets d'un fichier zip");
+            const v = await evalExpr(args[0], ctxExpr);
+            if (!estOctets(v)) throw new ErreurTypeInvalide("lire.zip(octets) attend des octets (recu : " + nomNature(v) + "). Un fichier se lit avec lire.fichier(chemin, octets~VRAI) ; un texte se convertit avec conver.texte.octets(...)");
+            return lireZip(v.d, "lire.zip");
+        };
+        _versionFonctionsExpression++;
     })();
 
     // est.nombr(var) / est.text(var) / est.vecteu(var) / est.matric(var) : verification de type.
