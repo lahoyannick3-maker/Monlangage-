@@ -13184,17 +13184,29 @@ function echapperHTML(texte) {
 // defaut, y compris les decimaux).
 function colorerCode(texte) {
   let html = echapperHTML(texte);
+  // Un nom deja colore (fonction ou commande, y compris a point : bit.et, est.enti, conver.texte.octets...)
+  // est mis a l'abri derriere UN caractere de remplacement (zone privee Unicode) jusqu'a la fin : les passes
+  // suivantes (et/ou/non/dan, mod/enti, VRAI/FAUX, commandes plus courtes comme "octets"...) ne peuvent plus
+  // le recolorier par morceaux, ce qui donnait 2 couleurs dans un meme nom. Si le texte contient deja de tels
+  // caracteres (tres rare), on garde l'ancien comportement sans protection.
+  const gardes = [];
+  const proteger = !/[\uE000-\uF8FF]/.test(html);
+  const garder = (balise) => {
+    if (!proteger || gardes.length >= 6000) return balise;
+    gardes.push(balise);
+    return String.fromCharCode(0xE000 + gardes.length - 1);
+  };
   html = html.replace(/~/g, '<span class="operateur">~</span>');
   // Fonctions : la parenthese ouvrante est obligatoire pour la coloration.
   if (regexFonctionCouleur) {
     html = html.replace(regexFonctionCouleur, function(match, nom) {
-      return '<span style="color:' + fonctionsCouleur[nom] + '; font-weight:bold;">' + match + '</span>';
+      return garder('<span style="color:' + fonctionsCouleur[nom] + '; font-weight:bold;">' + match + '</span>');
     });
   }
   // Commandes sans parentheses : coloration independante de la presence de "(".
   if (regexCommandeCouleur) {
     html = html.replace(regexCommandeCouleur, function(match, nom) {
-      return '<span style="color:' + commandeCouleur[nom] + '; font-weight:bold;">' + match + '</span>';
+      return garder('<span style="color:' + commandeCouleur[nom] + '; font-weight:bold;">' + match + '</span>');
     });
   }
   html = html.replace(/\b(VRAI|FAUX|pasdefini)\b/g, '<span style="color:#56d4dd; font-weight:bold;">$1</span>');
@@ -13211,6 +13223,7 @@ function colorerCode(texte) {
   // Nombres : evalues apres mod/enti pour que 3enti4 colore bien le 3 et le 4 (le mod/enti deja
   // isole dans une balise <span> cree la coupure necessaire pour que \b fonctionne).
   html = html.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="nombre">$1</span>');
+  if (gardes.length) html = html.replace(/[\uE000-\uF8FF]/g, (c) => gardes[c.charCodeAt(0) - 0xE000] || c);
   return html;
 }
 
