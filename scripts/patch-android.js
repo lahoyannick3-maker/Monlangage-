@@ -1102,6 +1102,22 @@ public class MonLangageBridge {
             }
         }
 
+        // Lecture EXACTE reservee a l'EDITEUR (texte UTF-8 tel qu'il est dans le fichier, dernier retour a la ligne
+        // compris). lireFichier ci-dessus, utilise par la commande lire.fichier du langage, reste inchange : l'editeur
+        // et le moteur MLG sont deux univers separes. null si le fichier est illisible.
+        @JavascriptInterface
+        public String lireFichierEditeur(String cheminComplet) {
+            try (FileInputStream flux = new FileInputStream(new File(cheminComplet))) {
+                java.io.ByteArrayOutputStream sortie = new java.io.ByteArrayOutputStream();
+                byte[] tampon = new byte[8192];
+                int lus;
+                while ((lus = flux.read(tampon)) != -1) sortie.write(tampon, 0, lus);
+                return new String(sortie.toByteArray(), StandardCharsets.UTF_8);
+            } catch (Exception | OutOfMemoryError e) {
+                return null;
+            }
+        }
+
         // ===================== Telechargement (gestionnaire de paquets) =====================
         // Recupere le contenu texte (UTF-8) d'une URL https -- index.json/paquet.json/modules
         // .mlg depuis le depot GitHub des paquets. Volontairement en Java plutot que fetch()
@@ -1707,23 +1723,15 @@ public class MainActivity extends BridgeActivity {
         intent.putExtra("monlangage_ouverture_traitee", true);
 
         try {
-            StringBuilder contenu = new StringBuilder();
-
-            try (BufferedReader lecteur = new BufferedReader(
-                    new InputStreamReader(
-                            getContentResolver().openInputStream(uri),
-                            StandardCharsets.UTF_8))) {
-
-                String ligne;
-                boolean premiereLigne = true;
-                while ((ligne = lecteur.readLine()) != null) {
-                    if (!premiereLigne) contenu.append("\\n");
-                    contenu.append(ligne);
-                    premiereLigne = false;
-                }
+            // Lecture exacte (comme lireFichierEditeur) : le dernier retour a la ligne n'est plus perdu.
+            java.io.ByteArrayOutputStream octetsLus = new java.io.ByteArrayOutputStream();
+            try (java.io.InputStream entree = getContentResolver().openInputStream(uri)) {
+                byte[] tampon = new byte[8192];
+                int lus;
+                while (entree != null && (lus = entree.read(tampon)) != -1) octetsLus.write(tampon, 0, lus);
             }
 
-            String texte = contenu.toString();
+            String texte = new String(octetsLus.toByteArray(), StandardCharsets.UTF_8);
 
             // L'intent peut arriver avant la fin du chargement de index.html.
             // On attend un peu avant d'appeler chargerFichierExterne().
