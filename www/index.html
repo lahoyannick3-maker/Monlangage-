@@ -905,7 +905,9 @@ function enregistrerOnglet(onglet, apresSauvegarde) {
       extension: extDefaut,
       extensionModifiable: true,
       dossierDepart: onglet.dossier,
-      onValide: (cheminComplet) => {
+      eviterEcrasement: true,
+      cheminPropre: (onglet.dossier && onglet.nom) ? onglet.dossier + "/" + onglet.nom : "",
+      onValide: (cheminComplet, infos) => {
         let ok = window.MonLangage.ecrireFichier(cheminComplet, onglet.contenu);
         if (ok) {
           onglet.nom = cheminComplet.substring(cheminComplet.lastIndexOf("/") + 1);
@@ -916,7 +918,7 @@ function enregistrerOnglet(onglet, apresSauvegarde) {
           sauvegarderEtatOnglets();
           mettreAJourBarreOnglets();
           if (onglet.id === ongletActifId) afficherNomOngletActif();
-          afficherToastEnregistrement(true, "Enregistre avec succes");
+          afficherToastEnregistrement(true, infos && infos.renomme ? "Enregistre sous : " + onglet.nom : "Enregistre avec succes");
         } else {
           afficherToastEnregistrement(false, "Echec de l'enregistrement");
         }
@@ -15926,6 +15928,8 @@ let navFichiersChemin = null;
 let navFichiersMode = null; // "enregistrer" | "ouvrir"
 let navFichiersRacine = "/storage/emulated/0";
 let navFichiersOnValide = null;
+let navFichiersEviterEcrasement = false;   // vrai pour l'enregistrement de l'editeur : ne jamais ecraser un AUTRE fichier
+let navFichiersCheminPropre = "";          // chemin du fichier que l'onglet est deja (le reecrire est permis)
 // Callback appele UNIQUEMENT si l'utilisateur annule (bouton ANNULER), jamais apres une
 // validation reussie -- permet a un appelant comme ecrire.fichier()/lire.fichier() (des
 // promesses) de rejeter proprement au lieu de rester bloque indefiniment.
@@ -15959,6 +15963,8 @@ function ouvrirNavigateurFichiers(mode, options) {
   navFichiersMode = mode;
   navFichiersOnValide = options.onValide || null;
   navFichiersOnAnnule = options.onAnnule || null;
+  navFichiersEviterEcrasement = !!options.eviterEcrasement;
+  navFichiersCheminPropre = options.cheminPropre || "";
   navFichiersExtension = options.extension || ".mlg";
   navFichiersExtensionModifiable = !!options.extensionModifiable;
   navFichiersRacine = (typeof window.MonLangage.dossierRacine === "function")
@@ -16032,10 +16038,10 @@ function chargerDossierNavigateur(chemin) {
   });
 }
 
-function validerNavigateurFichiers(cheminComplet) {
+function validerNavigateurFichiers(cheminComplet, infos) {
   let cb = navFichiersOnValide;
   fermerNavigateurFichiers();
-  if (cb) cb(cheminComplet);
+  if (cb) cb(cheminComplet, infos);
 }
 
 modalFichiersRetour.addEventListener("click", () => {
@@ -16063,8 +16069,24 @@ modalFichiersValider.addEventListener("click", () => {
   if (ext) nom = nom.replace(new RegExp(ext.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$", "i"), "");   // evite "a.mlg.mlg"
   if (!nom) { alert("Entre un nom de fichier."); return; }
   if (/[\/\\]/.test(nom)) { alert("Le nom du fichier ne peut pas contenir de / ni de \\."); return; }
-  let cheminComplet = navFichiersChemin.replace(/\/+$/, "") + "/" + nom + ext;
-  validerNavigateurFichiers(cheminComplet);
+  let dossierCible = navFichiersChemin.replace(/\/+$/, "");
+  let cheminComplet = dossierCible + "/" + nom + ext;
+  let renomme = false;
+  // Enregistrement de l'editeur : un fichier DIFFERENT qui porte deja ce nom n'est jamais ecrase. Le nouveau prend
+  // le premier nom libre : nom(1).ext, nom(2).ext... (reecrire le fichier que l'onglet est deja reste permis).
+  if (navFichiersEviterEcrasement && typeof window.MonLangage.existeFichier === "function") {
+    const existe = (c) => window.MonLangage.existeFichier(c);
+    if (cheminComplet !== navFichiersCheminPropre && existe(cheminComplet)) {
+      let m = nom.match(/^(.*\S)\((\d+)\)$/);        // "t(1)" -> on repart de "t"
+      let racineNom = m ? m[1] : nom;
+      let i = 1, candidat;
+      do { candidat = dossierCible + "/" + racineNom + "(" + i + ")" + ext; i++; }
+      while (i < 100000 && candidat !== navFichiersCheminPropre && existe(candidat));
+      cheminComplet = candidat;
+      renomme = true;
+    }
+  }
+  validerNavigateurFichiers(cheminComplet, { renomme: renomme });
 });
 
 function ouvrirFichierMlg(fichier) {
