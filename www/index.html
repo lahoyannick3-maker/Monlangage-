@@ -175,6 +175,8 @@
       color: #c9d1d9; padding: 8px 10px; font-family: monospace; font-size: 14px;
     }
     .modalFichiersExtension { color: #58a6ff; font-family: monospace; }
+    .modalFichiersNomLigne input.modalFichiersExtension { flex: none; width: 84px; padding: 8px 8px; }
+    .modalFichiersNomLigne input.modalFichiersExtension[readonly] { border-color: transparent; background: transparent; width: 56px; padding-left: 0; }
     .modalFichiersActions {
       display: flex; justify-content: flex-end; gap: 10px;
       padding: 12px 14px; border-top: 1px solid #30363d; flex-shrink: 0;
@@ -394,6 +396,8 @@
   font-size: 11px; font-weight: bold; line-height: 1;
 }
 #toastEnregistrement.succes .toastIcone { background: #238636; color: #c9d1d9; }
+#toastEnregistrement.encours { border-color: #58a6ff; }
+#toastEnregistrement.encours .toastIcone { background: #58a6ff; color: #0d1117; }
 #toastEnregistrement.echec .toastIcone { background: #da3633; color: #c9d1d9; }
     .dialogueOverlay { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,.65); z-index: 3000; padding: 24px; }
     .dialogueOverlay.ouvert { display: flex; }
@@ -527,7 +531,7 @@ affi(|Bonjour |, nom)</textarea>
       <div id="modalFichiersNomLigne" class="modalFichiersNomLigne">
         <span>Nom du fichier :</span>
         <input id="modalFichiersNom" type="text" spellcheck="false">
-        <span id="modalFichiersExtension" class="modalFichiersExtension">.mlg</span>
+        <input id="modalFichiersExtension" class="modalFichiersExtension" type="text" spellcheck="false" autocapitalize="off" autocomplete="off" value=".mlg" aria-label="Extension du fichier">
       </div>
       <div class="modalFichiersActions">
         <button id="modalFichiersAnnuler" type="button" class="annuler">ANNULER</button>
@@ -682,16 +686,19 @@ let modalFichiersValider = document.getElementById("modalFichiersValider");
 let toastEnregistrement = document.getElementById("toastEnregistrement");
 
 let toastEnregistrementTimeoutId = null;
+// succes === true : reussite, false : echec, null : operation EN COURS (ex. ouverture d'un gros fichier ;
+// reste affiche jusqu'au message suivant, avec une securite de 15 s).
 function afficherToastEnregistrement(succes, message) {
   clearTimeout(toastEnregistrementTimeoutId);
-  toastEnregistrement.classList.remove("succes", "echec");
-  toastEnregistrement.classList.add(succes ? "succes" : "echec");
-  toastEnregistrement.querySelector(".toastIcone").textContent = succes ? "✓" : "✕";
+  let enCours = succes === null;
+  toastEnregistrement.classList.remove("succes", "echec", "encours");
+  toastEnregistrement.classList.add(enCours ? "encours" : (succes ? "succes" : "echec"));
+  toastEnregistrement.querySelector(".toastIcone").textContent = enCours ? "…" : (succes ? "✓" : "✕");
   toastEnregistrement.querySelector(".toastTexte").textContent = message;
   toastEnregistrement.classList.add("visible");
   toastEnregistrementTimeoutId = setTimeout(() => {
     toastEnregistrement.classList.remove("visible");
-  }, 2200);
+  }, enCours ? 15000 : 2200);
 }
 
 /* ===================== ONGlets DE L'EDITEUR ===================== */
@@ -786,7 +793,8 @@ function afficherNomOngletActif() {
   let nom = onglet ? (onglet.nom || "sans titre") : "";
   nomFichier.textContent = nom || "Sans fichier";
   nomFichier.title = nom || "Fichier actuel";
-  let dossier = onglet ? (onglet.dossier || "") : "";
+  // Dossier d'origine ; a defaut (fichier recu d'une autre appli sans vrai chemin) la source du fichier.
+  let dossier = onglet ? (onglet.dossier || (onglet.origine ? "↗ " + onglet.origine : "")) : "";
   cheminFichierEl.textContent = dossier;
   cheminFichierEl.title = dossier;
 }
@@ -872,19 +880,27 @@ function nouvelOnglet() {
 function enregistrerOnglet(onglet, apresSauvegarde) {
   if (!onglet) return;
 
-  let nomDefaut = (onglet.nom || "").trim().replace(/\.mlg$/i, "");
-  if (!nomDefaut || nomDefaut.toLowerCase() === "sans titre") nomDefaut = "monscript";
+  // Nom et extension sont deux champs : l'extension proposee est celle du fichier (.mlg par defaut), modifiable.
+  let nomDefaut = (onglet.nom || "").trim();
+  let extDefaut = ".mlg";
+  let decoupe = nomDefaut.match(/^(.+)(\.[A-Za-z0-9_-]{1,16})$/);
+  if (decoupe) { nomDefaut = decoupe[1]; extDefaut = decoupe[2]; }
+  if (!nomDefaut || nomDefaut.toLowerCase() === "sans titre") { nomDefaut = "monscript"; extDefaut = ".mlg"; }
 
   // Navigateur de fichiers integre (choix du nom ET de l'emplacement dans un seul
   // dialogue, dans le style de l'app) : c'est la voie normale sur l'app native.
   if (window.MonLangage && typeof window.MonLangage.listerDossier === "function") {
     ouvrirNavigateurFichiers("enregistrer", {
       nomDefaut: nomDefaut,
+      extension: extDefaut,
+      extensionModifiable: true,
+      dossierDepart: onglet.dossier,
       onValide: (cheminComplet) => {
         let ok = window.MonLangage.ecrireFichier(cheminComplet, onglet.contenu);
         if (ok) {
           onglet.nom = cheminComplet.substring(cheminComplet.lastIndexOf("/") + 1);
           onglet.dossier = cheminComplet.substring(0, cheminComplet.lastIndexOf("/"));
+          onglet.origine = undefined;     // le fichier a maintenant un vrai emplacement
           onglet.contenuSauvegarde = onglet.contenu;
           onglet.dirty = false;
           sauvegarderEtatOnglets();
@@ -903,7 +919,7 @@ function enregistrerOnglet(onglet, apresSauvegarde) {
   // Fallback navigateur web classique (previsualisation hors app, ou app native
   // pas encore reconstruite avec le navigateur de fichiers integre).
   try {
-    onglet.nom = nomDefaut + ".mlg";
+    onglet.nom = nomDefaut + extDefaut;
     let blob = new Blob([onglet.contenu], { type: "text/plain;charset=utf-8" });
     let url = URL.createObjectURL(blob);
     let a = document.createElement("a");
@@ -1024,14 +1040,18 @@ function chargerFichierDansNouvelOnglet(texte, nom, dossier) {
     }
     if (dossier && !existant.dossier) existant.dossier = dossier;
     if (existant.id !== ongletActifId) activerOnglet(existant.id);
-    else { majNumeros(); majSurbrillance(); mettreAJourBarreOnglets(); sauvegarderEtatOnglets(); }
+    else { majNumeros(); majSurbrillance(); mettreAJourBarreOnglets(); sauvegarderEtatOnglets(); afficherNomOngletActif(); }
     sauvegarderCode();
     afficherEditeur();
     requestAnimationFrame(synchroniserScrollEditeur);
     return existant;
   }
   let onglet = creerOnglet(nom, texte, texte, true);
-  if (dossier) onglet.dossier = dossier;
+  if (dossier) {
+    onglet.dossier = dossier;
+    sauvegarderEtatOnglets();     // creerOnglet a deja affiche l'en-tete et memorise l'onglet AVANT que le dossier soit connu
+    afficherNomOngletActif();     // -> le dossier d'origine s'affiche des l'ouverture (comme apres un enregistrement)
+  }
   sauvegarderCode();
   afficherEditeur();
   requestAnimationFrame(synchroniserScrollEditeur);
@@ -1052,6 +1072,7 @@ function initialiserOnglets() {
       contenuSauvegarde: o.contenuSauvegarde !== undefined ? o.contenuSauvegarde : (o.contenu || ""),
       dirty: !!o.dirty,
       dossier: o.dossier || undefined,
+      origine: o.origine || undefined,
       curseurDebut: Number.isFinite(Number(o.curseurDebut)) ? Number(o.curseurDebut) : 0,
       curseurFin: Number.isFinite(Number(o.curseurFin)) ? Number(o.curseurFin) : (Number.isFinite(Number(o.curseurDebut)) ? Number(o.curseurDebut) : 0),
       scrollTop: Number.isFinite(Number(o.scrollTop)) ? Number(o.scrollTop) : 0,
@@ -15900,6 +15921,7 @@ let navFichiersOnAnnule = null;
 // les scripts, mais ecrire.fichier() par exemple utilise ".mld") -- affichee a cote du
 // champ de saisie du nom.
 let navFichiersExtension = ".mlg";
+let navFichiersExtensionModifiable = false;   // vrai pour l'enregistrement depuis l'editeur (champ extension modifiable)
 
 function ouvrirNavigateurFichiers(mode, options) {
   options = options || {};
@@ -15925,16 +15947,22 @@ function ouvrirNavigateurFichiers(mode, options) {
   navFichiersOnValide = options.onValide || null;
   navFichiersOnAnnule = options.onAnnule || null;
   navFichiersExtension = options.extension || ".mlg";
+  navFichiersExtensionModifiable = !!options.extensionModifiable;
   navFichiersRacine = (typeof window.MonLangage.dossierRacine === "function")
     ? (window.MonLangage.dossierRacine() || navFichiersRacine) : navFichiersRacine;
 
   modalFichiersNomLigne.classList.toggle("visible", mode === "enregistrer");
   modalFichiersNom.value = options.nomDefaut || "";
-  modalFichiersExtension.textContent = navFichiersExtension;
+  modalFichiersExtension.value = navFichiersExtension;
+  modalFichiersExtension.readOnly = !navFichiersExtensionModifiable;
   modalFichiersValider.style.display = mode === "enregistrer" ? "" : "none";
   modalFichiersValider.textContent = "ENREGISTRER";
 
-  chargerDossierNavigateur(navFichiersRacine);
+  // Le dialogue s'ouvre dans le dossier d'origine du fichier s'il est connu et existe ; sinon a la racine.
+  let depart = navFichiersRacine;
+  if (options.dossierDepart && typeof window.MonLangage.existeDossier === "function" &&
+      window.MonLangage.existeDossier(options.dossierDepart)) depart = options.dossierDepart;
+  chargerDossierNavigateur(depart);
   modalFichiers.classList.add("ouvert");
 }
 
@@ -16012,9 +16040,15 @@ modalFichiersAnnuler.addEventListener("click", () => {
 modalFichiersValider.addEventListener("click", () => {
   if (navFichiersMode !== "enregistrer") return;
   let ext = navFichiersExtension || "";
-  let regexExt = new RegExp(ext.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$", "i");
-  let nom = (modalFichiersNom.value || "").trim().replace(regexExt, "");
+  if (navFichiersExtensionModifiable) {
+    ext = (modalFichiersExtension.value || "").trim();
+    if (ext && ext[0] !== ".") ext = "." + ext;
+    if (ext && !/^\.[A-Za-z0-9_-]{1,16}$/.test(ext)) { alert("Extension invalide : lettres, chiffres, - et _ seulement (ex. .mlg, .txt, .xlsx). Laisse vide pour aucune extension."); return; }
+  }
+  let nom = (modalFichiersNom.value || "").trim();
+  if (ext) nom = nom.replace(new RegExp(ext.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$", "i"), "");   // evite "a.mlg.mlg"
   if (!nom) { alert("Entre un nom de fichier."); return; }
+  if (/[\/\\]/.test(nom)) { alert("Le nom du fichier ne peut pas contenir de / ni de \\."); return; }
   let cheminComplet = navFichiersChemin.replace(/\/+$/, "") + "/" + nom + ext;
   validerNavigateurFichiers(cheminComplet);
 });
@@ -16022,10 +16056,12 @@ modalFichiersValider.addEventListener("click", () => {
 function ouvrirFichierMlg(fichier) {
   if (!fichier) return;
   let lecteur = new FileReader();
+  afficherToastEnregistrement(null, "Ouverture de " + fichier.name + "...");
   lecteur.onload = () => {
     chargerFichierDansNouvelOnglet(lecteur.result, fichier.name);
+    afficherToastEnregistrement(true, "Ouvert : " + fichier.name);
   };
-  lecteur.onerror = () => alert("Impossible de lire ce fichier.");
+  lecteur.onerror = () => { afficherToastEnregistrement(false, "Impossible de lire " + fichier.name); alert("Impossible de lire ce fichier."); };
   lecteur.readAsText(fichier);
 }
 
@@ -16046,15 +16082,20 @@ btnMenuOuvrirFichier.addEventListener("click", () => {
   menuOuvrir.classList.remove("ouvert");
   if (window.MonLangage && typeof window.MonLangage.listerDossier === "function") {
     ouvrirNavigateurFichiers("ouvrir", {
-      onValide: (cheminComplet) => {
+      onValide: async (cheminComplet) => {
+        let nom = cheminComplet.substring(cheminComplet.lastIndexOf("/") + 1);
+        let dossier = cheminComplet.substring(0, cheminComplet.lastIndexOf("/"));
+        afficherToastEnregistrement(null, "Ouverture de " + nom + "...");
+        // On laisse l'ecran afficher le message AVANT la lecture (qui bloque l'ecran sur un gros fichier).
+        await new Promise((resolu) => requestAnimationFrame(() => setTimeout(resolu, 30)));
         let texte = window.MonLangage.lireFichier(cheminComplet);
         if (texte === null || texte === undefined) {
+          afficherToastEnregistrement(false, "Impossible de lire " + nom);
           alert("Impossible de lire ce fichier.");
           return;
         }
-        let nom = cheminComplet.substring(cheminComplet.lastIndexOf("/") + 1);
-        let dossier = cheminComplet.substring(0, cheminComplet.lastIndexOf("/"));
         chargerFichierDansNouvelOnglet(texte, nom, dossier);
+        afficherToastEnregistrement(true, "Ouvert : " + nom);
       }
     });
     return;
@@ -16107,8 +16148,17 @@ if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App
  * Android ou quand un .mlg est ouvert depuis le gestionnaire de fichiers.
  * Chaque ouverture cree un nouvel onglet : aucun onglet existant n'est ecrase.
  */
-window.chargerFichierExterne = function(texte, nom) {
-  chargerFichierDansNouvelOnglet(texte, nom || "sans titre");
+// Fichier recu par "Ouvrir avec..." : l'app native donne, quand Android le permet, le vrai dossier (dossier) ;
+// sinon seulement la source (origine : "Telechargements", "Google Drive", "WhatsApp"...).
+window.chargerFichierExterne = function(texte, nom, dossier, origine) {
+  nom = nom || "sans titre";
+  let onglet = chargerFichierDansNouvelOnglet(texte, nom, dossier || undefined);
+  if (onglet && !onglet.dossier && origine) {
+    onglet.origine = origine;
+    sauvegarderEtatOnglets();
+    afficherNomOngletActif();
+  }
+  afficherToastEnregistrement(true, "Ouvert : " + nom);
 };
 
 function majNumeros() {
