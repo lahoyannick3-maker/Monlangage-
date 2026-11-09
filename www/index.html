@@ -175,8 +175,12 @@
       color: #c9d1d9; padding: 8px 10px; font-family: monospace; font-size: 14px;
     }
     .modalFichiersExtension { color: #58a6ff; font-family: monospace; }
-    .modalFichiersNomLigne input.modalFichiersExtension { flex: none; width: 84px; padding: 8px 8px; }
-    .modalFichiersNomLigne input.modalFichiersExtension[readonly] { border-color: transparent; background: transparent; width: 56px; padding-left: 0; }
+    /* Extension : le point est FIXE (hors du champ), seul le nom de l'extension se modifie. */
+    .modalFichiersExtensionGroupe { display: flex; align-items: center; flex: none; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding-left: 9px; }
+    .modalFichiersExtensionGroupe .modalFichiersPoint { color: #58a6ff; font-family: monospace; font-size: 14px; user-select: none; }
+    .modalFichiersNomLigne .modalFichiersExtensionGroupe input.modalFichiersExtension { flex: none; width: 72px; border: none; background: transparent; padding: 8px 8px 8px 1px; }
+    .modalFichiersExtensionGroupe.verrouille { border-color: transparent; background: transparent; padding-left: 0; }
+    .modalFichiersNomLigne .modalFichiersExtensionGroupe.verrouille input.modalFichiersExtension { width: 56px; }
     .modalFichiersActions {
       display: flex; justify-content: flex-end; gap: 10px;
       padding: 12px 14px; border-top: 1px solid #30363d; flex-shrink: 0;
@@ -531,7 +535,7 @@ affi(|Bonjour |, nom)</textarea>
       <div id="modalFichiersNomLigne" class="modalFichiersNomLigne">
         <span>Nom du fichier :</span>
         <input id="modalFichiersNom" type="text" spellcheck="false">
-        <input id="modalFichiersExtension" class="modalFichiersExtension" type="text" spellcheck="false" autocapitalize="off" autocomplete="off" value=".mlg" aria-label="Extension du fichier">
+        <span id="modalFichiersExtensionGroupe" class="modalFichiersExtensionGroupe"><span class="modalFichiersPoint">.</span><input id="modalFichiersExtension" class="modalFichiersExtension" type="text" spellcheck="false" autocapitalize="off" autocomplete="off" value="mlg" aria-label="Extension du fichier (apres le point)"></span>
       </div>
       <div class="modalFichiersActions">
         <button id="modalFichiersAnnuler" type="button" class="annuler">ANNULER</button>
@@ -681,6 +685,12 @@ let modalFichiersListe = document.getElementById("modalFichiersListe");
 let modalFichiersNomLigne = document.getElementById("modalFichiersNomLigne");
 let modalFichiersNom = document.getElementById("modalFichiersNom");
 let modalFichiersExtension = document.getElementById("modalFichiersExtension");
+let modalFichiersExtensionGroupe = document.getElementById("modalFichiersExtensionGroupe");
+// Le point est affiche a part et ne peut pas etre efface : on retire tout point ou espace tape dans le champ.
+modalFichiersExtension.addEventListener("input", () => {
+  let propre = modalFichiersExtension.value.replace(/[.\s]/g, "");
+  if (propre !== modalFichiersExtension.value) modalFichiersExtension.value = propre;
+});
 let modalFichiersAnnuler = document.getElementById("modalFichiersAnnuler");
 let modalFichiersValider = document.getElementById("modalFichiersValider");
 let toastEnregistrement = document.getElementById("toastEnregistrement");
@@ -1023,6 +1033,9 @@ async function fermerOnglet(id) {
 
 function chargerFichierDansNouvelOnglet(texte, nom, dossier) {
   nom = nom || "sans titre";
+  // Le champ de saisie normalise les retours a la ligne (\r\n et \r deviennent \n) : on fait pareil ici pour que le texte
+  // memorise corresponde exactement a ce que l'editeur affichera (sinon un fichier Windows paraitrait modifie des l'ouverture).
+  texte = String(texte).replace(/\r\n?/g, "\n");
   if (/\.mld$/i.test(nom)) texte = affichageLisibleMld(texte);   // fichier de sauvegarde : lisible sur plusieurs lignes
   // Fichier deja ouvert dans un onglet : on y retourne au lieu de le dupliquer. Un meme fichier peut arriver
   // deux fois (Android relit le fichier d'ouverture quand l'activite est recreee, ou ouverture repetee).
@@ -15953,8 +15966,9 @@ function ouvrirNavigateurFichiers(mode, options) {
 
   modalFichiersNomLigne.classList.toggle("visible", mode === "enregistrer");
   modalFichiersNom.value = options.nomDefaut || "";
-  modalFichiersExtension.value = navFichiersExtension;
+  modalFichiersExtension.value = navFichiersExtension.replace(/^\.+/, "");   // sans le point (affiche a part, fixe)
   modalFichiersExtension.readOnly = !navFichiersExtensionModifiable;
+  modalFichiersExtensionGroupe.classList.toggle("verrouille", !navFichiersExtensionModifiable);
   modalFichiersValider.style.display = mode === "enregistrer" ? "" : "none";
   modalFichiersValider.textContent = "ENREGISTRER";
 
@@ -16041,9 +16055,9 @@ modalFichiersValider.addEventListener("click", () => {
   if (navFichiersMode !== "enregistrer") return;
   let ext = navFichiersExtension || "";
   if (navFichiersExtensionModifiable) {
-    ext = (modalFichiersExtension.value || "").trim();
-    if (ext && ext[0] !== ".") ext = "." + ext;
-    if (ext && !/^\.[A-Za-z0-9_-]{1,16}$/.test(ext)) { alert("Extension invalide : lettres, chiffres, - et _ seulement (ex. .mlg, .txt, .xlsx). Laisse vide pour aucune extension."); return; }
+    ext = (modalFichiersExtension.value || "").trim().replace(/^\.+/, "");
+    ext = ext ? "." + ext : "";      // champ vide : fichier sans extension
+    if (ext && !/^\.[A-Za-z0-9_-]{1,16}$/.test(ext)) { alert("Extension invalide : lettres, chiffres, - et _ seulement (ex. mlg, txt, xlsx). Laisse vide pour aucune extension."); return; }
   }
   let nom = (modalFichiersNom.value || "").trim();
   if (ext) nom = nom.replace(new RegExp(ext.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$", "i"), "");   // evite "a.mlg.mlg"
@@ -16088,7 +16102,10 @@ btnMenuOuvrirFichier.addEventListener("click", () => {
         afficherToastEnregistrement(null, "Ouverture de " + nom + "...");
         // On laisse l'ecran afficher le message AVANT la lecture (qui bloque l'ecran sur un gros fichier).
         await new Promise((resolu) => requestAnimationFrame(() => setTimeout(resolu, 30)));
-        let texte = window.MonLangage.lireFichier(cheminComplet);
+        // Lecture EXACTE reservee a l'editeur (garde le dernier retour a la ligne) ; lire.fichier du langage n'est pas touche.
+        let texte = (typeof window.MonLangage.lireFichierEditeur === "function")
+          ? window.MonLangage.lireFichierEditeur(cheminComplet)
+          : window.MonLangage.lireFichier(cheminComplet);
         if (texte === null || texte === undefined) {
           afficherToastEnregistrement(false, "Impossible de lire " + nom);
           alert("Impossible de lire ce fichier.");
