@@ -1607,16 +1607,75 @@ public class MainActivity extends BridgeActivity {
         }
         }
 
-    private void envoyerTexteAuWebView(String texte, String nom) {
+    private void envoyerTexteAuWebView(String texte, String nom, String dossier, String origine) {
         String texteEchappe = JSONObject.quote(texte);
         String nomEchappe = JSONObject.quote(nom);
-        String js = "window.chargerFichierExterne && window.chargerFichierExterne(" + texteEchappe + ", " + nomEchappe + ");";
+        String dossierEchappe = dossier == null ? "null" : JSONObject.quote(dossier);
+        String origineEchappee = origine == null ? "null" : JSONObject.quote(origine);
+        String js = "window.chargerFichierExterne && window.chargerFichierExterne(" + texteEchappe + ", " + nomEchappe
+                + ", " + dossierEchappe + ", " + origineEchappee + ");";
 
         // Le fichier peut etre choisi juste apres le demarrage de l'application.
         // post() attend que la WebView soit prete avant d'appeler JavaScript.
         getBridge().getWebView().post(() ->
             getBridge().getWebView().evaluateJavascript(js, null)
         );
+    }
+
+    // Chemin reel d'un fichier recu par "Ouvrir avec..." quand le fournisseur permet de le retrouver
+    // (docId du stockage : "primary:Documents/x.txt" -> /storage/emulated/0/Documents/x.txt ; "raw:/chemin" des
+    // telechargements). null sinon. Methode pure (sans Android) pour pouvoir etre testee.
+    static String cheminDepuisDocument(String autorite, String docId, String racinePrimaire) {
+        if (autorite == null || docId == null) return null;
+        if ("com.android.externalstorage.documents".equals(autorite)) {
+            int deuxPoints = docId.indexOf(':');
+            if (deuxPoints <= 0) return null;
+            String volume = docId.substring(0, deuxPoints);
+            String reste = docId.substring(deuxPoints + 1);
+            String base = "primary".equalsIgnoreCase(volume) ? racinePrimaire : "/storage/" + volume;
+            return reste.isEmpty() ? base : base + "/" + reste;
+        }
+        if ("com.android.providers.downloads.documents".equals(autorite) && docId.startsWith("raw:")) {
+            String brut = docId.substring(4);
+            return brut.startsWith("/") ? brut : null;
+        }
+        return null;
+    }
+
+    // Nom lisible de la source d'un fichier quand son vrai dossier est inconnu.
+    static String nomFournisseur(String autorite) {
+        if (autorite == null || autorite.isEmpty()) return "autre application";
+        if (autorite.startsWith("com.android.providers.downloads")) return "Telechargements";
+        if (autorite.startsWith("com.google.android.apps.docs")) return "Google Drive";
+        if (autorite.startsWith("com.whatsapp")) return "WhatsApp";
+        if (autorite.startsWith("com.android.externalstorage")) return "Stockage";
+        if (autorite.startsWith("com.android.providers.media") || "media".equals(autorite)) return "Medias";
+        return autorite;
+    }
+
+    private String obtenirCheminReel(Uri uri) {
+        try {
+            String chemin = null;
+            if ("file".equals(uri.getScheme())) {
+                chemin = uri.getPath();
+            } else if (android.provider.DocumentsContract.isDocumentUri(this, uri)) {
+                chemin = cheminDepuisDocument(uri.getAuthority(),
+                        android.provider.DocumentsContract.getDocumentId(uri),
+                        Environment.getExternalStorageDirectory().getAbsolutePath());
+            }
+            if (chemin == null) {
+                // Certains fournisseurs (medias, anciens telechargements) donnent le chemin dans la colonne _data.
+                try (android.database.Cursor curseur = getContentResolver().query(
+                        uri, new String[] { "_data" }, null, null, null)) {
+                    if (curseur != null && curseur.moveToFirst()) {
+                        int index = curseur.getColumnIndex("_data");
+                        if (index >= 0) chemin = curseur.getString(index);
+                    }
+                } catch (Exception ignoree) { }
+            }
+            if (chemin != null && new File(chemin).isFile()) return chemin;
+        } catch (Exception ignoree) { }
+        return null;
     }
 
     private String obtenirNomFichier(Uri uri) {
@@ -1668,8 +1727,12 @@ public class MainActivity extends BridgeActivity {
 
             // L'intent peut arriver avant la fin du chargement de index.html.
             // On attend un peu avant d'appeler chargerFichierExterne().
+            final String nomOuvert = obtenirNomFichier(uri);
+            final String cheminReel = obtenirCheminReel(uri);
+            final String dossierOuvert = cheminReel == null ? null : new File(cheminReel).getParent();
+            final String origineOuverte = cheminReel != null ? null : nomFournisseur(uri.getAuthority());
             getBridge().getWebView().postDelayed(
-                () -> envoyerTexteAuWebView(texte, obtenirNomFichier(uri)),
+                () -> envoyerTexteAuWebView(texte, nomOuvert, dossierOuvert, origineOuverte),
                 1200
             );
 
