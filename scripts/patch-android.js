@@ -967,6 +967,49 @@ public class MonLangageBridge {
             }
         }
 
+        // ---- Zip progressif (ouvrir.zip / entrer.zip / ajout.zip / ecrire.entrer.zip / abandon.zip) ----
+        // Chaque methode renvoie "OK", "OK:valeur" ou "ERR:message" (voir MonLangageZip). Les donnees arrivent par
+        // morceaux de 1 Mo en base64 : l'archive n'est JAMAIS construite en memoire.
+        @JavascriptInterface
+        public String zipOuvrir(String chemin, boolean compress, boolean ecra) {
+            return MonLangageZip.ouvrir(chemin, compress, ecra);
+        }
+
+        @JavascriptInterface
+        public String zipEntrer(int id, String nom, int compress, double tailleConnue, boolean reserveZip64) {
+            return MonLangageZip.entrer(id, nom, compress, tailleConnue, reserveZip64);
+        }
+
+        @JavascriptInterface
+        public String zipEcrire(int id, String base64) {
+            try {
+                byte[] octets = android.util.Base64.decode(base64, android.util.Base64.DEFAULT);
+                return MonLangageZip.ecrire(id, octets);
+            } catch (Exception | OutOfMemoryError e) {
+                return "ERR:donnees illisibles : " + e.getMessage();
+            }
+        }
+
+        @JavascriptInterface
+        public String zipFinEntree(int id) {
+            return MonLangageZip.finEntree(id);
+        }
+
+        @JavascriptInterface
+        public String zipAjouterFichier(int id, String nom, String source, int compress) {
+            return MonLangageZip.ajouterFichier(id, nom, source, compress);
+        }
+
+        @JavascriptInterface
+        public String zipFinaliser(int id) {
+            return MonLangageZip.finaliser(id);
+        }
+
+        @JavascriptInterface
+        public String zipAbandonner(int id) {
+            return MonLangageZip.abandonner(id);
+        }
+
         // VRAI si un fichier (pas un dossier) existe deja a cet emplacement. Utilise par
         // fichier.existe(...) et par ecrire.fichier(..., ecra~FAUX) pour eviter d'ecraser
         // un fichier existant sans que le codeur l'ait explicitement demande.
@@ -1485,6 +1528,12 @@ public class MonLangageBridge {
 `;
 fs.writeFileSync(path.join(bridgeDir, 'MonLangageBridge.java'), monLangageBridgeContent);
 console.log('[patch-android] MonLangageBridge.java ecrit (implementation native partagee).');
+// Zip progressif (ouvrir.zip / entrer.zip / ajout.zip) : le writer est un VRAI fichier Java (scripts/MonLangageZip.java),
+// teste a part sur une JVM avec des lecteurs zip independants ; seul le nom du package est remplace ici.
+const zipJavaSource = fs.readFileSync(path.join(__dirname, 'MonLangageZip.java'), 'utf8');
+if (zipJavaSource.indexOf('package __APPID__;') === -1) throw new Error('scripts/MonLangageZip.java : ligne "package __APPID__;" introuvable');
+fs.writeFileSync(path.join(bridgeDir, 'MonLangageZip.java'), zipJavaSource.replace('package __APPID__;', 'package ' + appId + ';'));
+console.log('[patch-android] MonLangageZip.java ecrit (ecriture zip progressive).');
 
 /* ---------- 2) MainActivity.java ---------- */
 const mainActivityDir = path.join('android', 'app', 'src', 'main', 'java', ...appId.split('.'));
