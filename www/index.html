@@ -4980,6 +4980,7 @@ function nomNature(v) {
   if (estMatrice(v)) return "matrice";
   if (estListe(v)) return "liste";
   if (estDictionnai(v)) return "dictionnai";
+  if (estArchiveZip(v)) return "archivezip";
   if (estMotif(v)) return "motif";
   if (estOctets(v)) return "octets";
   if (estVecteur(v)) return "vecteur";
@@ -6186,6 +6187,7 @@ function formatValeur(v) {
   if (estMatrice(v)) return formatMatrice(v);
   if (estListe(v)) return formatListe(v);
   if (estDictionnai(v)) return formatDictionnai(v);
+  if (estArchiveZip(v)) return "<archive zip " + v.chemin + " (" + v.etat + ")>";
   if (estMotif(v)) return "/" + v.source + "/" + v.flags;
   if (estOctets(v)) return formatOctets(v, false);
   if (estVecteur(v)) return formatVecteur(v);
@@ -6304,7 +6306,8 @@ const _MOTS_RESERVES = new Set([
   'pou', 'tanqer', 'si', 'sinon', 'essai', 'attrape', 'finalement', 'rythme', 'fonc', 'classe', 'herite',
   'retour', 'donne', 'casse', 'continu', 'quitte', 'lever', 'global', 'englobant', 'import', 'de',
   'et', 'ou', 'non', 'dan', 'VRAI', 'V', 'FAUX', 'F', 'pasdefini',
-  'sisinon', 'lettr', 'Lettr', 'pi'
+  'sisinon', 'lettr', 'Lettr', 'pi',
+  'ouvrir.zip', 'entrer.zip'
 ]);
 function _msgMotReserve(nom, role) {
   const python = nom === 'donne' ? " (comme yield en Python)" : (nom === 'retour' ? " (comme return en Python)" : "");
@@ -8994,9 +8997,16 @@ let aideCommandes = [
       "Elles prennent des OCTETS (pour un texte : signatu.crc32(conver.texte.octets(|abc|))) et renvoient un TEXTE hexadecimal en minuscules : 8 caracteres pour crc32 (controle d'erreur rapide, exige par les zip), 16 pour crc64 (variante CRC-64/XZ), 64 pour sha256 (signature solide, pour verifier qu'un fichier n'a pas ete modifie). Pour un nombre : conver.hexa.nombr(...) ; pour des octets : conver.hexa.octets(...)."
     ], exemple: "signatu.crc32(conver.texte.octets(|a|))     ->   e8b7be43\nsignatu.crc64(conver.texte.octets(|a|))     ->   330284772e652b05\nsignatu.sha256(conver.texte.octets(|abc|))  ->   ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" },
   { noms: ["creer.zip", "lire.zip"], categorie: "Sauvegarde", syntaxe: "creer.zip(d)   ou   creer.zip(d, compress~VRAI)   /   lire.zip(octets)", description: [
-      "creer.zip(d) fabrique un fichier zip. d est un dictionnai dont chaque cle est le nom du fichier dans le zip (un '/' cree un dossier : |dos/b.txt|) et chaque valeur son contenu EN OCTETS (conver.texte.octets(...) pour un texte). Elle renvoie les octets du zip, a ecrire avec ecrire.fichier. L'ordre du dictionnai est conserve. Sans compression par defaut ; compress~VRAI active la compression (compress~ peut aussi s'ecrire avant d).",
+      "creer.zip(d) fabrique un fichier zip. d est un dictionnai dont chaque cle est le nom du fichier dans le zip (un '/' cree un dossier : |dos/b.txt|) et chaque valeur son contenu EN OCTETS (conver.texte.octets(...) pour un texte). Elle renvoie les octets du zip, a ecrire avec ecrire.fichier. L'ordre du dictionnai est conserve. Sans compression par defaut ; compress~VRAI active la compression (compress~ peut aussi s'ecrire avant d). Attention : creer.zip construit TOUTE l'archive en memoire ; pour un gros classeur, utilise ouvrir.zip (ecriture progressive directement dans un fichier).",
       "lire.zip(octets) fait l'inverse : elle prend les octets d'un fichier zip (lire.fichier(chemin, octets~VRAI)) et renvoie un dictionnai nom : octets. Elle decompresse (zip d'Excel, de Word...). Des octets qui ne sont pas un zip, un fichier abime (signature CRC32 differente) ou protege par mot de passe donnent une erreur claire. Les dossiers vides sont ignores."
     ], exemple: "d ~ dictionnai(|a.txt|: conver.texte.octets(|Bonjour|))\nz ~ creer.zip(d)\necrire.fichier(|/storage/emulated/0/Download/test.zip|, z, ecra~VRAI)\nc ~ lire.zip(lire.fichier(|/storage/emulated/0/Download/test.zip|, octets~VRAI))\naffi(conver.octets.texte(c[|a.txt|]))   ->   Bonjour" },
+  { noms: ["ouvrir.zip", "entrer.zip", "ajout.zip", "ecrire.entrer.zip", "abandon.zip"], categorie: "Sauvegarde", syntaxe: "ouvrir.zip(z, chemin) { ... }   /   ajout.zip(z, nom, octets)   /   ajout.zip(z, nom, fichier~chemin)   /   entrer.zip(z, nom) { ecrire.entrer.zip(z, morceau) }   /   abandon.zip(z)", description: [
+      "ouvrir.zip(z, chemin) { ... } est un BLOC qui ecrit un zip directement dans un fichier, sans jamais garder l'archive entiere en memoire (creer.zip construit tout en memoire : trop lourd pour un gros classeur xlsx). z, en premier, est la variable qui recoit l'archive ; chemin est un chemin complet. Options : compress~VRAI (compression par defaut des entrees ; sans compression sinon) et ecra~VRAI (remplacer un fichier existant ; sans ecra~VRAI un fichier existant est refuse). Elles peuvent s'ecrire avant ou apres le chemin.",
+      "Le bloc ferme l'archive tout seul. Fin NORMALE du bloc = archive finalisee. Elle est ABANDONNEE (fichier temporaire supprime) si une erreur survient, si le script est arrete, ou si retour, casse, continu ou quitte SORTENT du bloc ; un casse ou un continu d'une boucle placee a l'interieur du bloc ne sort pas du bloc et n'abandonne rien. L'archive est ecrite dans chemin.part puis renommee tout a la fin : un ancien fichier du meme nom n'est jamais detruit avant que la nouvelle archive soit complete. Apres le bloc, z ne sert plus (erreur : archive deja fermee).",
+      "ajout.zip(z, nom, octets) ajoute une entree complete ; ajout.zip(z, nom, fichier~chemin) copie un fichier du telephone par morceaux, sans le charger en memoire. compress~VRAI ou compress~FAUX change la compression de cette seule entree. Un nom ne peut pas etre vide, finir par / ni exister deja dans l'archive ; un / dans le nom cree le dossier.",
+      "entrer.zip(z, nom) { ... } ecrit UNE entree par morceaux : dans le bloc, ecrire.entrer.zip(z, morceau, ...) ajoute des textes (ecrits en UTF-8) ou des octets, sans melanger texte et octets dans un meme appel. L'entree se ferme a la fin du bloc ; une seule entree a la fois (pas de entrer.zip dans entrer.zip). Elle accepte compress~VRAI ou compress~FAUX. Une entree ecrite par morceaux ne peut pas depasser 4 Go (erreur claire) ; les entrees de ajout.zip passent en zip64 toutes seules si besoin.",
+      "abandon.zip(z) annule volontairement l'archive en cours : rien n'est cree et la suite du bloc donne une erreur claire (archive abandonnee). Dans ces blocs, donne est interdit. ouvrir.zip et entrer.zip sont des mots reserves."
+    ], exemple: "ouvrir.zip(z, |/storage/emulated/0/Download/gros.zip|, ecra~VRAI, compress~VRAI) {\n  ajout.zip(z, |a.txt|, conver.texte.octets(|Bonjour|))\n  ajout.zip(z, |photo.jpg|, fichier~|/storage/emulated/0/DCIM/photo.jpg|, compress~FAUX)\n  entrer.zip(z, |donnees/lignes.txt|) {\n    pou(i, 1, 100000) { ecrire.entrer.zip(z, |ligne | + texte(i) + |\\n|) }\n  }\n}\naffi(|zip termine|)" },
   { noms: ["conver.cara.code", "conver.code.cara"], categorie: "Base", syntaxe: "conver.cara.code(caractere)  /  conver.code.cara(code)", description: [
       "conver.cara.code(|A|) donne le code du caractere (ici 65). Il faut un texte d'un seul caractere ; un emoji compte pour un seul caractere (code Unicode).",
       "conver.code.cara(65) fait l'inverse : donne le caractere de ce code (ici A). Le code doit etre un entier de 0 a 1114111."
@@ -12014,6 +12024,56 @@ function enregistrerFonctionsBase() {
             const compresser = opts.compress === undefined ? false : estVrai(await evalExpr(opts.compress, ctxExpr));
             return creerOctets(await fabriquerZip(d, compresser, "creer.zip"));
         };
+        // Zip progressif : ajout.zip(z, nom, octets) / ajout.zip(z, nom, fichier~chemin), ecrire.entrer.zip(z, morceau, ...), abandon.zip(z)
+        // (les blocs ouvrir.zip et entrer.zip sont geres par executerTokens : voir _executerBlocZip).
+        fonctionsBase["ajout.zip"] = fonctionsExpression["ajout.zip"] = async function(args, ctxExpr) {
+            const { pos, opts } = separerOptionsArgs(args, "ajout.zip", ["compress", "fichier"]);   // options au debut ou a la fin
+            const veutFichier = opts.fichier !== undefined;
+            if (pos.length !== (veutFichier ? 2 : 3)) throw new Error("ajout.zip(z, nom, octets) ou ajout.zip(z, nom, fichier~chemin) : " + (veutFichier ? "fichier~ remplace les octets (2 valeurs attendues : z et nom)" : "3 valeurs attendues : z, nom et les octets") + " ; compress~VRAI ou FAUX facultatif");
+            const archive = _zipArchive(await evalExpr(pos[0], ctxExpr), "ajout.zip");
+            const nom = _zipTexteNom(await evalExpr(pos[1], ctxExpr), "ajout.zip(z, nom, ...)");
+            if (archive.entree !== null) throw new Error("ajout.zip : une entree est ouverte (" + archive.entree + ") : termine le bloc entrer.zip avant d'ajouter une autre entree");
+            const comp = await _zipCompress(opts, ctxExpr);
+            const pont = _pontZip("ajout.zip");
+            if (veutFichier) {
+                const src = _zipCheminComplet(await evalExpr(opts.fichier, ctxExpr), "ajout.zip(...)", "fichier~");
+                _zipNatif(pont.zipAjouterFichier(archive.id, nom, src, comp), "ajout.zip");
+                return true;
+            }
+            const contenu = await evalExpr(pos[2], ctxExpr);
+            if (!estOctets(contenu)) throw new ErreurTypeInvalide("ajout.zip(z, nom, octets) : le contenu doit etre des octets (recu : " + nomNature(contenu) + "). Pour un texte : conver.texte.octets(...)");
+            _zipNatif(pont.zipEntrer(archive.id, nom, comp, contenu.d.length, false), "ajout.zip");
+            archive.entree = nom;
+            try {
+                await _zipEnvoyer(archive, contenu.d, "ajout.zip");
+                _zipNatif(pont.zipFinEntree(archive.id), "ajout.zip");
+                archive.entree = null;
+            } catch (e) { _zipAbandonner(archive); throw e; }
+            return true;
+        };
+        fonctionsBase["ecrire.entrer.zip"] = fonctionsExpression["ecrire.entrer.zip"] = async function(args, ctxExpr) {
+            if (args.length < 2) throw new Error("ecrire.entrer.zip(z, morceau, ...) attend l'archive puis au moins un morceau (texte ou octets)");
+            const archive = _zipArchive(await evalExpr(args[0], ctxExpr), "ecrire.entrer.zip");
+            if (archive.entree === null) throw new Error("ecrire.entrer.zip(...) n'est utilisable qu'a l'interieur d'un bloc entrer.zip(z, nom) { ... }");
+            const valeurs = [];
+            for (let i = 1; i < args.length; i++) valeurs.push(await evaluerElementBrut(args[i].trim(), ctxExpr));
+            const nbOctets = valeurs.filter(estOctets).length;
+            if (nbOctets !== 0 && nbOctets !== valeurs.length) throw new ErreurTypeInvalide("ecrire.entrer.zip(...) : on ne mele pas du texte et des octets dans un meme appel (recu : " + valeurs.map(nomNature).join(", ") + "). Pour convertir : conver.texte.octets(...) ou conver.octets.texte(...)");
+            if (nbOctets === 0 && !valeurs.every(v => typeof v === 'string')) throw new ErreurTypeInvalide("ecrire.entrer.zip(...) : des textes ou des octets sont attendus (recu : " + valeurs.map(nomNature).join(", ") + "). Pour un nombre ou autre valeur : texte(...)");
+            const enc = new TextEncoder();
+            try {
+                for (const v of valeurs) await _zipEnvoyer(archive, estOctets(v) ? v.d : enc.encode(v), "ecrire.entrer.zip");
+            } catch (e) { _zipAbandonner(archive); throw e; }
+            return true;
+        };
+        fonctionsBase["abandon.zip"] = fonctionsExpression["abandon.zip"] = async function(args, ctxExpr) {
+            if (args.length !== 1) throw new Error("abandon.zip(z) attend exactement 1 valeur : l'archive donnee par ouvrir.zip(z, ...)");
+            const a = await evalExpr(args[0], ctxExpr);
+            if (!estArchiveZip(a)) throw new ErreurTypeInvalide("abandon.zip(z) attend l'archive donnee par ouvrir.zip(z, ...) (recu : " + nomNature(a) + ")");
+            if (a.etat === 'finalisee') throw new Error("abandon.zip(z) : l'archive est deja finalisee (le bloc ouvrir.zip est termine), on ne peut plus l'abandonner");
+            _zipAbandonner(a);
+            return true;
+        };
         fonctionsBase["lire.zip"] = fonctionsExpression["lire.zip"] = async function(args, ctxExpr) {
             if (args.length !== 1) throw new Error("lire.zip(octets) attend exactement 1 valeur : les octets d'un fichier zip");
             const v = await evalExpr(args[0], ctxExpr);
@@ -14917,6 +14977,15 @@ function verifierSyntaxeProgramme(code, tokens) {
     try { verifierSyntaxeExpression(str); }
     catch (e) { err(ligne, (contexte ? contexte + " : " : "") + e.message); }
   };
+  // Vrai si un bloc ouvrir.zip / entrer.zip englobe l'instruction DANS la meme fonction (donne y est interdit).
+  const dansBlocZipLocal = (kinds) => {
+    for (let k = pile.length - 1; k >= 0; k--) {
+      const kd = pile[k].kind;
+      if (kinds.indexOf(kd) !== -1) return true;
+      if (kd === 'fonc' || kd === 'classe' || kd === 'racine') return false;
+    }
+    return false;
+  };
   const dansFonction = () => pile.some(b => b.kind === 'fonc');
   const dansBoucle = () => {
     for (let k = pile.length - 1; k >= 0; k--) {
@@ -14951,7 +15020,7 @@ function verifierSyntaxeProgramme(code, tokens) {
     if (m && _MOTS_RESERVES.has(m[1])) { err(l, _msgMotReserve(m[1], "variable")); i++; continue; }
 
     if (t === '{') {
-      fatal(l, "Accolade { inattendue : elle doit suivre une instruction de bloc (si, sinon, pou, tanqer, fonc, classe, essai, attrape, finalement)");
+      fatal(l, "Accolade { inattendue : elle doit suivre une instruction de bloc (si, sinon, pou, tanqer, rythme, ouvrir.zip, entrer.zip, fonc, classe, essai, attrape, finalement)");
       break;
     }
     if (t === '}') {
@@ -15053,6 +15122,26 @@ function verifierSyntaxeProgramme(code, tokens) {
       continue;
     }
 
+    if ((t.startsWith('ouvrir.zip(') || t.startsWith('entrer.zip(')) && t.endsWith(')')) {
+      const estOuvrirZ = t.startsWith('ouvrir.zip(');
+      try {
+        if (estOuvrirZ) {
+          const e = analyserEnTeteZipOuvrir(t);
+          if (_MOTS_RESERVES.has(e.varNom)) err(l, _msgMotReserve(e.varNom, "variable de ouvrir.zip"));
+          testExpr(e.cheminExpr, l, "chemin de ouvrir.zip(...)");
+          for (const k of Object.keys(e.opts)) testExpr(e.opts[k], l, k + "~ de ouvrir.zip(...)");
+        } else {
+          const e = analyserEnTeteZipEntrer(t);
+          testExpr(e.zExpr, l, "archive de entrer.zip(...)");
+          testExpr(e.nomExpr, l, "nom de entrer.zip(...)");
+          for (const k of Object.keys(e.opts)) testExpr(e.opts[k], l, k + "~ de entrer.zip(...)");
+          if (dansBlocZipLocal(['zipentree'])) err(l, "entrer.zip ne peut pas contenir entrer.zip : une seule entree a la fois dans l'archive");
+        }
+      } catch (e) { err(l, e.message); }
+      i = ouvrirBloc(estOuvrirZ ? 'zip' : 'zipentree', estOuvrirZ ? "ouvrir.zip(...)" : "entrer.zip(...)", i, l, erreurs.length > nbAvant);
+      continue;
+    }
+
     if (t.startsWith('rythme(') && t.endsWith(')')) {
       const argR = t.slice(7, -1);
       if (argR.trim() === "") err(l, "rythme(secondes) attend la duree d'un tour, en secondes : rythme(0.05){ ... }");
@@ -15105,6 +15194,7 @@ function verifierSyntaxeProgramme(code, tokens) {
       continue;
     }
     if (_tokenDonne(t)) {
+      if (dansBlocZipLocal(['zip', 'zipentree'])) err(l, "donne n'est pas utilisable a l'interieur d'un bloc ouvrir.zip ou entrer.zip : l'archive resterait ouverte pendant la pause du generateur");
       if (!dansFonction()) err(l, "donne n'est utilisable qu'a l'interieur d'une fonction (fonc) : une fonction qui contient donne devient un generateur");
       const resteD = t.slice(5).trim();
       if (resteD !== "") {
@@ -15131,7 +15221,7 @@ function verifierSyntaxeProgramme(code, tokens) {
 
     // ---- une ligne suivie de { qui n'est aucun des en-tetes ci-dessus : en-tete mal forme ----
     if (tokens[i + 1] && tokens[i + 1].texte === '{') {
-      err(l, "Instruction de bloc inconnue ou mal formee avant { : \"" + _court(t) + "\" (attendu : si(condition), sinon si(condition), sinon, pou(...), tanqer(condition), tanqer VRAI, rythme(secondes), fonc nom(...), classe Nom, essai ou attrape)");
+      err(l, "Instruction de bloc inconnue ou mal formee avant { : \"" + _court(t) + "\" (attendu : si(condition), sinon si(condition), sinon, pou(...), tanqer(condition), tanqer VRAI, rythme(secondes), ouvrir.zip(z, chemin), entrer.zip(z, nom), fonc nom(...), classe Nom, essai ou attrape)");
       pile.push({ kind: 'inconnu', nom: t, ligne: l });
       i += 2;
       continue;
@@ -15257,6 +15347,7 @@ function _construireNoeudInstruction(tokens, index) {
     if (!tokens[index+1] || tokens[index+1].texte !== "{") throw new Error("Manque { apres pou");
     return { t: 'pou', entete: entete, finBloc: trouverFinBloc(tokens, index + 2, ligne) };
   }
+  if ((token.startsWith('ouvrir.zip(') || token.startsWith('entrer.zip(')) && token.endsWith(')')) return _NOEUD_AUTRE;
   if (token.startsWith('rythme(') && token.endsWith(')')) return _NOEUD_AUTRE;
   const infinie = /^tanqer\s+(VRAI|V)$/.test(token);
   if ((token.startsWith('tanqer(') && token.endsWith(')')) || infinie) {
@@ -15483,6 +15574,119 @@ const _RES_CASSE = { index: 0, signal: { type: 'casse' } };
 const _RES_CONTINU = { index: 0, signal: { type: 'continu' } };
 function _resSync(sig) { return sig === null ? _RES_AUCUN : (sig === 'casse' ? _RES_CASSE : _RES_CONTINU); }
 // Corps synchrone d'une boucle (compile une seule fois, memorise dans le noeud) ; null si non eligible.
+/* ===================== ZIP PROGRESSIF : ouvrir.zip(z, chemin){...} et entrer.zip(z, nom){...} ===================== */
+// L'ecriture se fait cote Java (MonLangageZip) directement dans un fichier : aucune archive complete en memoire.
+// Le bloc ouvrir.zip FERME tout seul : fin normale du bloc = archive finalisee ; erreur, arret, retour/casse/continu
+// qui SORTENT du bloc, quitte, ou abandon.zip(z) = archive abandonnee (le fichier temporaire est supprime).
+function estArchiveZip(v) { return v !== null && typeof v === 'object' && v.__type === 'archivezip'; }
+const ZIP_TAILLE_MORCEAU = 1024 * 1024;
+function _pontZip(nomCmd) {
+  const pont = window.MonLangage;
+  if (!(pont && typeof pont.zipOuvrir === "function")) throw new Error(nomCmd + " : le zip progressif n'est possible que dans l'app Android installee (le pont natif est absent ici)");
+  return pont;
+}
+function _zipNatif(r, nomCmd) {
+  if (typeof r !== "string" || r === "") throw new Error(nomCmd + " : reponse native inattendue");
+  if (r.startsWith("ERR:")) throw new Error(nomCmd + " : " + r.slice(4));
+  return r.startsWith("OK:") ? r.slice(3) : "";
+}
+function _zipArchive(v, nomCmd) {
+  if (!estArchiveZip(v)) throw new ErreurTypeInvalide(nomCmd + " : le premier argument doit etre l'archive donnee par ouvrir.zip(z, ...) (recu : " + nomNature(v) + ")");
+  if (v.etat === 'finalisee') throw new Error(nomCmd + " : archive deja fermee (le bloc ouvrir.zip est termine)");
+  if (v.etat === 'abandonnee') throw new Error(nomCmd + " : archive abandonnee (erreur, sortie du bloc ou abandon.zip)");
+  return v;
+}
+function _zipAbandonner(a) {
+  if (a.etat !== 'ouverte') return;
+  a.etat = 'abandonnee';
+  a.entree = null;
+  try { window.MonLangage.zipAbandonner(a.id); } catch (_) {}
+}
+function _zipTexteNom(v, nomCmd) {
+  if (typeof v !== 'string' || v === "") throw new ErreurTypeInvalide(nomCmd + " : le nom de l'entree doit etre un texte non vide (recu : " + nomNature(v) + ")");
+  return v;
+}
+function _zipCheminComplet(v, nomCmd, role) {
+  if (typeof v !== 'string' || v === "") throw new ErreurTypeInvalide(nomCmd + " : " + role + " doit etre un texte non vide (recu : " + nomNature(v) + ")");
+  if (v.indexOf("/") === -1) throw new Error(nomCmd + " : " + role + " doit etre un chemin complet avec des / (ex: |/storage/emulated/0/Download/gros.xlsx|)");
+  return v;
+}
+async function _zipCompress(opts, ctxExpr) {
+  if (opts.compress === undefined) return -1;          // -1 = valeur donnee a ouvrir.zip
+  return estVrai(await evalExpr(opts.compress, ctxExpr)) ? 1 : 0;
+}
+function analyserEnTeteZipOuvrir(token) {
+  const parties = splitTopLevelComma(token.slice(11, -1).trim()).map(x => x.trim());
+  if (parties.length < 2 || !/^[A-Za-z_]\w*$/.test(parties[0])) throw new Error("Syntaxe: ouvrir.zip(z, chemin) { ... } : z (en premier) est la variable qui recevra l'archive ; options facultatives : compress~VRAI, ecra~VRAI");
+  const { pos, opts } = separerOptionsArgs(parties.slice(1), "ouvrir.zip", ["compress", "ecra"]);
+  if (pos.length !== 1 || pos[0].trim() === "") throw new Error("Syntaxe: ouvrir.zip(z, chemin) { ... } : il faut exactement un chemin");
+  return { varNom: parties[0], cheminExpr: pos[0].trim(), opts: opts };
+}
+function analyserEnTeteZipEntrer(token) {
+  const parties = splitTopLevelComma(token.slice(11, -1).trim()).map(x => x.trim());
+  const { pos, opts } = separerOptionsArgs(parties, "entrer.zip", ["compress"]);
+  if (pos.length !== 2 || pos[0].trim() === "" || pos[1].trim() === "") throw new Error("Syntaxe: entrer.zip(z, nom) { ... } ou entrer.zip(z, nom, compress~FAUX) { ... }");
+  return { zExpr: pos[0].trim(), nomExpr: pos[1].trim(), opts: opts };
+}
+// Envoie des octets a l'entree ouverte, par morceaux de 1 Mo (jamais tout d'un coup en base64).
+async function _zipEnvoyer(archive, u8, nomCmd) {
+  const pont = _pontZip(nomCmd);
+  for (let o = 0; o < u8.length; o += ZIP_TAILLE_MORCEAU) {
+    await respirer();
+    if (archive.etat !== 'ouverte') throw new Error(nomCmd + " : archive abandonnee");
+    _zipNatif(pont.zipEcrire(archive.id, octetsVersBase64(u8.subarray(o, Math.min(u8.length, o + ZIP_TAILLE_MORCEAU)))), nomCmd);
+  }
+}
+// Retourne { res, finBloc } : res = resultat d'une sortie anticipee du bloc (a renvoyer tel quel), ou null.
+async function _executerBlocZip(tokens, index, ligne, token, ctxExpr) {
+  const estOuvrir = token.startsWith('ouvrir.zip(');
+  const nomBloc = estOuvrir ? "ouvrir.zip" : "entrer.zip";
+  if (!tokens[index + 1] || tokens[index + 1].texte !== "{") {
+    throw new Error(nomBloc + " est un bloc : " + (estOuvrir ? "ouvrir.zip(z, chemin) { ... }" : "entrer.zip(z, nom) { ... }") + " (il manque { apres " + nomBloc + "(...))");
+  }
+  const finBloc = trouverFinBloc(tokens, index + 2, ligne);
+  if (estOuvrir) {
+    const h = analyserEnTeteZipOuvrir(token);
+    const chemin = _zipCheminComplet(await evalExpr(h.cheminExpr, ctxExpr), "ouvrir.zip(z, chemin)", "chemin");
+    const compress = h.opts.compress === undefined ? false : estVrai(await evalExpr(h.opts.compress, ctxExpr));
+    const ecra = h.opts.ecra === undefined ? false : estVrai(await evalExpr(h.opts.ecra, ctxExpr));
+    const pont = _pontZip("ouvrir.zip");
+    if (typeof pont.permissionStockageAccordee === "function" && !pont.permissionStockageAccordee()) throw new ErreurPermissionRefusee("ouvrir.zip(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
+    if (!ecra && typeof pont.existeFichier === "function" && pont.existeFichier(chemin)) {
+      throw new ErreurFichierDejaExistant("ouvrir.zip(...) : le fichier '" + chemin + "' existe deja (utilise ecra~VRAI pour le remplacer, ou fichier.existe(...) pour verifier avant)");
+    }
+    const id = parseInt(_zipNatif(pont.zipOuvrir(chemin, compress, ecra), "ouvrir.zip"), 10);
+    const archive = { __type: 'archivezip', id: id, chemin: chemin, etat: 'ouverte', entree: null };
+    setVar(h.varNom, archive);
+    try {
+      const res = await executerTokens(tokens, index + 2, finBloc - 1);
+      if (res.signal) { _zipAbandonner(archive); return { res: res, finBloc: finBloc }; }   // sortie anticipee = abandon
+      if (archive.etat === 'ouverte') {
+        _zipNatif(pont.zipFinaliser(archive.id), "ouvrir.zip");
+        archive.etat = 'finalisee';
+      }
+    } catch (e) { _zipAbandonner(archive); throw e; }   // erreur, arret manuel, quitte...
+    return { res: null, finBloc: finBloc };
+  }
+  const h = analyserEnTeteZipEntrer(token);
+  const archive = _zipArchive(await evalExpr(h.zExpr, ctxExpr), "entrer.zip");
+  const nom = _zipTexteNom(await evalExpr(h.nomExpr, ctxExpr), "entrer.zip(z, nom)");
+  if (archive.entree !== null) throw new Error("entrer.zip : une entree est deja ouverte (" + archive.entree + ") : entrer.zip ne peut pas contenir entrer.zip");
+  const comp = await _zipCompress(h.opts, ctxExpr);
+  const pont = _pontZip("entrer.zip");
+  _zipNatif(pont.zipEntrer(archive.id, nom, comp, -1, false), "entrer.zip");
+  archive.entree = nom;
+  try {
+    const res = await executerTokens(tokens, index + 2, finBloc - 1);
+    if (res.signal) { _zipAbandonner(archive); return { res: res, finBloc: finBloc }; }
+    if (archive.etat === 'ouverte') {
+      _zipNatif(pont.zipFinEntree(archive.id), "entrer.zip");
+      archive.entree = null;
+    }
+  } catch (e) { _zipAbandonner(archive); throw e; }
+  return { res: null, finBloc: finBloc };
+}
+
 function _corpsSyncDe(nd, tokens, index) {
   if (nd.corpsSync === undefined) nd.corpsSync = _compilerBlocSync(tokens, index + 2, nd.finBloc - 1);
   return nd.corpsSync;
@@ -15765,6 +15969,14 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
           }
         }
         index = finBloc;
+        continue;
+      }
+
+      // ouvrir.zip(z, chemin){...} / entrer.zip(z, nom){...} : blocs du zip progressif (ferment tout seuls).
+      if ((token.startsWith('ouvrir.zip(') || token.startsWith('entrer.zip(')) && token.endsWith(')')) {
+        const rz = await _executerBlocZip(tokens, index, ligneActuelle, token, ctxExpr);
+        if (rz.res) return rz.res;
+        index = rz.finBloc;
         continue;
       }
 
