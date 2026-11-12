@@ -12037,7 +12037,16 @@ function enregistrerFonctionsBase() {
             const pont = _pontZip("ajout.zip");
             if (veutFichier) {
                 const src = _zipCheminComplet(await evalExpr(opts.fichier, ctxExpr), "ajout.zip(...)", "fichier~");
-                _zipNatif(pont.zipAjouterFichier(archive.id, nom, src, comp), "ajout.zip");
+                _zipNatif(pont.zipAjouterFichierDebut(archive.id, nom, src, comp), "ajout.zip");
+                archive.entree = nom;
+                try {
+                    for (;;) {                                  // copie pas a pas : on cede la main entre deux pas
+                        await _zipCeder(true);
+                        if (archive.etat !== 'ouverte') throw new Error("ajout.zip : archive abandonnee");
+                        if (_zipNatif(pont.zipAjouterFichierPas(archive.id, ZIP_PAS_COPIE), "ajout.zip") === "0") break;
+                    }
+                    archive.entree = null;
+                } catch (e) { _zipAbandonner(archive); throw e; }
                 return true;
             }
             const contenu = await evalExpr(pos[2], ctxExpr);
@@ -15580,6 +15589,19 @@ function _resSync(sig) { return sig === null ? _RES_AUCUN : (sig === 'casse' ? _
 // qui SORTENT du bloc, quitte, ou abandon.zip(z) = archive abandonnee (le fichier temporaire est supprime).
 function estArchiveZip(v) { return v !== null && typeof v === 'object' && v.__type === 'archivezip'; }
 const ZIP_TAILLE_MORCEAU = 1024 * 1024;
+const ZIP_PAS_COPIE = 2 * 1024 * 1024;
+let _zipDernierYield = 0;
+// Les appels natifs sont SYNCHRONES : pendant chacun, la page est figee. On rend donc la main au navigateur au moins
+// toutes les ~25 ms (affichage du panneau d'execution, bouton Arreter, defilement). Sans cela, respirer() ne cedait
+// que tous les 300 pas et une ecriture de 300 Mo ne cedait presque jamais.
+async function _zipCeder(forcer) {
+  if (forcer || performance.now() - _zipDernierYield >= 25) {
+    await respirer(true);
+    _zipDernierYield = performance.now();
+  } else {
+    await respirer();      // compte le pas et leve ExecutionInterrompue si l'arret est demande
+  }
+}
 function _pontZip(nomCmd) {
   const pont = window.MonLangage;
   if (!(pont && typeof pont.zipOuvrir === "function")) throw new Error(nomCmd + " : le zip progressif n'est possible que dans l'app Android installee (le pont natif est absent ici)");
@@ -15632,7 +15654,7 @@ function analyserEnTeteZipEntrer(token) {
 async function _zipEnvoyer(archive, u8, nomCmd) {
   const pont = _pontZip(nomCmd);
   for (let o = 0; o < u8.length; o += ZIP_TAILLE_MORCEAU) {
-    await respirer();
+    await _zipCeder(false);
     if (archive.etat !== 'ouverte') throw new Error(nomCmd + " : archive abandonnee");
     _zipNatif(pont.zipEcrire(archive.id, octetsVersBase64(u8.subarray(o, Math.min(u8.length, o + ZIP_TAILLE_MORCEAU)))), nomCmd);
   }
@@ -15651,6 +15673,7 @@ async function _executerBlocZip(tokens, index, ligne, token, ctxExpr) {
     const compress = h.opts.compress === undefined ? false : estVrai(await evalExpr(h.opts.compress, ctxExpr));
     const ecra = h.opts.ecra === undefined ? false : estVrai(await evalExpr(h.opts.ecra, ctxExpr));
     const pont = _pontZip("ouvrir.zip");
+    await _zipCeder(true);     // laisse le panneau d'execution s'afficher avant le premier appel natif
     if (typeof pont.permissionStockageAccordee === "function" && !pont.permissionStockageAccordee()) throw new ErreurPermissionRefusee("ouvrir.zip(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
     if (!ecra && typeof pont.existeFichier === "function" && pont.existeFichier(chemin)) {
       throw new ErreurFichierDejaExistant("ouvrir.zip(...) : le fichier '" + chemin + "' existe deja (utilise ecra~VRAI pour le remplacer, ou fichier.existe(...) pour verifier avant)");
@@ -15662,6 +15685,7 @@ async function _executerBlocZip(tokens, index, ligne, token, ctxExpr) {
       const res = await executerTokens(tokens, index + 2, finBloc - 1);
       if (res.signal) { _zipAbandonner(archive); return { res: res, finBloc: finBloc }; }   // sortie anticipee = abandon
       if (archive.etat === 'ouverte') {
+        await _zipCeder(true);   // la finalisation (synchronisation disque, renommage) peut prendre un moment
         _zipNatif(pont.zipFinaliser(archive.id), "ouvrir.zip");
         archive.etat = 'finalisee';
       }
