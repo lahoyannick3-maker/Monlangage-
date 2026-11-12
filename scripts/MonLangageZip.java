@@ -31,6 +31,8 @@ public final class MonLangageZip {
     private static final long MAX32 = 0xFFFFFFFEL;       // 0xFFFFFFFF signifie "voir l'extra ZIP64"
     private static final int MAX_ARCHIVES = 8;
     private static final int TAMPON = 64 * 1024;
+    private static final long SYNC_TOUS_LES = 8L * 1024 * 1024;   // synchronisation disque reguliere : pas de gros blocage final
+    private static final int PAS_COPIE = 2 * 1024 * 1024;         // octets copies par appel de ajouterFichierPas
 
     private static final HashMap<Integer, Archive> archives = new HashMap<>();
     private static int prochainId = 1;
@@ -75,6 +77,8 @@ public final class MonLangageZip {
         final byte[] buf = new byte[TAMPON];
         int n = 0;
         long pos = 0;      // position logique (fin du fichier)
+        long depuisSync = 0;
+        boolean syncActive = true;
         Sortie(RandomAccessFile f) { this.f = f; }
         void ecrire(byte[] b, int off, int len) throws IOException {
             pos += len;
@@ -85,7 +89,19 @@ public final class MonLangageZip {
                 n += k; off += k; len -= k;
             }
         }
-        void vider() throws IOException { if (n > 0) { f.write(buf, 0, n); n = 0; } }
+        void vider() throws IOException {
+            if (n > 0) {
+                f.write(buf, 0, n);
+                depuisSync += n;
+                n = 0;
+                if (syncActive && depuisSync >= SYNC_TOUS_LES) { synchroniser(); }
+            }
+        }
+        // Meilleur effort : un systeme de fichiers qui refuse la synchronisation ne doit pas faire echouer l'archive.
+        void synchroniser() {
+            depuisSync = 0;
+            try { f.getFD().sync(); } catch (IOException e) { syncActive = false; }
+        }
         void corriger(long decalage, byte[] b) throws IOException {
             vider();
             f.seek(decalage);
@@ -118,6 +134,7 @@ public final class MonLangageZip {
         Entree cur;
         boolean cassee = false;
         byte[] tmp = new byte[TAMPON];
+        FileInputStream copieIn;       // fichier source en cours de copie par ajouterFichierPas
     }
 
     private static String ok() { return "OK"; }
@@ -358,6 +375,52 @@ public final class MonLangageZip {
         return finEntree(id);
     }
 
+    // Copie d'un fichier PAS A PAS : chaque appel copie au plus PAS_COPIE octets puis rend la main (le JS cede alors
+    // au navigateur : panneau d'execution, bouton Arreter). Debut ouvre l'entree ; Pas renvoie "OK:1" s'il reste des
+    // donnees, "OK:0" quand le fichier est entierement copie ET l'entree terminee.
+    public static synchronized String ajouterFichierDebut(int id, String nom, String source, int compress) {
+        Archive a = trouver(id);
+        if (a == null) return err("archive fermee ou inconnue");
+        File src = new File(source == null ? "" : source);
+        if (!src.isFile()) return err("fichier source introuvable : '" + source + "'");
+        String r = entrer(id, nom, compress, (double) src.length(), false);
+        if (!r.startsWith("OK")) return r;
+        try {
+            a.copieIn = new FileInputStream(src);
+            return ok(String.valueOf(src.length()));
+        } catch (IOException | RuntimeException e) {
+            a.cassee = true;
+            return err("lecture de '" + source + "' impossible : " + e.getMessage());
+        }
+    }
+
+    public static synchronized String ajouterFichierPas(int id, int maxOctets) {
+        Archive a = trouver(id);
+        if (a == null) return err("archive fermee ou inconnue");
+        if (a.cassee) return err("archive cassee par une erreur precedente");
+        if (a.copieIn == null || a.cur == null) return err("aucune copie de fichier en cours");
+        if (maxOctets <= 0) maxOctets = PAS_COPIE;
+        try {
+            int fait = 0;
+            while (fait < maxOctets) {
+                int k = a.copieIn.read(a.tmp, 0, Math.min(a.tmp.length, maxOctets - fait));
+                if (k < 0) {
+                    a.copieIn.close();
+                    a.copieIn = null;
+                    String f = finEntree(id);
+                    return f.startsWith("OK") ? ok("0") : f;
+                }
+                String s = ecrireInterne(a, a.cur, a.tmp, 0, k);
+                if (!s.startsWith("OK")) return s;
+                fait += k;
+            }
+            return ok("1");
+        } catch (IOException | RuntimeException | OutOfMemoryError ex) {
+            a.cassee = true;
+            return err("copie impossible : " + ex.getMessage());
+        }
+    }
+
     // Detection d'un vrai doublon (apres un test positif sur l'ensemble de signatures) : relit le repertoire central.
     private static boolean nomExiste(Archive a, byte[] nom) throws IOException {
         if (a.cur != null && java.util.Arrays.equals(a.cur.nom, nom)) return true;
@@ -428,7 +491,7 @@ public final class MonLangageZip {
             f.putShort((short) 0);
             a.out.ecrire(f.array(), 0, 22);
             a.out.vider();
-            a.out.f.getFD().sync();
+            a.out.synchroniser();
             a.out.f.close();
             a.out = null;
         } catch (IOException | RuntimeException | OutOfMemoryError ex) {
@@ -455,6 +518,7 @@ public final class MonLangageZip {
     // ------------------------------------------------------------------ abandon
     private static void nettoyer(Archive a) {
         try { if (a.cur != null && a.cur.def != null) a.cur.def.end(); } catch (Exception ignore) {}
+        try { if (a.copieIn != null) a.copieIn.close(); } catch (Exception ignore) {}
         try { if (a.cdOut != null) a.cdOut.close(); } catch (Exception ignore) {}
         try { if (a.out != null) a.out.f.close(); } catch (Exception ignore) {}
         if (a.part != null) a.part.delete();

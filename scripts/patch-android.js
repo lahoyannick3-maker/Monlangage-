@@ -1001,6 +1001,16 @@ public class MonLangageBridge {
         }
 
         @JavascriptInterface
+        public String zipAjouterFichierDebut(int id, String nom, String source, int compress) {
+            return MonLangageZip.ajouterFichierDebut(id, nom, source, compress);
+        }
+
+        @JavascriptInterface
+        public String zipAjouterFichierPas(int id, int maxOctets) {
+            return MonLangageZip.ajouterFichierPas(id, maxOctets);
+        }
+
+        @JavascriptInterface
         public String zipFinaliser(int id) {
             return MonLangageZip.finaliser(id);
         }
