@@ -991,6 +991,11 @@ public class MonLangageBridge {
         }
 
         @JavascriptInterface
+        public String zipEcrireTexte(int id, String texte) {
+            return MonLangageZip.ecrireTexte(id, texte);
+        }
+
+        @JavascriptInterface
         public String zipFinEntree(int id) {
             return MonLangageZip.finEntree(id);
         }

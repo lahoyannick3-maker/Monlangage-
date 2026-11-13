@@ -308,6 +308,13 @@ public final class MonLangageZip {
         return ok();
     }
 
+    // Texte envoye TEL QUEL par le JS (pas de base64) : encode ici en UTF-8. Le JS n'utilise ce chemin que pour une chaine
+    // BIEN FORMEE (un surrogate isole serait remplace par '?' ici au lieu de U+FFFD comme le fait TextEncoder).
+    public static synchronized String ecrireTexte(int id, String texte) {
+        if (texte == null) texte = "";
+        return ecrire(id, texte.getBytes(StandardCharsets.UTF_8));
+    }
+
     public static synchronized String finEntree(int id) {
         Archive a = trouver(id);
         if (a == null) return err("archive fermee ou inconnue");
