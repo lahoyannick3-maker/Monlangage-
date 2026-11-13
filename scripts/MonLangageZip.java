@@ -11,6 +11,8 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.Calendar;
 import java.util.HashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.zip.CRC32;
 import java.util.zip.Deflater;
 
@@ -33,6 +35,12 @@ public final class MonLangageZip {
     private static final int TAMPON = 64 * 1024;
     private static final long SYNC_TOUS_LES = 8L * 1024 * 1024;   // synchronisation disque reguliere : pas de gros blocage final
     private static final int PAS_COPIE = 2 * 1024 * 1024;         // octets copies par appel de ajouterFichierPas
+
+    // Synchronisation disque regulière faite par un fil SEPARE : l'ecriture continue pendant que le disque vide son
+    // cache (sur un stockage lent, attendre ici ralentirait toute l'ecriture). Fil daemon : ne retient jamais l'app.
+    private static final ExecutorService poolSync = Executors.newSingleThreadExecutor(new java.util.concurrent.ThreadFactory() {
+        public Thread newThread(Runnable r) { Thread t = new Thread(r, "mlg-zip-sync"); t.setDaemon(true); return t; }
+    });
 
     private static final HashMap<Integer, Archive> archives = new HashMap<>();
     private static int prochainId = 1;
@@ -78,7 +86,10 @@ public final class MonLangageZip {
         int n = 0;
         long pos = 0;      // position logique (fin du fichier)
         long depuisSync = 0;
-        boolean syncActive = true;
+        volatile boolean syncActive = true;
+        volatile boolean syncEnCours = false;
+        boolean ferme = false;                       // protege par verrouSync
+        final Object verrouSync = new Object();      // tenu pendant une synchronisation ET pendant la fermeture du fichier
         Sortie(RandomAccessFile f) { this.f = f; }
         void ecrire(byte[] b, int off, int len) throws IOException {
             pos += len;
@@ -94,13 +105,34 @@ public final class MonLangageZip {
                 f.write(buf, 0, n);
                 depuisSync += n;
                 n = 0;
-                if (syncActive && depuisSync >= SYNC_TOUS_LES) { synchroniser(); }
+                if (syncActive && !syncEnCours && depuisSync >= SYNC_TOUS_LES) { synchroniserEnArrierePlan(); }
             }
         }
-        // Meilleur effort : un systeme de fichiers qui refuse la synchronisation ne doit pas faire echouer l'archive.
+        // Lance une synchronisation dans le fil dedie, sans attendre. Une seule a la fois ; les octets ecrits pendant
+        // qu'elle tourne seront couverts par la suivante ou par la synchronisation finale.
+        void synchroniserEnArrierePlan() {
+            depuisSync = 0;
+            syncEnCours = true;
+            try {
+                poolSync.execute(new Runnable() { public void run() {
+                    synchronized (verrouSync) {
+                        try { if (!ferme) f.getFD().sync(); } catch (IOException e) { syncActive = false; }
+                        finally { syncEnCours = false; }
+                    }
+                } });
+            } catch (RuntimeException e) { syncEnCours = false; }
+        }
+        // Synchronisation FINALE (bloquante, attend une eventuelle synchronisation en cours). Meilleur effort : un
+        // systeme de fichiers qui la refuse ne doit pas faire echouer l'archive.
         void synchroniser() {
             depuisSync = 0;
-            try { f.getFD().sync(); } catch (IOException e) { syncActive = false; }
+            synchronized (verrouSync) {
+                try { if (!ferme) f.getFD().sync(); } catch (IOException e) { syncActive = false; }
+            }
+        }
+        // Ferme le fichier APRES la fin d'une eventuelle synchronisation en arriere-plan (jamais de fsync sur un fichier ferme).
+        void fermer() throws IOException {
+            synchronized (verrouSync) { ferme = true; f.close(); }
         }
         void corriger(long decalage, byte[] b) throws IOException {
             vider();
@@ -492,7 +524,7 @@ public final class MonLangageZip {
             a.out.ecrire(f.array(), 0, 22);
             a.out.vider();
             a.out.synchroniser();
-            a.out.f.close();
+            a.out.fermer();
             a.out = null;
         } catch (IOException | RuntimeException | OutOfMemoryError ex) {
             a.cassee = true;
@@ -520,7 +552,7 @@ public final class MonLangageZip {
         try { if (a.cur != null && a.cur.def != null) a.cur.def.end(); } catch (Exception ignore) {}
         try { if (a.copieIn != null) a.copieIn.close(); } catch (Exception ignore) {}
         try { if (a.cdOut != null) a.cdOut.close(); } catch (Exception ignore) {}
-        try { if (a.out != null) a.out.f.close(); } catch (Exception ignore) {}
+        try { if (a.out != null) a.out.fermer(); } catch (Exception ignore) {}
         if (a.part != null) a.part.delete();
         if (a.cd != null) a.cd.delete();
         archives.remove(a.id);
