@@ -12069,9 +12069,11 @@ function enregistrerFonctionsBase() {
             const nbOctets = valeurs.filter(estOctets).length;
             if (nbOctets !== 0 && nbOctets !== valeurs.length) throw new ErreurTypeInvalide("ecrire.entrer.zip(...) : on ne mele pas du texte et des octets dans un meme appel (recu : " + valeurs.map(nomNature).join(", ") + "). Pour convertir : conver.texte.octets(...) ou conver.octets.texte(...)");
             if (nbOctets === 0 && !valeurs.every(v => typeof v === 'string')) throw new ErreurTypeInvalide("ecrire.entrer.zip(...) : des textes ou des octets sont attendus (recu : " + valeurs.map(nomNature).join(", ") + "). Pour un nombre ou autre valeur : texte(...)");
-            const enc = new TextEncoder();
             try {
-                for (const v of valeurs) await _zipEnvoyer(archive, estOctets(v) ? v.d : enc.encode(v), "ecrire.entrer.zip");
+                for (const v of valeurs) {
+                    if (estOctets(v)) await _zipEnvoyer(archive, v.d, "ecrire.entrer.zip");
+                    else await _zipEnvoyerTexte(archive, v, "ecrire.entrer.zip");
+                }
             } catch (e) { _zipAbandonner(archive); throw e; }
             return true;
         };
@@ -15650,13 +15652,50 @@ function analyserEnTeteZipEntrer(token) {
   if (pos.length !== 2 || pos[0].trim() === "" || pos[1].trim() === "") throw new Error("Syntaxe: entrer.zip(z, nom) { ... } ou entrer.zip(z, nom, compress~FAUX) { ... }");
   return { zExpr: pos[0].trim(), nomExpr: pos[1].trim(), opts: opts };
 }
+// Base64 par table sur tableaux types puis TextDecoder : environ 2 fois plus rapide que fromCharCode.apply + btoa
+// (la conversion JS etait ce qui coutait le plus sur un telephone modeste).
+const _ZIP_B64 = (() => { const t = new Uint8Array(64); 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.split('').forEach((c, i) => { t[i] = c.charCodeAt(0); }); return t; })();
+const _ZIP_B64_TEXTE = (typeof TextDecoder !== 'undefined') ? new TextDecoder('latin1') : null;
+function _zipBase64(u8) {
+  if (!_ZIP_B64_TEXTE) return octetsVersBase64(u8);
+  const n = u8.length, reste = n % 3, plein = n - reste, sortie = new Uint8Array(Math.ceil(n / 3) * 4), T = _ZIP_B64;
+  let o = 0, i = 0;
+  for (; i < plein; i += 3) {
+    const v = (u8[i] << 16) | (u8[i + 1] << 8) | u8[i + 2];
+    sortie[o++] = T[v >> 18]; sortie[o++] = T[(v >> 12) & 63]; sortie[o++] = T[(v >> 6) & 63]; sortie[o++] = T[v & 63];
+  }
+  if (reste === 1) { const v = u8[i] << 16; sortie[o++] = T[v >> 18]; sortie[o++] = T[(v >> 12) & 63]; sortie[o++] = 61; sortie[o++] = 61; }
+  else if (reste === 2) { const v = (u8[i] << 16) | (u8[i + 1] << 8); sortie[o++] = T[v >> 18]; sortie[o++] = T[(v >> 12) & 63]; sortie[o++] = T[(v >> 6) & 63]; sortie[o++] = 61; }
+  return _ZIP_B64_TEXTE.decode(sortie);
+}
+// Texte -> natif : la chaine est envoyee TELLE QUELLE (Java l'encode en UTF-8) : plus de TextEncoder, de base64 ni de
+// gonflement de 33 % cote JS. Une chaine MAL FORMEE (surrogate isole, ex. un emoji coupe en deux) passe par l'ancien chemin
+// (TextEncoder la remplace par U+FFFD) pour que le resultat reste identique. Coupes de 1 Mi caracteres, jamais au milieu
+// d'une paire de surrogates.
+const ZIP_TEXTE_MAX = 1024 * 1024;
+const _ZIP_RE_SURROGATE_ISOLE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:[^\uD800-\uDBFF]|^)[\uDC00-\uDFFF]/;
+function _zipTexteBienForme(s) {
+  return typeof s.isWellFormed === 'function' ? s.isWellFormed() : !_ZIP_RE_SURROGATE_ISOLE.test(s);
+}
+async function _zipEnvoyerTexte(archive, s, nomCmd) {
+  const pont = _pontZip(nomCmd);
+  if (typeof pont.zipEcrireTexte !== 'function' || !_zipTexteBienForme(s)) return _zipEnvoyer(archive, new TextEncoder().encode(s), nomCmd);
+  for (let o = 0; o < s.length;) {
+    let fin = Math.min(s.length, o + ZIP_TEXTE_MAX);
+    if (fin < s.length) { const c = s.charCodeAt(fin - 1); if (c >= 0xD800 && c <= 0xDBFF) fin--; }
+    await _zipCeder(false);
+    if (archive.etat !== 'ouverte') throw new Error(nomCmd + " : archive abandonnee");
+    _zipNatif(pont.zipEcrireTexte(archive.id, (o === 0 && fin === s.length) ? s : s.slice(o, fin)), nomCmd);
+    o = fin;
+  }
+}
 // Envoie des octets a l'entree ouverte, par morceaux de 1 Mo (jamais tout d'un coup en base64).
 async function _zipEnvoyer(archive, u8, nomCmd) {
   const pont = _pontZip(nomCmd);
   for (let o = 0; o < u8.length; o += ZIP_TAILLE_MORCEAU) {
     await _zipCeder(false);
     if (archive.etat !== 'ouverte') throw new Error(nomCmd + " : archive abandonnee");
-    _zipNatif(pont.zipEcrire(archive.id, octetsVersBase64(u8.subarray(o, Math.min(u8.length, o + ZIP_TAILLE_MORCEAU)))), nomCmd);
+    _zipNatif(pont.zipEcrire(archive.id, _zipBase64(u8.subarray(o, Math.min(u8.length, o + ZIP_TAILLE_MORCEAU)))), nomCmd);
   }
 }
 // Retourne { res, finBloc } : res = resultat d'une sortie anticipee du bloc (a renvoyer tel quel), ou null.
