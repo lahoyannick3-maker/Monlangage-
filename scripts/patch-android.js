@@ -1015,6 +1015,47 @@ public class MonLangageBridge {
             return MonLangageZip.ajouterFichierPas(id, maxOctets);
         }
 
+        // ---- Lecture zip de gros fichiers (liste.zip / lire.zip(chemin, nom) / extrai.zip) : voir MonLangageZipLecture ----
+        @JavascriptInterface
+        public String zipListe(String chemin, double offset, double fin, int max) {
+            return MonLangageZipLecture.liste(chemin, offset, fin, max);
+        }
+
+        @JavascriptInterface
+        public String zipLireInfo(String chemin, String nom) {
+            return MonLangageZipLecture.info(chemin, nom);
+        }
+
+        @JavascriptInterface
+        public String zipLire(String chemin, String nom, double debut0, int longueur) {
+            try {
+                byte[] octets = MonLangageZipLecture.lireOctets(chemin, nom, debut0, longueur);
+                return "OK:" + android.util.Base64.encodeToString(octets, android.util.Base64.NO_WRAP);
+            } catch (Exception | OutOfMemoryError e) {
+                return "ERR:" + e.getMessage();
+            }
+        }
+
+        @JavascriptInterface
+        public String zipLireFermer() {
+            return MonLangageZipLecture.fermer();
+        }
+
+        @JavascriptInterface
+        public String zipExtraireDebut(String chemin, String nom, String destination, boolean ecra) {
+            return MonLangageZipLecture.extraireDebut(chemin, nom, destination, ecra);
+        }
+
+        @JavascriptInterface
+        public String zipExtrairePas(int maxOctets) {
+            return MonLangageZipLecture.extrairePas(maxOctets);
+        }
+
+        @JavascriptInterface
+        public String zipExtraireAbandon() {
+            return MonLangageZipLecture.extraireAbandon();
+        }
+
         @JavascriptInterface
         public String zipFinaliser(int id) {
             return MonLangageZip.finaliser(id);
@@ -1549,6 +1590,10 @@ const zipJavaSource = fs.readFileSync(path.join(__dirname, 'MonLangageZip.java')
 if (zipJavaSource.indexOf('package __APPID__;') === -1) throw new Error('scripts/MonLangageZip.java : ligne "package __APPID__;" introuvable');
 fs.writeFileSync(path.join(bridgeDir, 'MonLangageZip.java'), zipJavaSource.replace('package __APPID__;', 'package ' + appId + ';'));
 console.log('[patch-android] MonLangageZip.java ecrit (ecriture zip progressive).');
+const zipLectureSource = fs.readFileSync(path.join(__dirname, 'MonLangageZipLecture.java'), 'utf8');
+if (zipLectureSource.indexOf('package __APPID__;') === -1) throw new Error('scripts/MonLangageZipLecture.java : ligne "package __APPID__;" introuvable');
+fs.writeFileSync(path.join(bridgeDir, 'MonLangageZipLecture.java'), zipLectureSource.replace('package __APPID__;', 'package ' + appId + ';'));
+console.log('[patch-android] MonLangageZipLecture.java ecrit (lecture zip par morceaux).');
 
 /* ---------- 2) MainActivity.java ---------- */
 const mainActivityDir = path.join('android', 'app', 'src', 'main', 'java', ...appId.split('.'));
