@@ -1905,6 +1905,22 @@ function assignerCheminValeur(chemin, valeur) {
   }
   parent[segments[segments.length - 1]] = valeur;
 }
+// non : sur un VECTEUR (ou une MATRICE) de booleens, inverse chaque element (comme ! en R) ;
+// sur toute autre valeur, renvoie un seul booleen (le contraire de estVrai).
+function appliquerNon(v, absence) {
+  // absence = true quand non est ecrit DIRECTEMENT devant un dan (non x dan D, non (x dan D)) : "x est ABSENT de D",
+  // un seul booleen (jamais l'inverse position par position). Aucun repere cache sur les valeurs.
+  if (absence) {
+    if (estMatrice(v)) return !v.donnees.some(x => x === true);
+    if (estVecteur(v)) return !v.some(x => x === true);
+    return !estVrai(v);
+  }
+  if (estVecteur(v) && v.length > 0 && v.every(x => typeof x === 'boolean')) return v.map(x => !x);
+  if (estMatrice(v) && v.donnees.length > 0 && v.donnees.every(x => typeof x === 'boolean')) {
+    return { __type: "matrice", nlig: v.nlig, ncol: v.ncol, donnees: v.donnees.map(x => !x) };
+  }
+  return !estVrai(v);
+}
 function estVrai(v) {
   if (estVecteur(v)) return v.some(x => estVrai(x));
   if (estMatrice(v)) return v.donnees.some(x => estVrai(x));
@@ -2331,7 +2347,16 @@ function tokenizerExpr(str) {
     if (c === '.') { tokens.push({ type: 'op', v: '.' }); i++; continue; }
     if (c === '×') { tokens.push({ type: 'op', v: '×' }); i++; continue; }
     if (/[0-9]/.test(c)) {
-      let j = i; while (j < n && /[0-9.]/.test(str[j])) j++;
+      // Entier, puis UNE partie decimale (.123) : un 2e point (3.14.arondi(2)) ou un point suivi d'une lettre
+      // (3.arondi()) n'est plus avale par le nombre : c'est une methode. Un point final seul (5.) reste accepte.
+      let j = i; while (j < n && /[0-9]/.test(str[j])) j++;
+      if (str[j] === '.' && /[0-9]/.test(str[j + 1] || '')) { j++; while (j < n && /[0-9]/.test(str[j])) j++; }
+      else if (str[j] === '.' && !/[A-Za-z_.]/.test(str[j + 1] || '')) j++;
+      // Un 2e point decimal colle a des chiffres (13.67.8) n'est PAS un nombre : erreur claire, jamais ignore en silence.
+      if (str[j] === '.' && /[0-9]/.test(str[j + 1] || '')) {
+        let k = j; while (k < n && /[0-9.]/.test(str[k])) k++;
+        throw new Error("Nombre invalide : \"" + str.slice(i, k) + "\" a plusieurs points decimaux (un nombre n'en a qu'un : 13.67)");
+      }
       tokens.push({ type: 'num', v: parseFloat(str.slice(i, j)) });
       i = j; continue;
     }
@@ -2444,8 +2469,8 @@ function detokeniserExpr(tokens) {
 }
 
 // Repere la fin (index EXCLUS) d'UNE SEULE expression a partir de tokens[debut], en suivant la
-// meme precedence que le vrai evaluateur (parseOr > parseAnd > parseDan > parseCmp > parseAdd >
-// parseMul > parseColon > parseUnary > parsePow > parsePrimary, plus la chaine de suffixes
+// meme precedence que le vrai evaluateur (parseOr > parseAnd > parseDan > parseCmp > parseColon >
+// parseAdd > parseMul > parseUnary > parsePow > parsePrimary, plus la chaine de suffixes
 // .attr / .methode(args) / [idx]) -- mais SANS RIEN EVALUER. Sert uniquement, au moment ou une
 // fonction anonyme fonc(params) expr est rencontree au milieu d'une expression plus large, a
 // savoir ou s'arrete son corps -- a un instant ou ses parametres n'ont encore aucune valeur
@@ -2486,14 +2511,14 @@ function sauterOperandeBooleen(tokens, debut, niveau) {
   function or_() { and_(); while (peek() && peek().type === 'or') { next(); and_(); } }
   function and_() { not_(); while (peek() && peek().type === 'and') { next(); not_(); } }
   function not_() { if (peek() && peek().type === 'not') { next(); not_(); return; } dan_(); }
-  function dan_() { cmp_(); while (peek() && peek().type === 'dan') { next(); cmp_(); } }
-  function cmp_() { add_(); if (peek() && peek().type === 'cmp') { next(); add_(); } }
+  function dan_() { cmp_(); while (peek() && (peek().type === 'dan' || (peek().type === 'not' && tokens[pos + 1] && tokens[pos + 1].type === 'dan'))) { if (peek().type === 'not') next(); next(); cmp_(); } }
+  function cmp_() { colon_(); if (peek() && peek().type === 'cmp') { next(); colon_(); } }
   function add_() { mul_(); while (peek() && peek().type === 'op' && (peek().v === '+' || peek().v === '-')) { next(); mul_(); } }
   function mul_() {
-    colon_();
-    while (peek() && peek().type === 'op' && ['*', '/', '%', 'enti', '.', '..', '×'].includes(peek().v)) { next(); colon_(); }
+    unary_();
+    while (peek() && peek().type === 'op' && ['*', '/', '%', 'enti', '.', '..', '×'].includes(peek().v)) { next(); unary_(); }
   }
-  function colon_() { unary_(); if (peek() && peek().type === 'deuxpoints') { next(); unary_(); } }
+  function colon_() { add_(); if (peek() && peek().type === 'deuxpoints') { next(); add_(); } }
   function unary_() {
     if (peek() && peek().type === 'op' && peek().v === '-') { next(); unary_(); return; }
     pow_();
@@ -2557,14 +2582,14 @@ function trouverFinCorpsAnonyme(tokens, debut) {
   function or_() { and_(); while (peek() && peek().type === 'or') { next(); and_(); } }
   function and_() { not_(); while (peek() && peek().type === 'and') { next(); not_(); } }
   function not_() { if (peek() && peek().type === 'not') { next(); not_(); return; } dan_(); }
-  function dan_() { cmp_(); while (peek() && peek().type === 'dan') { next(); cmp_(); } }
-  function cmp_() { add_(); if (peek() && peek().type === 'cmp') { next(); add_(); } }
+  function dan_() { cmp_(); while (peek() && (peek().type === 'dan' || (peek().type === 'not' && tokens[pos + 1] && tokens[pos + 1].type === 'dan'))) { if (peek().type === 'not') next(); next(); cmp_(); } }
+  function cmp_() { colon_(); if (peek() && peek().type === 'cmp') { next(); colon_(); } }
   function add_() { mul_(); while (peek() && peek().type === 'op' && (peek().v === '+' || peek().v === '-')) { next(); mul_(); } }
   function mul_() {
-    colon_();
-    while (peek() && peek().type === 'op' && ['*', '/', '%', 'enti', '.', '..', '×'].includes(peek().v)) { next(); colon_(); }
+    unary_();
+    while (peek() && peek().type === 'op' && ['*', '/', '%', 'enti', '.', '..', '×'].includes(peek().v)) { next(); unary_(); }
   }
-  function colon_() { unary_(); if (peek() && peek().type === 'deuxpoints') { next(); unary_(); } }
+  function colon_() { add_(); if (peek() && peek().type === 'deuxpoints') { next(); add_(); } }
   function unary_() {
     if (peek() && peek().type === 'op' && peek().v === '-') { next(); unary_(); return; }
     pow_();
@@ -3231,29 +3256,32 @@ function _construireArbreRapide(tokens) {
   function not_() {
     if (peek() && peek().type === 'not') {
       next();
+      let debut = pos;
       let v = not_();
       if (v === DECLINE) return DECLINE;
-      return { t: 'not', v };
+      return { t: 'not', v, abs: operandeEstDan(tokens, debut, pos) };
     }
     return dan_();
   }
   function dan_() {
     let g = cmp_();
     if (g === DECLINE) return DECLINE;
-    while (peek() && peek().type === 'dan') {
+    while (peek() && (peek().type === 'dan' || (peek().type === 'not' && tokens[pos + 1] && tokens[pos + 1].type === 'dan'))) {
+      let neg = false;
+      if (peek().type === 'not') { next(); neg = true; }
       next();
       let d = cmp_();
       if (d === DECLINE) return DECLINE;
-      g = { t: 'dan', g, d };
+      g = { t: 'dan', g, d, neg };
     }
     return g;
   }
   function cmp_() {
-    let g = add_();
+    let g = colon_();
     if (g === DECLINE) return DECLINE;
     if (peek() && peek().type === 'cmp') {
       let op = next().v;
-      let d = add_();
+      let d = colon_();
       if (d === DECLINE) return DECLINE;
       return { t: 'cmp', g, d, op };
     }
@@ -3271,24 +3299,24 @@ function _construireArbreRapide(tokens) {
     return g;
   }
   function mul_() {
-    let g = colon_();
+    let g = unary_();
     if (g === DECLINE) return DECLINE;
     // NB : '.' (produit scalaire) ne peut jamais arriver ici -- primary_() decline des qu'il
     // voit un '.' de suite, avant meme de remonter jusqu'ici (voir commentaire plus haut).
     while (peek() && peek().type === 'op' && (peek().v === '*' || peek().v === '/' || peek().v === '%' || peek().v === 'enti' || peek().v === '..' || peek().v === '×')) {
       let op = next().v;
-      let d = colon_();
+      let d = unary_();
       if (d === DECLINE) return DECLINE;
       g = { t: 'mul', g, d, op };
     }
     return g;
   }
   function colon_() {
-    let g = unary_();
+    let g = add_();
     if (g === DECLINE) return DECLINE;
     if (peek() && peek().type === 'deuxpoints') {
       next();
-      let d = unary_();
+      let d = add_();
       if (d === DECLINE) return DECLINE;
       return { t: 'seq', g, d };
     }
@@ -3396,10 +3424,10 @@ function evaluerArbreRapide(noeud, ctx) {
     case 'num': case 'str': case 'lit': return noeud.v;
     case 'var': return ctx.getVar(noeud.nom);
     case 'neg': { let v = evaluerArbreRapide(noeud.v, ctx); return oppose(v); }
-    case 'not': return !estVrai(evaluerArbreRapide(noeud.v, ctx));
+    case 'not': return appliquerNon(evaluerArbreRapide(noeud.v, ctx), noeud.abs === true);
     case 'or': { let g = evaluerArbreRapide(noeud.g, ctx); if (estVrai(g)) return true; return estVrai(evaluerArbreRapide(noeud.d, ctx)); }
     case 'and': { let g = evaluerArbreRapide(noeud.g, ctx); if (!estVrai(g)) return false; return estVrai(evaluerArbreRapide(noeud.d, ctx)); }
-    case 'dan': return testerAppartenance(evaluerArbreRapide(noeud.g, ctx), evaluerArbreRapide(noeud.d, ctx));
+    case 'dan': return noeud.neg ? testerAbsence(evaluerArbreRapide(noeud.g, ctx), evaluerArbreRapide(noeud.d, ctx)) : testerAppartenance(evaluerArbreRapide(noeud.g, ctx), evaluerArbreRapide(noeud.d, ctx));
     case 'cmp': return combinerComparaison(evaluerArbreRapide(noeud.g, ctx), evaluerArbreRapide(noeud.d, ctx), noeud.op);
     case 'add': return combinerAddition(evaluerArbreRapide(noeud.g, ctx), evaluerArbreRapide(noeud.d, ctx), noeud.op);
     case 'mul': {
@@ -3453,18 +3481,18 @@ function evalExprSansEntreeSync(str, ctx) {
     return g;
   }
   function parseNot() {
-    if (peek() && peek().type === 'not') { next(); return !estVrai(parseNot()); }
+    if (peek() && peek().type === 'not') { next(); let debut = pos; let v = parseNot(); return appliquerNon(v, operandeEstDan(tokens, debut, pos)); }
     return parseDan();
   }
   function parseDan() {
     let g = parseCmp();
-    while (peek() && peek().type === 'dan') { next(); let d = parseCmp(); g = testerAppartenance(g, d); }
+    while (peek() && (peek().type === 'dan' || (peek().type === 'not' && tokens[pos + 1] && tokens[pos + 1].type === 'dan'))) { let neg = peek().type === 'not'; if (neg) next(); next(); let d = parseCmp(); g = neg ? testerAbsence(g, d) : testerAppartenance(g, d); }
     return g;
   }
   function parseCmp() {
-    let g = parseAdd();
+    let g = parseColon();
     if (peek() && peek().type === 'cmp') {
-      let op = next().v; let d = parseAdd();
+      let op = next().v; let d = parseColon();
       return combinerComparaison(g, d, op);
     }
     return g;
@@ -3478,9 +3506,9 @@ function evalExprSansEntreeSync(str, ctx) {
     return g;
   }
   function parseMul() {
-    let g = parseColon();
+    let g = parseUnary();
     while (peek() && peek().type === 'op' && (peek().v === '*' || peek().v === '/' || peek().v === '%' || peek().v === 'enti' || peek().v === '.' || peek().v === '..' || peek().v === '×')) {
-      let op = next().v; let d = parseColon();
+      let op = next().v; let d = parseUnary();
       if (op === '*' || op === '/' || op === '%' || op === 'enti') {
         g = combinerMultiplication(g, d, op);
       } else if (op === '.') {
@@ -3494,10 +3522,10 @@ function evalExprSansEntreeSync(str, ctx) {
     return g;
   }
   function parseColon() {
-    let g = parseUnary();
+    let g = parseAdd();
     if (peek() && peek().type === 'deuxpoints') {
       next();
-      let d = parseUnary();
+      let d = parseAdd();
       verifierNombre(g, ':'); verifierNombre(d, ':');
       return construireSequence(g, d);
     }
@@ -3569,6 +3597,15 @@ function evalExprSansEntreeSync(str, ctx) {
       // Methodes de texte chainees directement dans une expression (si(...), affi(...), etc.) :
       // var.miniscul(), |texte|.majuscul(), (a+b).suprespac()... Ne consomme le '.' que si le
       // motif complet correspond, pour ne jamais gener l'operateur '.' de produit scalaire.
+      // x.arondi(n) : arrondit un NOMBRE et renvoie un TEXTE (n decimales, zeros finals gardes).
+      if (peek() && peek().type === 'op' && peek().v === '.' && tokens[pos + 1] && tokens[pos + 1].type === 'ident' && tokens[pos + 1].v === 'arondi' && tokens[pos + 2] && tokens[pos + 2].type === '(') {
+        next(); next(); next();   // . arondi (
+        let nbDec = (peek() && peek().type !== ')') ? parseOr() : undefined;
+        if (!peek() || peek().type !== ')') throw new Error(".arondi( : parenthese fermante manquante (ecris .arondi() ou .arondi(nombre de decimales))");
+        next();
+        valeur = arrondirEnTexte(valeur, nbDec);
+        continue;
+      }
       let nettoyage = (peek() && peek().type === 'op' && peek().v === '.') ? nettoyageDepuis(tokens, pos) : null;
       if (nettoyage) {
         for (let q = 0; q < nettoyage.n; q++) next();   // . nom [. suffixe] ( )
@@ -3728,18 +3765,18 @@ async function evalExprSansEntreeAsync(str, ctx) {
     return g;
   }
   async function parseNot() {
-    if (peek() && peek().type === 'not') { next(); return !estVrai(await parseNot()); }
+    if (peek() && peek().type === 'not') { next(); let debut = pos; let v = await parseNot(); return appliquerNon(v, operandeEstDan(tokens, debut, pos)); }
     return await parseDan();
   }
   async function parseDan() {
     let g = await parseCmp();
-    while (peek() && peek().type === 'dan') { next(); let d = await parseCmp(); g = testerAppartenance(g, d); }
+    while (peek() && (peek().type === 'dan' || (peek().type === 'not' && tokens[pos + 1] && tokens[pos + 1].type === 'dan'))) { let neg = peek().type === 'not'; if (neg) next(); next(); let d = await parseCmp(); g = neg ? testerAbsence(g, d) : testerAppartenance(g, d); }
     return g;
   }
   async function parseCmp() {
-    let g = await parseAdd();
+    let g = await parseColon();
     if (peek() && peek().type === 'cmp') {
-      let op = next().v; let d = await parseAdd();
+      let op = next().v; let d = await parseColon();
       return combinerComparaison(g, d, op);
     }
     return g;
@@ -3753,9 +3790,9 @@ async function evalExprSansEntreeAsync(str, ctx) {
     return g;
   }
   async function parseMul() {
-    let g = await parseColon();
+    let g = await parseUnary();
     while (peek() && peek().type === 'op' && (peek().v === '*' || peek().v === '/' || peek().v === '%' || peek().v === 'enti' || peek().v === '.' || peek().v === '..' || peek().v === '×')) {
-      let op = next().v; let d = await parseColon();
+      let op = next().v; let d = await parseUnary();
       if (op === '*' || op === '/' || op === '%' || op === 'enti') {
         g = combinerMultiplication(g, d, op);
       } else if (op === '.') {
@@ -3769,10 +3806,10 @@ async function evalExprSansEntreeAsync(str, ctx) {
     return g;
   }
   async function parseColon() {
-    let g = await parseUnary();
+    let g = await parseAdd();
     if (peek() && peek().type === 'deuxpoints') {
       next();
-      let d = await parseUnary();
+      let d = await parseAdd();
       verifierNombre(g, ':'); verifierNombre(d, ':');
       return construireSequence(g, d);
     }
@@ -3873,6 +3910,15 @@ async function evalExprSansEntreeAsync(str, ctx) {
         continue;
       }
       // Methodes de texte chainees directement dans une expression.
+      // x.arondi(n) : arrondit un NOMBRE et renvoie un TEXTE (n decimales, zeros finals gardes).
+      if (peek() && peek().type === 'op' && peek().v === '.' && tokens[pos + 1] && tokens[pos + 1].type === 'ident' && tokens[pos + 1].v === 'arondi' && tokens[pos + 2] && tokens[pos + 2].type === '(') {
+        next(); next(); next();   // . arondi (
+        let nbDec = (peek() && peek().type !== ')') ? await parseOr() : undefined;
+        if (!peek() || peek().type !== ')') throw new Error(".arondi( : parenthese fermante manquante (ecris .arondi() ou .arondi(nombre de decimales))");
+        next();
+        valeur = arrondirEnTexte(valeur, nbDec);
+        continue;
+      }
       let nettoyage = (peek() && peek().type === 'op' && peek().v === '.') ? nettoyageDepuis(tokens, pos) : null;
       if (nettoyage) {
         for (let q = 0; q < nettoyage.n; q++) next();   // . nom [. suffixe] ( )
@@ -4516,8 +4562,8 @@ function exigerTexte(v, nomCmd, quoi) {
    plus documentee) ; les deux formes partagent le meme code (les fonctions coeur ci-dessous).
    Methodes a nom pointe : avant.dernier, apres.dernier, garder.contenant, enlever.contenant. */
 const METHODES_TEXTE = new Set(["decoup", "joindr", "remplace", "cherch", "commence", "termine", "lon", "correspond", "trouve", "complete", "extrait",
-                                "avant", "apres", "entre", "garder", "enlever"]);
-const METHODES_POINTEES = new Map([["avant", ["dernier"]], ["apres", ["dernier"]], ["garder", ["contenant"]], ["enlever", ["contenant"]], ["trouve", ["tout"]], ["inverse", ["text"]], ["cherch", ["dernier"]]]);
+                                "avant", "apres", "entre", "garder", "enlever", "parties"]);
+const METHODES_POINTEES = new Map([["avant", ["dernier"]], ["apres", ["dernier"]], ["garder", ["contenant"]], ["enlever", ["contenant"]], ["trouve", ["tout"]], ["inverse", ["text"]], ["cherch", ["dernier", "tout"]], ["decoup", ["pos"]]]);
 function egalValeursSimples(a, b) {
   if (a === b) return true;
   if (estOctets(a) && estOctets(b)) return a.d.length === b.d.length && a.d.every((x, i) => x === b.d[i]);
@@ -4670,21 +4716,186 @@ function coreTrouve(t, motif, groupe, nomCmd) {
   return m === null ? "" : lireGroupe(m, groupe);
 }
 // trouve.tout : la liste de tous les morceaux qui correspondent (liste vide s'il n'y en a pas).
-function coreTrouveTout(t, motif, groupe, nomCmd) {
+// limite (facultative) : nombre maximum de morceaux rendus (0 = liste vide ; la recherche s'arrete des que la limite est atteinte).
+// depart (facultatif) : position (a partir de 1) ou commence la recherche ; tout ce qui est AVANT est ignore, comme si le texte
+// commencait la (les ^ et les contextes (?<=...) ne voient pas ce qui est avant). Un depart apres la fin : erreur claire.
+function coreTrouveTout(t, motif, groupe, nomCmd, limite, depart) {
   groupe = verifierGroupe(motif, groupe, nomCmd);
+  let max = Infinity;
+  if (limite !== undefined) {
+    max = exigerEntier(limite, nomCmd, "la limite (nombre maximum de morceaux)");
+    if (max < 0) throw new Error(nomCmd + " : la limite doit etre >= 0 (recu : " + max + ")");
+  }
+  let debut = lireDepart(depart, nomCmd, t.length, "caracteres");
   let r = [];
-  for (let m of t.matchAll(reDuMotif(motif, true))) r.push(lireGroupe(m, groupe));
+  if (max === 0) return { __type: "liste", elements: r };
+  for (let m of (debut > 0 ? t.slice(debut) : t).matchAll(reDuMotif(motif, true))) {
+    r.push(lireGroupe(m, groupe));
+    if (r.length >= max) break;
+  }
   return { __type: "liste", elements: r };
 }
-// cherch : position (a partir de 1) du morceau dans un texte, ou d'une valeur dans une liste/un vecteur ; 0 si absent.
-// depart (facultatif) : position (a partir de 1) ou la recherche commence ; la position rendue reste celle du texte entier.
+// x.decoup.pos(p1, p2, ...) ou x.decoup.pos(c(p1, p2, ...)) : coupe un texte, une liste, un vecteur ou des octets APRES chaque
+// position indiquee (le morceau de gauche se termine a la position, comme lon et x[i], a partir de 1) et renvoie une LISTE de
+// morceaux, chacun du meme type que x. Positions : entiers de 1 a la taille, strictement croissants (erreur claire sinon) ;
+// une position egale a la taille donne un dernier morceau vide. Aucune position (aucun argument, ou c() vide, par exemple
+// cherch.tout qui ne trouve rien) : x est renvoye tel quel, sans etre decoupe ni mis dans une liste.
+function coreDecoupPos(v, args) {
+  const nom = "decoup.pos";
+  let taille, unite = "elements", tranche;
+  if (typeof v === 'string') { taille = v.length; unite = "caracteres"; tranche = (a, b) => v.slice(a, b); }
+  else if (estListe(v)) { taille = v.elements.length; tranche = (a, b) => ({ __type: "liste", elements: v.elements.slice(a, b) }); }
+  else if (estVecteur(v)) { taille = v.length; tranche = (a, b) => v.slice(a, b); }
+  else if (estOctets(v)) { taille = v.d.length; tranche = (a, b) => creerOctets(v.d.slice(a, b)); }
+  else throw new ErreurTypeInvalide(nom + " : la valeur doit etre un texte, une liste, un vecteur ou des octets (recu : " + nomNature(v) + ")");
+  let positions = args;
+  if (args.length === 1 && estVecteur(args[0])) positions = args[0];
+  if (positions.length === 0) return v;
+  for (let i = 0; i < positions.length; i++) {
+    let p = positions[i];
+    if (typeof p !== 'number' || !Number.isInteger(p)) throw new ErreurTypeInvalide(nom + " : les positions doivent etre des nombres entiers, seuls ou dans UN seul vecteur (recu : " + nomNature(p) + ")");
+    if (p < 1 || p > taille) throw new Error(nom + " : la position " + p + " est en dehors de l'objet : il y a " + taille + " " + unite + " (positions de 1 a " + taille + ")");
+    if (i > 0 && p <= positions[i - 1]) throw new Error(nom + " : les positions doivent etre strictement croissantes (" + p + " apres " + positions[i - 1] + ")");
+  }
+  let morceaux = [], debut = 0;
+  for (let i = 0; i < positions.length; i++) { morceaux.push(tranche(debut, positions[i])); debut = positions[i]; }
+  morceaux.push(tranche(debut, taille));
+  return { __type: "liste", elements: morceaux };
+}
+// x.parties(motif, contexte, limite, depart) : comme grep -n -C : les BLOCS de lignes de x autour des lignes qui correspondent.
+// - motif : un texte (la ligne le contient, majuscules comptees) ou un motif (/.../i, m|...|, fam|...|) que la ligne contient ;
+//   chaque ligne est testee seule (les ^ et $ valent pour la ligne).
+// - contexte : nombre de lignes gardees avant ET apres chaque ligne qui correspond (0 par defaut = la ligne seule).
+// - limite : nombre maximum de blocs rendus (illimite par defaut ; 0 = aucun).
+// - depart : position (a partir de 1) ou commence la recherche ; tout ce qui est avant est ignore (la premiere ligne peut etre
+//   coupee), contexte compris. Les numeros de ligne restent ceux du texte entier.
+// Les blocs qui se chevauchent ou se touchent sont fusionnes (comme grep). Resultat : une LISTE de textes ; chaque ligne d'un bloc
+// est precedee de son numero : "120: ligne qui correspond" et "119- ligne de contexte" ; aucune correspondance : liste vide.
+// Le texte est parcouru ligne par ligne sans etre decoupe en liste (gros fichiers), et le parcours s'arrete des que la limite est atteinte.
+function coreParties(v, args) {
+  const nom = "parties";
+  if (typeof v !== 'string') throw new ErreurTypeInvalide(nom + " : la valeur avant le point doit etre du texte (recu : " + nomNature(v) + ")");
+  if (args.length < 1 || args.length > 4) throw new Error(nom + " : parties(motif, contexte, limite, depart) attend de 1 a 4 arguments (recu : " + args.length + ")");
+  let teste;
+  if (estMotif(args[0])) { let re = reDuMotif(args[0], false); teste = l => re.test(l); }
+  else {
+    let t = exigerTexte(args[0], nom, "la valeur cherchee");
+    if (t === "") throw new Error(nom + " : la valeur cherchee ne peut pas etre vide");
+    teste = l => l.includes(t);
+  }
+  let contexte = args.length > 1 ? exigerEntier(args[1], nom, "le contexte (nombre de lignes avant et apres)") : 0;
+  if (contexte < 0) throw new Error(nom + " : le contexte doit etre >= 0 (recu : " + contexte + ")");
+  let limite = args.length > 2 ? exigerEntier(args[2], nom, "la limite (nombre maximum de blocs)") : Infinity;
+  if (limite < 0) throw new Error(nom + " : la limite doit etre >= 0 (recu : " + limite + ")");
+  let taille = v.length, debut = lireDepart(args.length > 3 ? args[3] : undefined, nom, taille, "caracteres");
+  if (limite === 0) return { __type: "liste", elements: [] };
+  let numero = 1;
+  for (let i = 0; i < debut; i++) if (v.charCodeAt(i) === 10) numero++;
+  let blocs = [], courant = null, restant = 0, avant = [], pos = debut;
+  while (pos < taille) {
+    let fin = v.indexOf("\n", pos);
+    if (fin === -1) fin = taille;
+    let ligne = v.slice(pos, fin);
+    if (ligne.charCodeAt(ligne.length - 1) === 13) ligne = ligne.slice(0, -1);   // fin de ligne Windows
+    if (teste(ligne)) {
+      if (courant === null) {
+        let premier = avant.length > 0 ? avant[0].n : numero;
+        let prec = blocs.length > 0 ? blocs[blocs.length - 1] : null;
+        if (prec !== null && prec.dernier >= premier - 1) courant = blocs.pop();   // blocs qui se touchent : on les fusionne
+        else {
+          if (blocs.length >= limite) break;
+          courant = { lignes: [], dernier: 0 };
+        }
+        for (let a of avant) if (a.n > courant.dernier) { courant.lignes.push(a.n + "- " + a.t); courant.dernier = a.n; }
+        avant = [];
+      }
+      courant.lignes.push(numero + ": " + ligne);
+      courant.dernier = numero;
+      restant = contexte;
+    } else if (courant !== null && restant > 0) {
+      courant.lignes.push(numero + "- " + ligne);
+      courant.dernier = numero;
+      restant--;
+    } else {
+      if (courant !== null) { blocs.push(courant); courant = null; }
+      if (contexte > 0) { avant.push({ n: numero, t: ligne }); if (avant.length > contexte) avant.shift(); }
+      // limite atteinte et plus aucune chance de fusion avec le dernier bloc : inutile de lire la suite
+      if (blocs.length >= limite && numero > blocs[blocs.length - 1].dernier + contexte + 1) break;
+    }
+    pos = fin + 1;
+    numero++;
+  }
+  if (courant !== null) blocs.push(courant);
+  return { __type: "liste", elements: blocs.map(b => b.lignes.join("\n")) };
+}
+// depart (facultatif, pour cherch, cherch.dernier et cherch.tout) : position (a partir de 1) ou la recherche commence ; les
+// positions rendues restent celles du texte/de la liste entier(e). Un depart invalide ou qui DEPASSE LA FIN est une erreur
+// claire (jamais un 0 silencieux). Exception voulue : depart = taille + 1 (juste apres la fin) est accepte et ne trouve
+// rien, pour pouvoir boucler p ~ x.cherch(m, p + 1) apres la derniere occurrence. Renvoie le depart en base 0.
+function lireDepart(depart, nomCmd, taille, unite) {
+  if (depart === undefined) return 0;
+  let d = exigerEntier(depart, nomCmd, "la position de depart");
+  if (d < 1) throw new Error(nomCmd + " : la position de depart doit etre >= 1 (recu : " + d + ")");
+  if (d > taille + 1) throw new Error(nomCmd + " : la position de depart (" + d + ") depasse la fin : il n'y a que " + taille + " " + unite +
+    " (le plus grand depart accepte est " + (taille + 1) + ", juste apres la fin ; il ne trouve rien)");
+  return d - 1;
+}
+function refuserDepartMatrice(nomCmd, depart) {
+  if (depart !== undefined) throw new Error(nomCmd + " : sur une matrice, il n'y a pas de position de depart (la recherche se fait ligne par ligne)");
+}
+// Test applique a chaque element par cherch / cherch.dernier / cherch.tout. Valeur ordinaire : element egal a la valeur.
+// MOTIF (m|...|, /.../, fam|...|) : l'element est un TEXTE dans lequel le motif trouve au moins un morceau (comme correspond) ;
+// un element qui n'est pas du texte ne correspond jamais (jamais de conversion en texte).
+function testerElementCherch(m) {
+  if (estMotif(m)) {
+    let re = reDuMotif(m, false);
+    return el => typeof el === 'string' && re.test(el);
+  }
+  return el => egalValeursSimples(el, m);
+}
+// Elements (1 dimension) ou on cherche : liste, vecteur, octets. Un dictionnai n'a pas de position : erreur claire.
+function elementsPourCherch(cible, nomCmd, m) {
+  if (estDictionnai(cible)) throw new ErreurTypeInvalide(nomCmd + " : un dictionnai n'a pas de position (ses elements se retrouvent par leur cle : teste une cle avec |cle| dan d)");
+  if (estListe(cible)) return cible.elements;
+  if (estVecteur(cible)) return cible;
+  if (estOctets(cible)) {
+    if (estMotif(m)) throw new ErreurTypeInvalide(nomCmd + " : un motif cherche dans du texte, et des octets ne sont pas du texte (cherche un octet par sa valeur : o.cherch(65))");
+    return Array.from(cible.d);
+  }
+  throw new ErreurTypeInvalide(nomCmd + " : la valeur doit etre un texte, une liste, un vecteur, une matrice ou des octets (recu : " + nomNature(cible) + ")");
+}
+// Matrice : positions [ligne, colonne] (a partir de 1, comme m[ligne, colonne]) des elements egaux a m, dans l'ordre de
+// lecture : ligne par ligne, de gauche a droite.
+function positionsMatrice(mat, m) {
+  let res = [], teste = testerElementCherch(m);
+  for (let i = 1; i <= mat.nlig; i++) for (let j = 1; j <= mat.ncol; j++) {
+    if (teste(mat.donnees[(j - 1) * mat.nlig + (i - 1)])) res.push([i, j]);
+  }
+  return res;
+}
+// Positions (a partir de 1) de chaque morceau de texte qui correspond au motif m, en commencant a debut (base 0).
+function correspondancesDepuis(cible, m, debut, max) {
+  let re = reDuMotif(m, true), res = [], r;
+  re.lastIndex = debut;
+  if (max === undefined) max = Infinity;
+  while (res.length < max && (r = re.exec(cible)) !== null) {
+    res.push(r.index + 1);
+    if (r[0].length === 0) re.lastIndex++;
+    if (re.lastIndex > cible.length) break;
+  }
+  return res;
+}
+// cherch : position (a partir de 1) du morceau dans un texte, ou d'une valeur dans une liste/un vecteur/des octets ; 0 si absent.
+// Avec un MOTIF sur une liste/un vecteur/une matrice : les elements TEXTE ou le motif trouve un morceau (voir testerElementCherch).
+// Matrice : le vecteur c(ligne, colonne) de la premiere occurrence (ligne par ligne), c(0, 0) si absente.
 function coreCherch(cible, m, nomCmd, depart) {
-  let debut = 0;
-  if (depart !== undefined) {
-    debut = exigerEntier(depart, nomCmd, "la position de depart") - 1;
-    if (debut < 0) throw new Error(nomCmd + " : la position de depart doit etre >= 1 (recu : " + (debut + 1) + ")");
+  if (estMatrice(cible)) {
+    refuserDepartMatrice(nomCmd, depart);
+    let p = positionsMatrice(cible, m);
+    return p.length > 0 ? p[0] : [0, 0];
   }
   if (typeof cible === 'string') {
+    let debut = lireDepart(depart, nomCmd, cible.length, "caracteres");
     if (estMotif(m)) {   // position du premier morceau qui correspond
       let re = reDuMotif(m, true);
       re.lastIndex = debut;
@@ -4693,26 +4904,62 @@ function coreCherch(cible, m, nomCmd, depart) {
     }
     return cible.indexOf(exigerTexte(m, nomCmd, "le morceau cherche"), debut) + 1;
   }
-  let elements = estListe(cible) ? cible.elements : (estVecteur(cible) ? cible : null);
-  if (elements === null) throw new ErreurTypeInvalide(nomCmd + " : la valeur doit etre un texte, une liste ou un vecteur (recu : " + nomNature(cible) + ")");
-  for (let i = debut; i < elements.length; i++) if (egalValeursSimples(elements[i], m)) return i + 1;
+  let elements = elementsPourCherch(cible, nomCmd, m), teste = testerElementCherch(m);
+  let debut = lireDepart(depart, nomCmd, elements.length, "elements");
+  for (let i = debut; i < elements.length; i++) if (teste(elements[i])) return i + 1;
   return 0;
 }
 // Position (a partir de 1) de la DERNIERE occurrence, 0 si absente. Texte : le morceau tel quel ; motif : debut du dernier morceau
-// que trouve.tout donnerait ; liste/vecteur : le dernier element egal.
-function coreCherchDernier(cible, m, nomCmd) {
-  if (typeof cible === 'string') {
-    if (estMotif(m)) {
-      let derniere = 0;
-      for (let r of cible.matchAll(reDuMotif(m, true))) derniere = r.index + 1;
-      return derniere;
-    }
-    return cible.lastIndexOf(exigerTexte(m, nomCmd, "le morceau cherche")) + 1;
+// que trouve.tout donnerait ; liste/vecteur/octets : le dernier element egal ; matrice : c(ligne, colonne) de la derniere
+// occurrence en lecture ligne par ligne (c(0, 0) si absente). Avec depart : on ne regarde que les positions >= depart (meme zone
+// que cherch), et c'est la derniere de cette zone.
+function coreCherchDernier(cible, m, nomCmd, depart) {
+  if (estMatrice(cible)) {
+    refuserDepartMatrice(nomCmd, depart);
+    let p = positionsMatrice(cible, m);
+    return p.length > 0 ? p[p.length - 1] : [0, 0];
   }
-  let elements = estListe(cible) ? cible.elements : (estVecteur(cible) ? cible : null);
-  if (elements === null) throw new ErreurTypeInvalide(nomCmd + " : la valeur doit etre un texte, une liste ou un vecteur (recu : " + nomNature(cible) + ")");
-  for (let i = elements.length - 1; i >= 0; i--) if (egalValeursSimples(elements[i], m)) return i + 1;
+  if (typeof cible === 'string') {
+    let debut = lireDepart(depart, nomCmd, cible.length, "caracteres");
+    if (estMotif(m)) { let ps = correspondancesDepuis(cible, m, debut); return ps.length > 0 ? ps[ps.length - 1] : 0; }
+    let r = cible.lastIndexOf(exigerTexte(m, nomCmd, "le morceau cherche"));
+    return r >= debut ? r + 1 : 0;
+  }
+  let elements = elementsPourCherch(cible, nomCmd, m), teste = testerElementCherch(m);
+  let debut = lireDepart(depart, nomCmd, elements.length, "elements");
+  for (let i = elements.length - 1; i >= debut; i--) if (teste(elements[i])) return i + 1;
   return 0;
+}
+// cherch.tout : TOUTES les positions. Texte / liste / vecteur / octets : un vecteur de positions (vecteur vide c() si absent).
+// Texte tel quel : positions qui se chevauchent comprises (|aaa|.cherch.tout(|aa|) donne 1 2), comme en bouclant cherch(m, p+1) ;
+// motif : un morceau par correspondance, comme trouve.tout. Matrice : une LISTE de vecteurs c(ligne, colonne), ligne par ligne.
+// Avec depart : seulement les positions >= depart. Avec limite : au plus `limite` positions (0 = vecteur vide), la recherche s'arrete
+// des que la limite est atteinte. Ordre des arguments : cherch.tout(morceau, depart, limite). Sur une matrice, depart n'existe pas :
+// donner une limite (3e argument) oblige a donner un depart, donc une erreur claire ; on prend alors le debut de la liste rendue.
+function coreCherchTout(cible, m, nomCmd, depart, limite) {
+  let max = Infinity;
+  if (limite !== undefined) {
+    max = exigerEntier(limite, nomCmd, "la limite (nombre maximum de positions)");
+    if (max < 0) throw new Error(nomCmd + " : la limite doit etre >= 0 (recu : " + max + ")");
+  }
+  if (estMatrice(cible)) {
+    refuserDepartMatrice(nomCmd, depart);
+    return { __type: "liste", elements: positionsMatrice(cible, m) };
+  }
+  if (typeof cible === 'string') {
+    let debut = lireDepart(depart, nomCmd, cible.length, "caracteres");
+    if (estMotif(m)) return max === 0 ? [] : correspondancesDepuis(cible, m, debut, max);
+    let t = exigerTexte(m, nomCmd, "le morceau cherche");
+    if (t === "") throw new Error(nomCmd + " : le morceau cherche ne peut pas etre vide");
+    let res = [];
+    if (max === 0) return res;
+    for (let i = cible.indexOf(t, debut); i !== -1; i = cible.indexOf(t, i + 1)) { res.push(i + 1); if (res.length >= max) break; }
+    return res;
+  }
+  let elements = elementsPourCherch(cible, nomCmd, m), teste = testerElementCherch(m), res = [];
+  let debut = lireDepart(depart, nomCmd, elements.length, "elements");
+  for (let i = debut; i < elements.length && res.length < max; i++) if (teste(elements[i])) res.push(i + 1);
+  return res;
 }
 function coreLon(v) {
   if (estOctets(v)) return v.d.length;
@@ -4742,6 +4989,26 @@ function nettoyageDepuis(tokens, pos) {
   if (t2 && t2.type === 'op' && t2.v === '.' && t3 && t3.type === 'ident' && NETTOYAGES.get(t1.v).includes(t3.v) &&
       tokens[pos + 4] && tokens[pos + 4].type === '(' && tokens[pos + 5] && tokens[pos + 5].type === ')') return { nom: t1.v + '.' + t3.v, n: 6 };
   return null;
+}
+// x.arondi(n) : arrondit un nombre a n decimales (0 par defaut) et renvoie un TEXTE avec exactement n decimales
+// (3.1.arondi(2) donne |3.10|). Arrondi "ecole" : la moitie s'eloigne de zero (2.5 -> 3, -2.5 -> -3), calcule sur
+// l'ecriture decimale du nombre (1.005.arondi(2) donne 1.01). Separateur : le point.
+function arrondirEnTexte(v, nbDec) {
+  if (nbDec === undefined) nbDec = 0;
+  if (typeof nbDec !== 'number' || !Number.isInteger(nbDec) || nbDec < 0 || nbDec > 100) {
+    throw new ErreurTypeInvalide(".arondi(n) : n doit etre un entier de 0 a 100 (le nombre de decimales)");
+  }
+  if (typeof v === 'bigint') return v.toString() + (nbDec > 0 ? "." + "0".repeat(nbDec) : "");
+  if (typeof v !== 'number') {
+    if (estVecteur(v) || estMatrice(v) || estListe(v)) throw new ErreurTypeInvalide(".arondi() s'applique a un seul nombre, pas a " + nomNature(v) + " (arrondis chaque element separement)");
+    throw new ErreurTypeInvalide(".arondi() attend un nombre (recu : " + nomNature(v) + ")");
+  }
+  if (!Number.isFinite(v)) throw new ErreurTypeInvalide(".arondi() : " + String(v) + " n'est pas un nombre arrondissable");
+  let abs = Math.abs(v), s = String(abs), r;
+  let decale = s.includes('e') ? NaN : Number(s + 'e' + nbDec);
+  if (!Number.isFinite(decale) || decale >= 1e15) r = abs.toFixed(nbDec);
+  else r = Number(Math.round(decale) + 'e-' + nbDec).toFixed(nbDec);
+  return (v < 0 && Number(r) !== 0 ? "-" : "") + r;
 }
 // Premiere lettre en majuscule, le reste du texte ne change pas.
 function premiereMajuscule(t) {
@@ -4803,39 +5070,61 @@ function coreEntre(t, debut, fin) {
 }
 // Un element "contient" x : texte -> morceau de texte ; liste/vecteur -> un de ses elements est egal a x ; dictionnai ->
 // a la cle x ; nombre ou autre -> ne contient rien. Un seul niveau (jamais plus profond).
-function elementContient(e, valeurs) {
-  if (typeof e === 'string') return valeurs.some(x => (typeof x === 'string' || estNombreArg(x)) && e.includes(String(x)));
-  if (estListe(e)) return valeurs.some(x => e.elements.some(y => egalValeursSimples(y, x)));
-  if (estVecteur(e)) return valeurs.some(x => e.some(y => egalValeursSimples(y, x)));
-  if (estDictionnai(e)) return valeurs.some(x => dicoAvoirCle(e, x));
-  return false;
+// Si x est un MOTIF (m|...|, /.../, fam|...|) : un texte le contient si le motif y trouve un morceau, une liste/un vecteur si un de
+// ses elements TEXTE correspond, un dictionnai si une de ses CLES correspond. motifs[i] = expression reguliere de valeurs[i] (ou null).
+function motifsDesValeurs(valeurs) { return valeurs.map(x => estMotif(x) ? reDuMotif(x, false) : null); }
+function elementContient(e, valeurs, motifs) {
+  return valeurs.some((x, i) => {
+    let re = motifs[i];
+    if (typeof e === 'string') return re ? re.test(e) : ((typeof x === 'string' || estNombreArg(x)) && e.includes(String(x)));
+    let egal = y => re ? (typeof y === 'string' && re.test(y)) : egalValeursSimples(y, x);
+    if (estListe(e)) return e.elements.some(egal);
+    if (estVecteur(e)) return e.some(egal);
+    if (estDictionnai(e)) return re ? Array.from(e.entrees.values()).some(en => typeof en.cle === 'string' && re.test(en.cle)) : dicoAvoirCle(e, x);
+    return false;
+  });
 }
 // garder / enlever (garder = true/false) et leur version .contenant. Renvoie le MEME type qu'au depart.
 // Liste/vecteur : egalite (ou "contient"). Texte : lettres des valeurs. Dictionnai : cles.
+// Motif qui doit correspondre a TOUT l'element (pas seulement y trouver un morceau) : garder/enlever(motif) sur liste, vecteur,
+// dictionnai. Les ancres (?<![\s\S]) et (?![\s\S]) = debut et fin du texte entier, meme si le motif a l'option m.
+function motifEntier(x) {
+  let r = reDuMotif(x, false);
+  return new RegExp('(?<![\\s\\S])(?:' + r.source + ')(?![\\s\\S])', r.flags);
+}
 function coreFiltrer(v, valeurs, garder, contenant, nomCmd) {
   if (valeurs.length === 0) throw new Error(nomCmd + " : il faut au moins une valeur");
+  let motifs = motifsDesValeurs(valeurs);
+  let entiers = valeurs.map(x => estMotif(x) ? motifEntier(x) : null);
   if (contenant && valeurs.some(x => x === "")) throw new Error(nomCmd + " : le texte cherche ne peut pas etre vide");
   if (typeof v === 'string') {
     if (contenant) throw new ErreurTypeInvalide(nomCmd + " s'applique a une liste, un vecteur ou un dictionnai (pas a un texte)");
-    let lettres = new Set();
-    for (let x of valeurs) for (let c of Array.from(exigerTexte(x, nomCmd, "la valeur"))) lettres.add(c);
-    return Array.from(v).filter(c => lettres.has(c) === garder).join("");
+    // Valeurs texte : leurs LETTRES. Motifs : les MORCEAUX du texte qui correspondent (garder les garde, enlever les retire).
+    let lettres = new Set(), motifsTexte = valeurs.filter(x => estMotif(x));
+    for (let x of valeurs) if (!estMotif(x)) for (let c of Array.from(exigerTexte(x, nomCmd, "la valeur"))) lettres.add(c);
+    if (motifsTexte.length === 0) return Array.from(v).filter(c => lettres.has(c) === garder).join("");
+    let marque = new Array(v.length).fill(false), i = 0;
+    for (let c of Array.from(v)) { if (lettres.has(c)) for (let k = 0; k < c.length; k++) marque[i + k] = true; i += c.length; }
+    for (let m of motifsTexte) for (let r of v.matchAll(reDuMotif(m, true))) for (let k = 0; k < r[0].length; k++) marque[r.index + k] = true;
+    let sortie = "";
+    for (let j = 0; j < v.length; j++) if (marque[j] === garder) sortie += v[j];
+    return sortie;
   }
   if (estDictionnai(v)) {
     let cles = null;
-    if (!contenant) { cles = new Set(); for (let x of valeurs) cles.add(normaliserCleDico(x, nomCmd)); }
+    if (!contenant) { cles = new Set(); for (let x of valeurs) if (!estMotif(x)) cles.add(normaliserCleDico(x, nomCmd)); }
     let m = new Map();
     for (let [k, e] of v.entrees) {
       let ok = contenant
-        ? valeurs.some(x => typeof e.cle === 'string' && (typeof x === 'string' || estNombreArg(x)) && e.cle.includes(String(x)))
-        : cles.has(k);
+        ? valeurs.some((x, i) => typeof e.cle === 'string' && (motifs[i] ? motifs[i].test(e.cle) : ((typeof x === 'string' || estNombreArg(x)) && e.cle.includes(String(x)))))
+        : (cles.has(k) || (typeof e.cle === 'string' && entiers.some(r => r !== null && r.test(e.cle))));
       if (ok === garder) m.set(k, { cle: e.cle, valeur: e.valeur });
     }
     return { __type: "dictionnai", entrees: m };
   }
   let elements = estListe(v) ? v.elements : (estVecteur(v) ? v : null);
   if (elements === null) throw new ErreurTypeInvalide(nomCmd + " s'applique a une liste, un vecteur, un dictionnai ou un texte (recu : " + nomNature(v) + ")");
-  let gardes = elements.filter(e => (contenant ? elementContient(e, valeurs) : valeurs.some(x => egalValeursSimples(e, x))) === garder);
+  let gardes = elements.filter(e => (contenant ? elementContient(e, valeurs, motifs) : valeurs.some((x, i) => entiers[i] ? (typeof e === 'string' && entiers[i].test(e)) : egalValeursSimples(e, x))) === garder);
   return estListe(v) ? { __type: "liste", elements: gardes } : gardes;
 }
 // Si les tokens a pos forment '.' nom '.' suffixe '(' pour une methode a nom pointe (avant.dernier, garder.contenant...),
@@ -4887,7 +5176,10 @@ function appliquerMethodeTexte(v, m, args) {
     return surTexteOuElements(v, t => coreAvantApres(t, sens, sep, position, dernier),
       m + " : la valeur avant le point doit etre du texte, une liste ou un vecteur (recu : " + nomNature(v) + ")", false);
   }
-  if (m === "cherch.dernier") { attend(1, 1, "cherch.dernier(morceau)"); return coreCherchDernier(v, args[0], "cherch.dernier"); }
+  if (m === "cherch.dernier") { attend(1, 2, "cherch.dernier(morceau, depart)"); return coreCherchDernier(v, args[0], "cherch.dernier", n === 2 ? args[1] : undefined); }
+  if (m === "cherch.tout") { attend(1, 3, "cherch.tout(morceau, depart, limite)"); return coreCherchTout(v, args[0], "cherch.tout", n >= 2 ? args[1] : undefined, n >= 3 ? args[2] : undefined); }
+  if (m === "decoup.pos") return coreDecoupPos(v, args);
+  if (m === "parties") return coreParties(v, args);
   if (m === "inverse.text") {
     attend(0, 0, "inverse.text()");
     if (typeof v !== 'string') throw new ErreurTypeInvalide("inverse.text() : la valeur doit etre un texte (recu : " + nomNature(v) + ")");
@@ -4959,9 +5251,9 @@ function appliquerMethodeTexte(v, m, args) {
     return reDuMotif(exigerMotif(args[0], "correspond"), false).test(v);
   }
   if (m === "trouve" || m === "trouve.tout") {
-    attend(1, 2, m + "(motif, groupe)");
-    let motif = exigerMotif(args[0], m), groupe = n === 2 ? args[1] : 0;
-    return m === "trouve" ? coreTrouve(v, motif, groupe, m) : coreTrouveTout(v, motif, groupe, m);
+    if (m === "trouve") attend(1, 2, "trouve(motif, groupe)"); else attend(1, 4, "trouve.tout(motif, groupe, limite, depart)");
+    let motif = exigerMotif(args[0], m), groupe = n >= 2 ? args[1] : 0;
+    return m === "trouve" ? coreTrouve(v, motif, groupe, m) : coreTrouveTout(v, motif, groupe, m, n >= 3 ? args[2] : undefined, n >= 4 ? args[3] : undefined);
   }
   if (m === "entre") {
     attend(2, 2, "entre(debut, fin)");
@@ -5241,6 +5533,37 @@ function combinerComparaison(g, d, op) {
 // - var2 matrice : meme principe, renvoie une MATRICE de VRAI/FAUX de meme forme.
 // - var2 texte (suite de caracteres) : pas de notion de "position" au sens du langage,
 //   renvoie un simple VRAI/FAUX selon que var1 est une sous-chaine de var2.
+// operandeEstDan : l'operande de non (jetons debut..fin-1) est-il ECRIT comme un dan ? Soit un 'dan' au niveau 0
+// (non 3 dan v), soit un seul groupe entre parentheses qui contient un 'dan' au niveau 0 (non (3 dan v)).
+function operandeEstDan(tokens, debut, fin) {
+  const ouvre = t => t.type === '(' || t.type === '[', ferme = t => t.type === ')' || t.type === ']';
+  const danAuNiveau0 = (d, f) => {
+    let prof = 0;
+    for (let i = d; i < f; i++) {
+      let t = tokens[i];
+      if (ouvre(t)) prof++; else if (ferme(t)) prof--;
+      else if (prof === 0 && t.type === 'dan') return true;
+    }
+    return false;
+  };
+  let d = debut, f = fin;
+  while (true) {
+    if (danAuNiveau0(d, f)) return true;
+    // un seul groupe ( ... ) qui couvre tout : on l'enleve (aussi pour non ((3 dan v))) et on regarde dedans
+    if (f - d >= 2 && tokens[d].type === '(') {
+      let prof = 0, k = d;
+      for (; k < f; k++) { if (ouvre(tokens[k])) prof++; else if (ferme(tokens[k])) { prof--; if (prof === 0) break; } }
+      if (k === f - 1) { d++; f--; continue; }
+    }
+    return false;
+  }
+}
+function testerAbsence(g, d) {
+  let r = testerAppartenance(g, d);
+  if (estMatrice(r)) return !r.donnees.some(x => x === true);
+  if (estVecteur(r)) return !r.some(x => x === true);
+  return !r;
+}
 function testerAppartenance(g, d) {
   if (estDictionnai(d)) return dicoAvoirCle(d, g); // |cle| dan d : la CLE existe-t-elle ?
   if (estVecteur(g) || estMatrice(g)) {
@@ -5248,7 +5571,8 @@ function testerAppartenance(g, d) {
   }
   if (estMatrice(d)) return { __type: "matrice", nlig: d.nlig, ncol: d.ncol, donnees: d.donnees.map(v => v === g) };
   if (estVecteur(d)) return d.map(v => v === g);
-  if (typeof d === 'string') return d.includes(String(g));
+  if (estListe(d)) return d.elements.map(v => v === g);
+  if (typeof d === 'string') { let t = String(g); return t === '' ? d === '' : d.includes(t); } // le texte vide n'est "dans" rien
   return g === d;
 }
 
@@ -6306,7 +6630,7 @@ const _MOTS_RESERVES = new Set([
   'pou', 'tanqer', 'si', 'sinon', 'essai', 'attrape', 'finalement', 'rythme', 'fonc', 'classe', 'herite',
   'retour', 'donne', 'casse', 'continu', 'quitte', 'lever', 'global', 'englobant', 'import', 'de',
   'et', 'ou', 'non', 'dan', 'VRAI', 'V', 'FAUX', 'F', 'pasdefini',
-  'sisinon', 'lettr', 'Lettr', 'pi',
+  'sisinon', 'lettr', 'Lettr', 'pi', 'tous', 'exis',
   'ouvrir.zip', 'entrer.zip'
 ]);
 function _msgMotReserve(nom, role) {
@@ -8633,13 +8957,30 @@ let aideCommandes = [
       "copier(x) copie la liste, le vecteur, la matrice, le dictionnai ou l'instance, mais les listes/dictionnai places A L'INTERIEUR restent partages avec l'original.",
       "copier.profond(x) copie tout, a tous les niveaux : plus aucun element n'est partage avec l'original."
     ], exemple: "a ~ liste(liste(1,2), 3)\nb ~ copier(a)\nb[2] ~ 7                  ** a[2] reste 3\nb[1][1] ~ 99              ** a[1][1] devient aussi 99 (liste interne partagee)\nc ~ copier.profond(a)\nc[1][1] ~ 5               ** a n'est pas touche" },
-  { noms: ["decoup", "joindr", "remplace", "cherch", "cherch.dernier", "commence", "termine"], categorie: "Texte", syntaxe: "texte.decoup(separateur)  /  texte.decoup(separateur, limite)  /  texte.decoup(limite)  /  liste.joindr(separateur)  /  texte.remplace(ancien, nouveau)  /  texte.remplace(ancien, nouveau, max)  /  x.cherch(morceau)  /  x.cherch(morceau, depart)  /  x.cherch.dernier(morceau)  /  texte.commence(debut)  /  texte.termine(fin)", description: [
+  { noms: ["parties"], categorie: "Texte", syntaxe: "texte.parties(motif)  /  texte.parties(motif, contexte)  /  texte.parties(motif, contexte, limite)  /  texte.parties(motif, contexte, limite, depart)", description: [
+      "Comme grep -n -C : extrait d'un texte les BLOCS de lignes autour des lignes qui correspondent, et renvoie une LISTE de textes. Chaque ligne est precedee de son numero : \"120: ligne qui correspond\" et \"119- ligne de contexte\".",
+      "motif : un texte (la ligne le contient, majuscules comptees) ou un motif (/.../i, m|...|, fam|...|) que la ligne contient. L'alternation et l'option i marchent : /FATAL EXCEPTION|Caused by:/i. Chaque ligne est testee seule : ^ et $ valent pour la ligne.",
+      "contexte : nombre de lignes gardees AVANT et APRES chaque ligne qui correspond (0 par defaut : la ligne seule). Les blocs qui se chevauchent ou se touchent sont fusionnes en un seul, comme grep.",
+      "limite : nombre maximum de BLOCS rendus (illimite par defaut ; 0 donne une liste vide). Le parcours s'arrete des que la limite est atteinte.",
+      "depart : position (a partir de 1, comme cherch) ou commence la recherche ; tout ce qui est AVANT est ignore, contexte compris, et la premiere ligne peut donc etre coupee. Les numeros de ligne restent ceux du texte entier. Un depart apres la fin donne une erreur claire (seul taille + 1 est accepte et ne trouve rien).",
+      "Aucune correspondance : liste vide. Une fin de ligne Windows (\\r\\n) est geree. Le texte est lu ligne par ligne sans etre decoupe en liste : adapte aux gros fichiers (rapports de bogues, journaux).",
+      "Pour recuperer seulement les numeros des lignes qui correspondent : texte.decoup(saulig).cherch.tout(motif). Pour un autre decoupage en parties que les lignes : texte.decoup(sep).garder.contenant(motif)."
+    ], exemple: "t ~ lire.fichier(|rapport.txt|)\nblocs ~ t.parties(/FATAL EXCEPTION|Process:.*moncalcul|Caused by:/i, 15)\naffi(blocs.lon())\naffi(blocs[1])   # les lignes 120- ... 120: ... 135- ...\n\nt.parties(|erreur|, 2, 10)        # au plus 10 blocs, 2 lignes de contexte\nt.parties(|erreur|, 0, 5, 40001)   # 5 premieres lignes qui correspondent apres la position 40001" },
+  { noms: ["decoup", "decoup.pos", "joindr", "remplace", "cherch", "cherch.dernier", "cherch.tout", "commence", "termine"], categorie: "Texte", syntaxe: "texte.decoup(separateur)  /  texte.decoup(separateur, limite)  /  texte.decoup(limite)  /  x.decoup.pos(p1, p2, ...)  /  x.decoup.pos(vecteur de positions)  /  liste.joindr(separateur)  /  texte.remplace(ancien, nouveau)  /  texte.remplace(ancien, nouveau, max)  /  x.cherch(morceau)  /  x.cherch(morceau, depart)  /  x.cherch.dernier(morceau)  /  x.cherch.dernier(morceau, depart)  /  x.cherch.tout(morceau)  /  x.cherch.tout(morceau, depart)  /  x.cherch.tout(morceau, depart, limite)  /  texte.commence(debut)  /  texte.termine(fin)", description: [
       "texte.decoup(sep) coupe le texte a chaque sep (n'importe quel texte, de n'importe quelle longueur) et renvoie une liste. Sans sep : coupe sur les espaces (plusieurs espaces de suite comptent pour un seul, ceux du debut et de la fin sont ignores). Avec sep vide || : coupe lettre par lettre. saulig est accepte comme argument : texte.decoup(saulig) coupe a chaque saut de ligne, liste.joindr(saulig) colle avec des sauts de ligne, texte.remplace(saulig, | |) enleve les sauts de ligne.",
       "texte.decoup(sep, limite) fait au plus limite morceaux : le dernier garde tout le reste. texte.decoup(limite) fait pareil en coupant sur les espaces. Limite 0 ou negative : liste vide. Limite plus grande que le nombre de morceaux possibles : meme resultat que decoup(sep). Limite non entiere (2.5) : erreur claire. Un nombre seul est toujours la limite : pour couper sur un chiffre, l'ecrire en texte : decoup(|1|).",
       "liste.joindr(sep) colle les elements d'une liste ou d'un vecteur avec sep entre chaque (sans sep : colles sans rien entre eux). Les nombres sont convertis en texte.",
       "texte.decoup(motif) coupe a chaque endroit ou le motif correspond : |a1b22c|.decoup(m|\\d+|) donne liste(|a|, |b|, |c|). Les groupes () du motif ne sont pas ajoutes aux morceaux. La limite marche comme pour un texte.",
       "texte.remplace(ancien, nouveau) remplace TOUTES les occurrences de ancien par nouveau (ancien ne peut pas etre vide). Un 3e argument facultatif limite le nombre de remplacements (au plus max, les premiers) : |a a a|.remplace(|a|, |b|, 2) donne b b a. ancien peut aussi etre un motif (voir correspond / trouve) : nouveau peut alors contenir $1, $2... ou $<nom> pour reutiliser un groupe, et $$ pour un vrai $. Sur une liste ou un vecteur, remplace s'applique a chaque element texte et renvoie une liste.",
+      "x.decoup.pos(p1, p2, ...) COUPE x APRES chaque position indiquee (a partir de 1) et renvoie une LISTE de morceaux : le morceau de gauche se termine a la position. |abcdefgh|.decoup.pos(3, 6) donne |abc|, |def|, |gh|. Marche sur un texte, une liste, un vecteur et des octets ; chaque morceau est du meme type que x (des textes, des listes, des vecteurs, des octets). Les positions peuvent etre donnees une a une ou dans UN vecteur, par exemple celui de cherch.tout : t.decoup.pos(t.cherch.tout(|-|)) coupe apres chaque tiret (|ab-cd-ef| donne |ab-|, |cd-|, |ef|). Pour couper en retirant le separateur, utilise decoup(sep).",
+      "decoup.pos : les positions sont des entiers de 1 a la taille de x, strictement croissants (erreur claire sinon : hors de l'objet, decimale, pas croissantes, doublon). Une position egale a la taille donne un dernier morceau vide. AUCUNE position (aucun argument, ou un vecteur vide comme un cherch.tout qui ne trouve rien) : x est renvoye TEL QUEL, sans etre coupe ni mis dans une liste. Sur une matrice, un dictionnai ou un nombre : erreur claire.",
       "x.cherch(morceau) donne la position (a partir de 1, comme texte[i]) de la premiere occurrence, ou 0 si le morceau est absent. x.cherch(morceau, depart) cherche a partir de la position depart (la position rendue reste celle du texte entier) : |a-b-a|.cherch(|a|, 2) donne 5. x.cherch.dernier(morceau) donne la position de la DERNIERE occurrence (0 si absente) : |a-b-a|.cherch.dernier(|a|) donne 5. Avec un motif, c'est le debut du dernier morceau trouve ; marche aussi sur une liste ou un vecteur. x peut etre un texte (on cherche un morceau de texte) ou une liste/un vecteur (on cherche une valeur : l.cherch(5)). Indices negatifs : texte[-1] est la derniere lettre, l[-2] l'avant-dernier element d'une liste ou d'un vecteur, texte[-3:-1] les trois dernieres lettres ; ils marchent aussi pour modifier : l[-1] ~ 9. Les matrices ne les acceptent pas. Sur un texte, morceau peut aussi etre un motif : |Tel 12 et 34|.cherch(m|\\d+|) donne 5 (position du premier morceau qui correspond, 0 s'il n'y en a pas).",
+      "x.cherch.tout(morceau) donne TOUTES les positions : un vecteur (c() s'il n'y en a aucune). |a-b-a|.cherch.tout(|a|) donne 1 5 ; c(1,3,5,3).cherch.tout(3) donne 2 4. Dans un texte, les positions qui se chevauchent comptent (|aaa|.cherch.tout(|aa|) donne 1 2) ; avec un motif, un morceau par correspondance, comme trouve.tout (|a1b22c|.cherch.tout(m|\\d+|) donne 2 4). Un morceau vide est refuse.",
+      "cherch.tout(morceau, depart, limite) : en plus, `limite` donne le nombre MAXIMUM de positions rendues (0 donne un vecteur vide) et la recherche s'arrete des que la limite est atteinte. L'ordre est morceau, depart, limite : pour limiter sans fixer de depart, donne 1 comme depart. |a-b-a-c-a-d-a|.cherch.tout(|a|, 1, 2) donne 1 5 ; .cherch.tout(|a|, 3, 2) donne 5 9. Avec depart et limite, on parcourt un gros texte par blocs : on repart apres la derniere position lue. Sur une matrice, depart n'existe pas, donc la limite non plus (erreur claire) ; garde le debut de la liste rendue.",
+      "depart marche pareil pour les trois : x.cherch(morceau, depart), x.cherch.dernier(morceau, depart) et x.cherch.tout(morceau, depart) ne regardent que les positions >= depart (a partir de 1), et les positions rendues restent celles de x entier. |a-b-a-c-a|.cherch.tout(|a|, 2) donne 5 9 ; |a-b-a-c-a|.cherch.dernier(|a|, 2) donne 9 ; c(1,3,5,3).cherch.tout(3, 3) donne 4. Rien trouve a partir de depart : 0 (cherch, cherch.dernier) ou c() (cherch.tout). Un depart qui DEPASSE LA FIN donne une erreur claire (depart > nombre de caracteres/elements + 1) ; seul depart = taille + 1, juste apres la fin, est accepte et ne trouve rien, pour boucler p ~ x.cherch(m, p+1) apres la derniere occurrence.",
+      "MOTIF dans une liste, un vecteur ou une matrice : x.cherch(m|...|), x.cherch.dernier(m|...|) et x.cherch.tout(m|...|) (aussi /.../ et fam|...|) donnent la POSITION des ELEMENTS TEXTE dans lesquels le motif trouve au moins un morceau (comme correspond), avec les memes regles que pour une valeur : liste(|a1|, |b|, |c22|).cherch.tout(m|\\d+|) donne 1 3 ; sur une matrice de textes, c(ligne, colonne). Un element qui n'est pas du texte (nombre, booleen...) ne correspond jamais (il n'est pas converti). depart s'applique aux elements. Sur des octets, un motif donne une erreur claire (ils ne sont pas du texte). Pour recuperer le MORCEAU trouve et pas seulement la position, utilise trouve / trouve.tout sur le texte.",
+      "cherch, cherch.dernier et cherch.tout marchent sur un texte, une liste, un vecteur, une matrice et des octets (o.cherch(65) : la position de l'octet 65), mais PAS sur un dictionnai, qui n'a pas de position (teste une cle avec |cle| dan d ; erreur claire sinon).",
+      "Sur une MATRICE, la position est le couple ligne et colonne, comme m[ligne, colonne] : cherch et cherch.dernier donnent un vecteur c(ligne, colonne) (c(0, 0) si absent), cherch.tout donne une LISTE de ces vecteurs (liste() si aucun). La recherche suit l'ordre de lecture, ligne par ligne, de gauche a droite. Avec m ~ matrice(c(1,2,3,4,3,6), nlig~2, ncol~3) : m.cherch(3) donne 1 2, m.cherch.dernier(3) donne 1 3 et m.cherch.tout(3) donne liste(c(1,2), c(1,3)). depart n'existe pas pour une matrice : erreur claire pour cherch, cherch.dernier et cherch.tout.",
       "texte.commence(debut) et texte.termine(fin) renvoient VRAI ou FAUX. Majuscules et minuscules comptent comme des lettres differentes.",
       "Toutes ces commandes s'enchainent avec miniscul(), majuscul(), suprespac(), lon(), avant, apres, entre, garder et enlever : texte.suprespac().majuscul().decoup().joindr(|-|). Les anciennes ecritures decoup(texte, sep), joindr(liste, sep)... marchent toujours."
     ], exemple: "|a, b, c|.decoup(|, |)         ->   liste(|a|, |b|, |c|)\n|un deux  trois|.decoup()         ->   liste(|un|, |deux|, |trois|)\n|un deux trois|.decoup(2)       ->   liste(|un|, |deux trois|)\n|a,b,c,d|.decoup(|,|, 3)        ->   liste(|a|, |b|, |c,d|)\ntexte(|a|, saulig, |b|).decoup(saulig)   ->   liste(|a|, |b|)\nliste(|a|,|b|).joindr(| et |)   ->   a et b\n|le chat|.remplace(|chat|, |chien|)   ->   le chien\n|bonjour|.cherch(|jou|)         ->   4\nliste(|a|, 5).cherch(5)         ->   2\n|bonjour|.commence(|bon|)       ->   VRAI\n|  un deux  |.suprespac().decoup().joindr(|-|)   ->   un-deux" },
@@ -8663,6 +9004,8 @@ let aideCommandes = [
       "Texte : on garde ou on retire les LETTRES presentes dans les valeurs. |a1b22c|.garder(|0123456789|) donne 122, |banane|.enlever(|a|) donne bnne.",
       "Dictionnai : on agit sur les CLES. d.garder(|nom|, |age|) garde seulement les entrees de ces cles.",
       "garder.contenant et enlever.contenant : un element correspond s'il CONTIENT la valeur. Un texte la contient comme morceau de texte, une liste ou un vecteur si un de ses elements lui est egal, un dictionnai s'il a cette cle ; un nombre ne contient rien (garder.contenant ne le garde pas, enlever.contenant le garde). Sur un dictionnai, on regarde ses cles (texte contenant la valeur).",
+      "MOTIF avec garder / enlever (sans .contenant) : la valeur peut aussi etre un motif (m|...|, /.../, fam|...|). Liste, vecteur, dictionnai : le motif doit correspondre a l'element (ou a la cle) EN ENTIER, a la difference de .contenant ou il suffit d'y trouver un morceau ; un element qui n'est pas du texte ne correspond jamais. Texte : garder(motif) garde les MORCEAUX qui correspondent et enlever(motif) les retire (comme les lettres des valeurs texte, qu'on peut melanger avec les motifs). Exemples : liste(|a|, |ab|, |a1|).garder(m|a|) donne liste(|a|) ; liste(|a|, |ab|, |a1|).garder(m|ab?|) donne liste(|a|, |ab|) ; |a1b22c|.enlever(m|\\d+|) donne abc ; |a1b22c|.garder(m|\\d+|) donne 122 ; |Salut Le Monde|.garder(m|[A-Z]|) donne SLM.",
+      "MOTIF : la valeur peut etre un motif (m|...|, /.../, fam|...|, avec l'option i pour ignorer les majuscules). Un texte correspond si le motif y trouve un morceau ; une liste ou un vecteur si un de ses elements TEXTE correspond ; un dictionnai si une de ses CLES correspond. Un element qui n'est pas du texte (nombre...) ne correspond jamais. Plusieurs valeurs et motifs peuvent etre melanges (OU). Exemple : liste(|a1|, |b|, |c22|, 5).garder.contenant(m|\\d+|) donne liste(|a1|, |c22|) ; texte.decoup(saulig).garder.contenant(m|erreur|i) garde les lignes qui contiennent erreur, majuscules ou non.",
       "Un seul niveau : les listes imbriquees ne sont jamais fouillees plus profond (une sous-liste est un seul element).",
       "Erreurs claires : aucune valeur donnee, valeur vide dans .contenant, .contenant sur un texte (pas de sens)."
     ], exemple: "liste(|a|, |ab|, |b|).garder(|a|)              ->   liste(|a|)\nliste(|a|, |ab|, |b|).garder.contenant(|a|)    ->   liste(|a|, |ab|)\nliste(|a|, |ab|, |b|).enlever.contenant(|a|)   ->   liste(|b|)\nc(1, 2, 1, 3).enlever(1)                       ->   c(2, 3)\n|a1b22c|.garder(|0123456789|)                  ->   122" },
@@ -8675,7 +9018,9 @@ let aideCommandes = [
       "Un debut negatif compte depuis la fin : |abcdef|.extrait(-3, 2) donne de, et |abcdef|.extrait(-1) donne f. Un debut apres la fin donne un morceau vide ; un debut 0 donne une erreur. Les positions sont comptees comme lon(x), x[i] et cherch : un retour a la ligne compte pour un caractere.",
       "Sur des OCTETS (voir aide(octets)), x.extrait(debut, longueur) rend aussi des octets : b|ABCD|.extrait(2, 2) donne b|BC|."
     ], exemple: "|abcdef|.extrait(2, 3)      ->   bcd\n|abcdef|.extrait(5, 10)     ->   ef\n|abcdef|.extrait(3)         ->   cdef\n|abcdef|.extrait(-3, 2)     ->   de\n|abcdef|.extrait(3, 0)      ->   (vide)\nliste(1, 2, 3, 4).extrait(2, 2)   ->   liste(2, 3)" },
-  { noms: ["correspond", "trouve", "trouve.tout"], categorie: "Texte", syntaxe: "x.correspond(motif)  /  x.trouve(motif)  /  x.trouve(motif, groupe)  /  x.trouve.tout(motif)  /  x.trouve.tout(motif, groupe)", description: [
+  { noms: ["correspond", "trouve", "trouve.tout"], categorie: "Texte", syntaxe: "x.correspond(motif)  /  x.trouve(motif)  /  x.trouve(motif, groupe)  /  x.trouve.tout(motif)  /  x.trouve.tout(motif, groupe)  /  x.trouve.tout(motif, groupe, limite)  /  x.trouve.tout(motif, groupe, limite, depart)", description: [
+      "trouve.tout(motif, groupe, limite, depart) : deux options facultatives, dans cet ordre (groupe vaut 0 = tout le morceau si on n'en veut pas : trouve.tout(motif, 0, 5)). limite = nombre MAXIMUM de morceaux rendus (0 donne une liste vide) ; la recherche s'arrete des que la limite est atteinte. depart = position (a partir de 1) ou commence la recherche : tout ce qui est AVANT est ignore, comme si le texte commencait la, donc ^ et les contextes (?<=...) ne voient pas ce qui est avant. Un depart apres la fin donne une erreur claire (seul taille + 1 est accepte et ne trouve rien).",
+      "Parcours par blocs : avec limite et depart on lit un gros texte morceau par morceau. |a1b22c333d4|.trouve.tout(m|\\d+|, 0, 2) donne |1|, |22| ; |a1b22c333d4|.trouve.tout(m|\\d+|, 0, 2, 4) donne |22|, |333| ; |k=1 k=22 k=333|.trouve.tout(m|k=(\\d+)|, 1, 1, 5) donne |22|. trouve (le premier morceau seulement) n'a pas ces options.",
       "Un MOTIF (expression reguliere) decrit une forme de texte. m|\\d+| (ou /\\d+/ comme en JS) est un motif qui trouve un nombre ; m|abc|i (ou /abc/i) ignore les majuscules ; fam|...| fabrique un motif avec des {variables}. Options apres la barre fermante : i (ignorer les majuscules), m (^ et $ ligne par ligne), s (le point accepte aussi le saut de ligne), u (Unicode : \\p{L} trouve les lettres accentuees, un emoji compte pour un seul caractere ; si un motif insere dans fam|...| a besoin de u, ecris u apres fam|...|).",
       "Dans m|...| et fam|...|, les antislashs vont tels quels au motif (\\d, \\s, \\.) ; \\| est l'ALTERNATIVE : m|chat\\|chien| = chat ou chien. Pour chercher une vraie barre, ecris [\\|] ou \\x7C : m|a[\\|]b| et m|a\\x7Cb| cherchent a|b.",
       "/.../ s'ecrit comme en JS : /\\d+/, /abc/i, /chat|chien/. Ici | est directement l'alternative, \\| une vraie barre et \\/ une vraie barre oblique. Un / ouvre un motif seulement la ou une valeur est attendue (debut de ligne, apres ( , [ ~ = ou apres et ou non dan retour) et s'il se ferme sur la meme ligne ; ailleurs c'est une division : a / b / c. Dans les messages d'erreur, le motif apparait ecrit m|...|.",
@@ -8710,8 +9055,9 @@ let aideCommandes = [
     ], exemple: "hasard()               ->   0.7312... (entre 0 et 1)\nhasard(-1, 1, 1000)    ->   1000 nombres entre -1 et 1 (du bruit, par exemple)\n5 + 3 * hasard()       ->   un nombre entre 5 et 8\nsi(hasard() < 0.5){ affi(|pile|) }" },
   { noms: [":"], categorie: "Creer un vecteur/une matrice", syntaxe: "debut:fin", description: [
       "Raccourci rapide pour creer une suite de nombres entiers, avec un pas de 1.",
-      "Si fin est plus petit que debut, compte a l'envers (pas de -1)."
-    ], exemple: "1:5   ->   [1] 1 2 3 4 5\n5:1   ->   [1] 5 4 3 2 1" },
+      "Si fin est plus petit que debut, compte a l'envers (pas de -1).",
+      "Le : est PLUS FAIBLE que + - * / : les calculs de chaque cote sont faits d'abord (comme en Scilab/MATLAB). 1:m-1 est donc 1:(m-1), et a[1:m-1] ne produit jamais d'indice 0. Pour multiplier une suite, mets-la entre parentheses : (1:3)*2. Le : reste plus fort que les comparaisons (1:3 == c(1,2,3))."
+    ], exemple: "1:5   ->   [1] 1 2 3 4 5\n5:1   ->   [1] 5 4 3 2 1\nm ~ 3 ; 1:m-1   ->   [1] 1 2\n(1:3)*2   ->   [1] 2 4 6" },
   { noms: ["lettr"], categorie: "Creer un vecteur/une matrice", syntaxe: "lettr", description: [
       "Identifiant constant (sans parentheses, comme VRAI/FAUX) qui vaut un vecteur contenant les 26 lettres de l'alphabet, en minuscule, de \"a\" a \"z\"."
     ], exemple: "lettr   ->   [1] \"a\" \"b\" \"c\" ... \"z\"\nx ~ lettr\npou(l dan lettr){ affi(l) }" },
@@ -8870,11 +9216,22 @@ let aideCommandes = [
     ], exemple: "7 MOD 2   ->   1\nc(7,9,11) MOD 2   ->   [1] 1 1 1" },
   { noms: ["dan"], categorie: "Operateurs", syntaxe: "var1 dan var2", description: [
       "Teste si var1 se trouve dans var2.",
-      "Si var2 est un vecteur ou une matrice : renvoie un vecteur/une matrice de VRAI/FAUX, un par position (comme %in% en R), pour reperer a quelle(s) position(s) var1 se trouve.",
-      "Si var2 est une suite de caracteres (texte) : renvoie un simple VRAI/FAUX selon que var1 apparait comme sous-chaine dans var2.",
+      "var2 peut etre un vecteur, une matrice, une liste, un texte ou un dictionnai.",
+      "Vecteur, matrice ou liste : renvoie un vecteur/une matrice de VRAI/FAUX, un par position, pour reperer a quelle(s) position(s) var1 se trouve.",
+      "Texte : un simple VRAI/FAUX selon que var1 apparait comme sous-chaine dans var2 (le texte vide || n'est dans aucun texte). Dictionnai : VRAI si var1 est une CLE.",
       "var1 doit etre une valeur simple (pas un vecteur/une matrice).",
-      "Utilise dans si(...), VRAI si var1 se trouve a au moins une position."
-    ], exemple: "2 dan c(2,3,4)   ->   [1] VRAI FAUX FAUX\n|mot| dan |un mot|   ->   VRAI" },
+      "Utilise dans si(...), VRAI si var1 se trouve a au moins une position.",
+      "ABSENCE : var1 non dan var2 (ou non var1 dan var2, ou non (var1 dan var2)) donne UN seul VRAI/FAUX : VRAI si var1 n'apparait nulle part dans var2.",
+      "Pour savoir si au moins un / tous les VRAI d'un resultat : exis(var1 dan var2) / tous(...)."
+    ], exemple: "2 dan c(2,3,4)   ->   [1] VRAI FAUX FAUX\n|mot| dan |un mot|   ->   VRAI\n5 non dan c(2,3,4)   ->   VRAI\nnon (2 dan c(2,3,4))   ->   FAUX\n2 dan liste(1,2,3)   ->   [1] FAUX VRAI FAUX" },
+  { noms: ["exis", "tous"], categorie: "Operateurs", syntaxe: "exis(booleens)  /  tous(booleens)", description: [
+      "Transforment un vecteur (ou une matrice, ou une liste) de VRAI/FAUX en UN seul VRAI/FAUX.",
+      "exis(x) : VRAI si AU MOINS UN element est VRAI (comme any en R/Python). Sur un vecteur vide : FAUX.",
+      "tous(x) : VRAI si TOUS les elements sont VRAI (comme all). Sur un vecteur vide : VRAI (aucun contre-exemple).",
+      "Un seul booleen est renvoye tel quel. Tout autre contenu (nombres, textes) donne une erreur claire : compare d'abord, par exemple exis(v>2).",
+      "Pour tester un vecteur dans si(...) : si(exis(v>2)) (au moins un), si(tous(v>2)) (tous), si(non exis(v>2)) (aucun), si(non tous(v>2)) (au moins un ne l'est pas).",
+      "exis et tous sont des mots reserves : ils ne peuvent pas servir de nom de variable."
+    ], exemple: "v ~ c(1,5,2)\nexis(v>2)   ->   VRAI\ntous(v>2)   ->   FAUX\nnon exis(v>9)   ->   VRAI\nexis(3 dan v)   ->   FAUX" },
 
   { noms: ["==", "!=", "<", ">", "<=", ">="], categorie: "Operateurs", syntaxe: "a == b  /  a != b  /  a < b  /  a > b  /  a <= b  /  a >= b", description: [
       "Compare deux valeurs et renvoie VRAI ou FAUX.",
@@ -8887,6 +9244,8 @@ let aideCommandes = [
       "ou : VRAI si au moins une des deux conditions est vraie.",
       "non : inverse une condition (VRAI devient FAUX et inversement). S'applique a toute la",
       "comparaison qui suit : non x>5 equivaut a non(x>5), pas a (non x)>5.",
+      "Sur un VECTEUR ou une MATRICE de booleens, non inverse chaque element (comme ! en R) : non c(VRAI,FAUX) donne FAUX VRAI. On peut donc ecrire v[non (v>2)] pour garder les elements qui ne sont PAS > 2. Sur toute autre valeur, non donne un seul booleen.",
+      "Exception voulue, UNIQUEMENT quand non est ecrit directement devant un dan : non (3 dan v), non 3 dan v et 3 non dan v donnent UN seul booleen d'absence (VRAI si 3 n'est nulle part dans v). Si le resultat de dan est d'abord range dans une variable (x ~ 3 dan v), non x inverse chaque position comme pour tout vecteur de booleens : utilise alors non exis(x). Pour tester tout un vecteur dans si(...) : exis(...) / tous(...).",
       "et/ou sont COURT-CIRCUITES (comme en Python/JS/C) : la partie droite n'est evaluee que",
       "si elle est necessaire pour determiner le resultat. Utile pour se proteger d'une erreur :",
       "x!=0 et 10/x>2 ne divise jamais par zero, meme si x vaut 0, car et s'arrete des que",
@@ -9007,6 +9366,13 @@ let aideCommandes = [
       "entrer.zip(z, nom) { ... } ecrit UNE entree par morceaux : dans le bloc, ecrire.entrer.zip(z, morceau, ...) ajoute des textes (ecrits en UTF-8) ou des octets, sans melanger texte et octets dans un meme appel. L'entree se ferme a la fin du bloc ; une seule entree a la fois (pas de entrer.zip dans entrer.zip). Elle accepte compress~VRAI ou compress~FAUX. Une entree ecrite par morceaux ne peut pas depasser 4 Go (erreur claire) ; les entrees de ajout.zip passent en zip64 toutes seules si besoin.",
       "abandon.zip(z) annule volontairement l'archive en cours : rien n'est cree et la suite du bloc donne une erreur claire (archive abandonnee). Dans ces blocs, donne est interdit. ouvrir.zip et entrer.zip sont des mots reserves."
     ], exemple: "ouvrir.zip(z, |/storage/emulated/0/Download/gros.zip|, ecra~VRAI, compress~VRAI) {\n  ajout.zip(z, |a.txt|, conver.texte.octets(|Bonjour|))\n  ajout.zip(z, |photo.jpg|, fichier~|/storage/emulated/0/DCIM/photo.jpg|, compress~FAUX)\n  entrer.zip(z, |donnees/lignes.txt|) {\n    pou(i, 1, 100000) { ecrire.entrer.zip(z, |ligne | + texte(i) + |\\n|) }\n  }\n}\naffi(|zip termine|)" },
+  { noms: ["liste.zip", "extrai.zip"], categorie: "Sauvegarde", syntaxe: "liste.zip(chemin)   /   lire.zip(chemin, nom, debut~1, longueur~1000, max~)   /   extrai.zip(chemin, nom, destination)", description: [
+      "Lecture d'un zip DU TELEPHONE, par son chemin, sans jamais le charger en memoire (lire.zip(octets) charge le zip entier : trop lourd pour un gros fichier). liste.zip(chemin) renvoie un dictionnai nom : taille (octets decompresses), lu dans le repertoire central ; les dossiers sont ignores. Un nom present plusieurs fois dans l'archive : le dernier l'emporte.",
+      "lire.zip(chemin, nom) renvoie les octets d'UNE entree. debut~ (a partir de 1) et longueur~ lisent un morceau, comme lire.fichier : debut~ apres la fin donne des octets vides, longueur~ trop grande s'arrete a la fin, sans erreur (une boucle s'arrete donc quand lon(o) vaut 0). max~ (64 Mo par defaut) limite la taille renvoyee : au-dela, erreur claire. Les options s'ecrivent avant ou apres les valeurs.",
+      "Entree NON compressee : lecture directe a n'importe quelle position. Entree COMPRESSEE : le deflate ne se lit que depuis le debut de l'entree ; le dernier flux ouvert est conserve, donc lire les morceaux A LA SUITE est rapide (chaque appel continue la ou le precedent s'est arrete) ; revenir en arriere ou sauter loin en avant oblige a decompresser depuis le debut jusqu'a la position demandee.",
+      "La signature CRC32 est verifiee quand l'entree a ete lue en entier depuis son debut ; une tranche prise au milieu d'une entree non compressee ne peut pas etre verifiee. Une entree abimee, protegee par mot de passe ou compressee autrement qu'en 'stockage' ou 'deflate' donne une erreur claire qui cite son nom.",
+      "extrai.zip(chemin, nom, destination) decompresse UNE entree directement vers un fichier, pas a pas, sans la mettre en memoire (a utiliser pour les gros fichiers). Elle ecrit dans destination.part puis renomme a la fin : jamais de fichier a moitie ecrit ; en cas d'erreur (CRC32 faux...), rien ne reste. Un fichier existant est refuse, sauf ecra~VRAI ; le dossier de destination est cree au besoin. Les zip de plus de 4 Go ou de plus de 65 535 entrees (zip64) sont lus."
+    ], exemple: "d ~ liste.zip(|/storage/emulated/0/Download/gros.zip|)\naffi(lon(d), d[|donnees/lignes.txt|])\nextrai.zip(|/storage/emulated/0/Download/gros.zip|, |donnees/lignes.txt|, |/storage/emulated/0/Download/lignes.txt|, ecra~VRAI)\ndebut ~ 1\ntanqer VRAI {\n  morceau ~ lire.zip(|/storage/emulated/0/Download/gros.zip|, |donnees/lignes.txt|, debut~debut, longueur~1000000)\n  si(lon(morceau) == 0) { casse }\n  debut ~ debut + lon(morceau)\n}" },
   { noms: ["conver.cara.code", "conver.code.cara"], categorie: "Base", syntaxe: "conver.cara.code(caractere)  /  conver.code.cara(code)", description: [
       "conver.cara.code(|A|) donne le code du caractere (ici 65). Il faut un texte d'un seul caractere ; un emoji compte pour un seul caractere (code Unicode).",
       "conver.code.cara(65) fait l'inverse : donne le caractere de ce code (ici A). Le code doit etre un entier de 0 a 1114111."
@@ -9031,6 +9397,14 @@ let aideCommandes = [
       "rf|...| et fr|...| combinent les deux : rf|C:\\{dossier}\\a.txt| garde les antislash et insere {dossier}. r, f, rf et fr doivent etre colles a la barre ouvrante ; une variable nommee r ou f reste utilisable (r ~ 5).",
       "saulig reste valable : affi(|a|, saulig, |b|) revient a affi(|a\\nb|)."
     ], exemple: "affi(|Ligne 1\\nLigne 2|)\naffi(|Il a dit : \\|oui\\||)\nnom ~ |Yan|\nage ~ 20\naffi(f|{nom} a {age+1} ans|)\naffi(r|C:\\nouveau\\texte|)\naffi(f|{{x}} vaut {age}|)" },
+  { noms: ["arondi"], categorie: "Texte", syntaxe: "nombre.arondi()  /  nombre.arondi(decimales)", description: [
+      "Arrondit un NOMBRE et renvoie le resultat en TEXTE, avec exactement le nombre de decimales demande (0 par defaut).",
+      "Les zeros finals sont gardes : 3.1.arondi(2) donne |3.10|. Sans argument, arondi() arrondit a l'entier : 3.7.arondi() donne |4|.",
+      "La moitie s'eloigne de zero (arrondi d'ecole) : 2.5.arondi() donne |3| et (-2.5).arondi() donne |-3|. Le calcul suit l'ecriture decimale : 1.005.arondi(2) donne |1.01|.",
+      "Le separateur decimal est le point. Le resultat est un texte : pour recalculer avec, il faut le reconvertir en nombre.",
+      "Se chaine comme les autres methodes : x.arondi(2).majuscul(). Marche sur une variable, un nombre ecrit directement ou un calcul entre parentheses : (a*b).arondi(2).",
+      "decimales : un entier de 0 a 100. Erreur claire si la valeur n'est pas un nombre (texte, vecteur, liste, matrice...) : pour un vecteur, arrondis chaque element separement."
+    ], exemple: "x ~ 3.14159\naffi(x.arondi(2))   ->   3.14\naffi(3.1.arondi(2))   ->   3.10\naffi(2.5.arondi())   ->   3\naffi(f|Total : {(prix*qte).arondi(2)} euros|)" },
   { noms: ["miniscul", "majuscul", "suprespac", "majuscul.premier", "suprespac.debut", "suprespac.fin"], categorie: "Texte", syntaxe: "var.miniscul()  /  var.majuscul()  /  var.majuscul.premier()  /  var.suprespac()  /  var.suprespac.debut()  /  var.suprespac.fin()  /  texte.complete(longueur, caractere, placederriere~V)", description: [
       "texte.complete(longueur, caractere) ajoute le caractere DEVANT le texte jusqu'a atteindre la longueur voulue : texte(5).complete(2, |0|) donne 05, |7|.complete(5, |0|) donne 00007. Un texte deja assez long ne change pas. Le caractere (un seul) est facultatif, un espace par defaut. Pour l'ajouter DERRIERE : |ab|.complete(5, |.|, placederriere~V) donne ab... (VRAI marche aussi, et FAUX remet devant). Pour un nombre, ecris d'abord texte(nombre).",
       "majuscul.premier() met seulement la premiere lettre en majuscule, le reste du texte ne change pas : |bonjour tout le monde|.majuscul.premier() donne Bonjour tout le monde. Pour mettre le reste en minuscules, ecris .miniscul().majuscul.premier().",
@@ -12086,10 +12460,60 @@ function enregistrerFonctionsBase() {
             return true;
         };
         fonctionsBase["lire.zip"] = fonctionsExpression["lire.zip"] = async function(args, ctxExpr) {
-            if (args.length !== 1) throw new Error("lire.zip(octets) attend exactement 1 valeur : les octets d'un fichier zip");
-            const v = await evalExpr(args[0], ctxExpr);
-            if (!estOctets(v)) throw new ErreurTypeInvalide("lire.zip(octets) attend des octets (recu : " + nomNature(v) + "). Un fichier se lit avec lire.fichier(chemin, octets~VRAI) ; un texte se convertit avec conver.texte.octets(...)");
-            return lireZip(v.d, "lire.zip");
+            // lire.zip(octets) : zip deja en memoire (inchange).  lire.zip(chemin, nom, debut~, longueur~, max~) : une entree d'un zip du telephone.
+            const { pos, opts } = separerOptionsArgs(args, "lire.zip", ["debut", "longueur", "max"]);
+            if (pos.length < 1 || pos.length > 2) throw new Error("lire.zip(octets) attend les octets d'un fichier zip ; lire.zip(chemin, nom) lit une entree d'un zip du telephone (options debut~, longueur~, max~)");
+            const v = await evalExpr(pos[0], ctxExpr);
+            if (estOctets(v)) {
+                if (pos.length !== 1 || Object.keys(opts).length > 0) throw new Error("lire.zip(octets) ne prend ni nom ni option : pour une entree d'un zip du telephone, utilise lire.zip(chemin, nom, debut~, longueur~, max~)");
+                return lireZip(v.d, "lire.zip");
+            }
+            if (typeof v !== 'string') throw new ErreurTypeInvalide("lire.zip(octets) attend des octets (recu : " + nomNature(v) + "). Un fichier se lit avec lire.fichier(chemin, octets~VRAI) ; un texte se convertit avec conver.texte.octets(...) ; lire.zip(chemin, nom) lit une entree d'un zip du telephone");
+            if (pos.length !== 2) throw new Error("lire.zip(chemin, nom) : il faut aussi le nom de l'entree (liste.zip(chemin) donne les noms)");
+            const chemin = _zipCheminComplet(v, "lire.zip(chemin, nom)", "chemin");
+            const nom = _zipTexteNom(await evalExpr(pos[1], ctxExpr), "lire.zip(chemin, nom)");
+            const debut = opts.debut === undefined ? 1 : _zipEntierMin(await evalExpr(opts.debut, ctxExpr), "lire.zip", "debut", 1);
+            const longueur = opts.longueur === undefined ? undefined : _zipEntierMin(await evalExpr(opts.longueur, ctxExpr), "lire.zip", "longueur", 0);
+            const max = opts.max === undefined ? ZIP_MAX_LIRE_DEFAUT : _zipEntierMin(await evalExpr(opts.max, ctxExpr), "lire.zip", "max", 0);
+            return _zipLireEntree(chemin, nom, debut, longueur, max, "lire.zip");
+        };
+        // liste.zip(chemin) : dictionnai nom : taille (octets decompresses), lu par pages dans le repertoire central (dossiers ignores).
+        fonctionsBase["liste.zip"] = fonctionsExpression["liste.zip"] = async function(args, ctxExpr) {
+            if (args.length !== 1) throw new Error("liste.zip(chemin) attend exactement 1 valeur : le chemin d'un fichier zip");
+            const chemin = _zipCheminComplet(await evalExpr(args[0], ctxExpr), "liste.zip(chemin)", "chemin");
+            const pont = _pontZipLire("liste.zip");
+            const dico = { __type: "dictionnai", entrees: new Map() };
+            let offset = -1, fin = -1;
+            for (;;) {
+                await _zipCeder(true);
+                const page = JSON.parse(_zipNatif(pont.zipListe(chemin, offset, fin, 5000), "liste.zip"));
+                for (const e of page.e) dicoEcrire(dico, e[0], e[1], "liste.zip");
+                if (page.s < 0) break;
+                offset = page.s; fin = page.f;
+            }
+            return dico;
+        };
+        // extrai.zip(chemin, nom, destination) : decompresse UNE entree directement vers un fichier, pas a pas (jamais en memoire).
+        fonctionsBase["extrai.zip"] = fonctionsExpression["extrai.zip"] = async function(args, ctxExpr) {
+            const { pos, opts } = separerOptionsArgs(args, "extrai.zip", ["ecra"]);
+            if (pos.length !== 3) throw new Error("extrai.zip(chemin, nom, destination) attend 3 valeurs (ecra~VRAI facultatif pour remplacer un fichier existant)");
+            const chemin = _zipCheminComplet(await evalExpr(pos[0], ctxExpr), "extrai.zip(chemin, nom, destination)", "chemin");
+            const nom = _zipTexteNom(await evalExpr(pos[1], ctxExpr), "extrai.zip(chemin, nom, destination)");
+            const dest = _zipCheminComplet(await evalExpr(pos[2], ctxExpr), "extrai.zip(chemin, nom, destination)", "destination");
+            const ecra = opts.ecra === undefined ? false : estVrai(await evalExpr(opts.ecra, ctxExpr));
+            const pont = _pontZipLire("extrai.zip");
+            if (!ecra && typeof pont.existeFichier === "function" && pont.existeFichier(dest)) {
+                throw new ErreurFichierDejaExistant("extrai.zip(...) : le fichier '" + dest + "' existe deja (utilise ecra~VRAI pour le remplacer, ou fichier.existe(...) pour verifier avant)");
+            }
+            await _zipCeder(true);
+            _zipNatif(pont.zipExtraireDebut(chemin, nom, dest, ecra), "extrai.zip");
+            try {
+                for (;;) {                                         // pas a pas : on cede la main entre deux pas
+                    await _zipCeder(true);
+                    if (_zipNatif(pont.zipExtrairePas(ZIP_PAS_COPIE), "extrai.zip") === "0") break;
+                }
+            } catch (e) { try { pont.zipExtraireAbandon(); } catch (_) {} throw e; }
+            return true;
         };
         _versionFonctionsExpression++;
     })();
@@ -12137,6 +12561,24 @@ function enregistrerFonctionsBase() {
     fonctionsBase["est.booleen"] = fonctionsExpression["est.booleen"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("est.booleen(...) attend exactement 1 argument");
         return typeof (await evalExpr(args[0], ctxExpr)) === 'boolean';
+    };
+    // exis(x) / tous(x) : x = vecteur/matrice/liste de booleens (ou un booleen) -> UN seul VRAI/FAUX.
+    // exis : au moins un VRAI (vide -> FAUX). tous : tous VRAI (vide -> VRAI).
+    const elementsBooleens = (v, nom) => {
+        if (typeof v === 'boolean') return [v];
+        let el = estVecteur(v) ? v : estMatrice(v) ? v.donnees : estListe(v) ? v.elements : null;
+        if (el === null) throw new ErreurTypeInvalide(nom + "(...) attend un vecteur, une matrice ou une liste de booleens VRAI/FAUX (recu : " + nomNature(v) + "). Exemple : " + nom + "(v>2)");
+        let i = el.findIndex(x => typeof x !== 'boolean');
+        if (i !== -1) throw new ErreurTypeInvalide(nom + "(...) : tous les elements doivent etre des booleens VRAI/FAUX (l'element " + (i + 1) + " est " + nomNature(el[i]) + "). Compare d'abord, par exemple " + nom + "(v>2)");
+        return el;
+    };
+    fonctionsBase["exis"] = fonctionsExpression["exis"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("exis(...) attend exactement 1 argument");
+        return elementsBooleens(await evalExpr(args[0], ctxExpr), "exis").some(x => x === true);
+    };
+    fonctionsBase["tous"] = fonctionsExpression["tous"] = async function(args, ctxExpr) {
+        if (args.length !== 1) throw new Error("tous(...) attend exactement 1 argument");
+        return elementsBooleens(await evalExpr(args[0], ctxExpr), "tous").every(x => x === true);
     };
     fonctionsBase["est.vide"] = fonctionsExpression["est.vide"] = async function(args, ctxExpr) {
         if (args.length !== 1) throw new Error("est.vide(...) attend exactement 1 argument");
@@ -14787,11 +15229,11 @@ function verifierSyntaxeExpression(str) {
   function or_() { and_(); while (est('or')) { pos++; and_(); } }
   function and_() { not_(); while (est('and')) { pos++; not_(); } }
   function not_() { if (est('not')) { pos++; not_(); return; } dan_(); }
-  function dan_() { cmp_(); while (est('dan')) { pos++; cmp_(); } }
-  function cmp_() { add_(); if (est('cmp')) { pos++; add_(); } }
+  function dan_() { cmp_(); while (est('dan') || (est('not') && tokens[pos + 1] && tokens[pos + 1].type === 'dan')) { if (est('not')) pos++; pos++; cmp_(); } }
+  function cmp_() { colon_(); if (est('cmp')) { pos++; colon_(); } }
   function add_() { mul_(); while (est('op', '+') || est('op', '-')) { pos++; mul_(); } }
-  function mul_() { colon_(); while (peek() && peek().type === 'op' && OPS_MUL.indexOf(peek().v) !== -1) { pos++; colon_(); } }
-  function colon_() { unary_(); if (est('deuxpoints')) { pos++; unary_(); } }
+  function mul_() { unary_(); while (peek() && peek().type === 'op' && OPS_MUL.indexOf(peek().v) !== -1) { pos++; unary_(); } }
+  function colon_() { add_(); if (est('deuxpoints')) { pos++; add_(); } }
   function unary_() { if (est('op', '-')) { pos++; unary_(); return; } pow_(); }
   function pow_() { primaire_(); if (est('op', '^')) { pos++; unary_(); } }
   function indice_() {   // '[' deja reconnu, non consomme
@@ -15748,6 +16190,40 @@ async function _executerBlocZip(tokens, index, ligne, token, ctxExpr) {
     }
   } catch (e) { _zipAbandonner(archive); throw e; }
   return { res: null, finBloc: finBloc };
+}
+
+/* ===================== LECTURE ZIP DE GROS FICHIERS : liste.zip / lire.zip(chemin, nom) / extrai.zip ===================== */
+// Cote Java (MonLangageZipLecture) : le repertoire central est lu par morceaux, une entree se lit par morceaux, et une
+// extraction se fait directement de fichier a fichier : jamais le zip entier en memoire.
+const ZIP_MAX_LIRE_DEFAUT = 64 * 1024 * 1024;
+function _pontZipLire(nomCmd) {
+  const pont = window.MonLangage;
+  if (!(pont && typeof pont.zipLireInfo === "function")) throw new ErreurIndisponibleHorsApp(nomCmd + " : la lecture d'un zip par son chemin est disponible uniquement dans l'app installee (rebuild requis ; le pont natif est absent ici)");
+  if (typeof pont.permissionStockageAccordee === "function" && !pont.permissionStockageAccordee()) throw new ErreurPermissionRefusee(nomCmd + "(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
+  return pont;
+}
+function _zipEntierMin(v, nomCmd, option, minimum) {
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < minimum) throw new ErreurTypeInvalide(nomCmd + " : " + option + "~ doit etre un entier >= " + minimum + " (recu : " + (typeof v === 'number' ? v : nomNature(v)) + ")");
+  return v;
+}
+// lire.zip(chemin, nom, debut~, longueur~, max~) : lit une entree (ou une tranche) par morceaux de 1 Mo, avec cession de la main.
+async function _zipLireEntree(chemin, nom, debut, longueur, max, nomCmd) {
+  const pont = _pontZipLire(nomCmd);
+  await _zipCeder(true);
+  const taille = parseInt(_zipNatif(pont.zipLireInfo(chemin, nom), nomCmd), 10);
+  const debut0 = debut - 1;
+  if (debut0 >= taille) return creerOctets(new Uint8Array(0));
+  const dispo = taille - debut0;
+  const n = longueur === undefined ? dispo : Math.min(longueur, dispo);
+  if (n > max) throw new Error(nomCmd + "(...) : " + n + " octets demandes, plus que max~ (" + max + ") : lis par morceaux avec debut~ et longueur~, augmente max~, ou utilise extrai.zip(chemin, nom, destination) pour ecrire dans un fichier");
+  let sortie;
+  try { sortie = new Uint8Array(n); } catch (e) { throw new Error(nomCmd + "(...) : pas assez de memoire pour " + n + " octets : lis par morceaux avec debut~ et longueur~ ou utilise extrai.zip(...)"); }
+  for (let o = 0; o < n; o += ZIP_TAILLE_MORCEAU) {
+    await _zipCeder(true);
+    const morceau = base64VersOctets(_zipNatif(pont.zipLire(chemin, nom, debut0 + o, Math.min(ZIP_TAILLE_MORCEAU, n - o)), nomCmd), nomCmd);
+    sortie.set(morceau, o);
+  }
+  return creerOctets(sortie);
 }
 
 function _corpsSyncDe(nd, tokens, index) {
@@ -17141,6 +17617,8 @@ async function executerScriptLocal(script, options = {}) {
     else if (e instanceof ErreurLangage) { print("Erreur ligne " + e.ligne + ": " + e.message, "erreur"); for (const lp of lignesPileAppels(e)) print(lp, "erreur"); }
     else print("Erreur: " + e.message, "erreur");
   }
+  // Referme le zip conserve ouvert par lire.zip(chemin, nom) (flux de lecture) : rien ne reste ouvert apres le script.
+  try { if (window.MonLangage && typeof window.MonLangage.zipLireFermer === "function") window.MonLangage.zipLireFermer(); } catch (_) {}
   arreterIndicateurAttente();
   executionEnCours = false;
   demandeArret = false;
