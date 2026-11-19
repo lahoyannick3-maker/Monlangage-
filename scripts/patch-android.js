@@ -967,12 +967,12 @@ public class MonLangageBridge {
             }
         }
 
-        // ---- Zip progressif (ouvrir.zip / entrer.zip / ajout.zip / ecrire.entrer.zip / abandon.zip) ----
+        // ---- Zip progressif (ouvrir.zip / creer.entrer.zip / ajout.entrer.zip / ecrire.contenu / abandon.zip) ----
         // Chaque methode renvoie "OK", "OK:valeur" ou "ERR:message" (voir MonLangageZip). Les donnees arrivent par
         // morceaux de 1 Mo en base64 : l'archive n'est JAMAIS construite en memoire.
         @JavascriptInterface
-        public String zipOuvrir(String chemin, boolean compress, boolean ecra) {
-            return MonLangageZip.ouvrir(chemin, compress, ecra);
+        public String zipOuvrir(String chemin, boolean compress, boolean ecra, String modpas) {
+            return MonLangageZip.ouvrir(chemin, compress, ecra, modpas);
         }
 
         @JavascriptInterface
@@ -1015,21 +1015,21 @@ public class MonLangageBridge {
             return MonLangageZip.ajouterFichierPas(id, maxOctets);
         }
 
-        // ---- Lecture zip de gros fichiers (liste.zip / lire.zip(chemin, nom) / extrai.zip) : voir MonLangageZipLecture ----
+        // ---- Lecture zip de gros fichiers (liste.zip / lire.entrer.zip(chemin, nom) / extrait.entrer.zip) : voir MonLangageZipLecture ----
         @JavascriptInterface
         public String zipListe(String chemin, double offset, double fin, int max) {
             return MonLangageZipLecture.liste(chemin, offset, fin, max);
         }
 
         @JavascriptInterface
-        public String zipLireInfo(String chemin, String nom) {
-            return MonLangageZipLecture.info(chemin, nom);
+        public String zipLireInfo(String chemin, String nom, String modpas) {
+            return MonLangageZipLecture.info(chemin, nom, modpas);
         }
 
         @JavascriptInterface
-        public String zipLire(String chemin, String nom, double debut0, int longueur) {
+        public String zipLire(String chemin, String nom, double debut0, int longueur, String modpas) {
             try {
-                byte[] octets = MonLangageZipLecture.lireOctets(chemin, nom, debut0, longueur);
+                byte[] octets = MonLangageZipLecture.lireOctets(chemin, nom, debut0, longueur, modpas);
                 return "OK:" + android.util.Base64.encodeToString(octets, android.util.Base64.NO_WRAP);
             } catch (Exception | OutOfMemoryError e) {
                 return "ERR:" + e.getMessage();
@@ -1042,8 +1042,8 @@ public class MonLangageBridge {
         }
 
         @JavascriptInterface
-        public String zipExtraireDebut(String chemin, String nom, String destination, boolean ecra) {
-            return MonLangageZipLecture.extraireDebut(chemin, nom, destination, ecra);
+        public String zipExtraireDebut(String chemin, String nom, String destination, boolean ecra, String modpas) {
+            return MonLangageZipLecture.extraireDebut(chemin, nom, destination, ecra, modpas);
         }
 
         @JavascriptInterface
@@ -1584,7 +1584,7 @@ public class MonLangageBridge {
 `;
 fs.writeFileSync(path.join(bridgeDir, 'MonLangageBridge.java'), monLangageBridgeContent);
 console.log('[patch-android] MonLangageBridge.java ecrit (implementation native partagee).');
-// Zip progressif (ouvrir.zip / entrer.zip / ajout.zip) : le writer est un VRAI fichier Java (scripts/MonLangageZip.java),
+// Zip progressif (ouvrir.zip / creer.entrer.zip / ajout.entrer.zip) : le writer est un VRAI fichier Java (scripts/MonLangageZip.java),
 // teste a part sur une JVM avec des lecteurs zip independants ; seul le nom du package est remplace ici.
 const zipJavaSource = fs.readFileSync(path.join(__dirname, 'MonLangageZip.java'), 'utf8');
 if (zipJavaSource.indexOf('package __APPID__;') === -1) throw new Error('scripts/MonLangageZip.java : ligne "package __APPID__;" introuvable');

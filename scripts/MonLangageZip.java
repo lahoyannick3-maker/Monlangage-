@@ -15,8 +15,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.zip.CRC32;
 import java.util.zip.Deflater;
+import java.security.GeneralSecurityException;
+import java.security.SecureRandom;
 
-// Ecriture ZIP PROGRESSIVE (ouvrir.zip / entrer.zip / ajout.zip du langage MLG).
+// Ecriture ZIP PROGRESSIVE (ouvrir.zip / creer.entrer.zip / ajout.entrer.zip du langage MLG).
 // - L'archive est ecrite dans "chemin.part" puis renommee seulement a la fin NORMALE (finaliser) : un ancien fichier
 //   valide n'est jamais detruit avant que la nouvelle archive soit entierement ecrite et synchronisee sur le disque.
 // - Aucune donnee n'est accumulee en memoire : seul le morceau en cours (+ un tampon de 64 Ko) existe. Le repertoire
@@ -25,6 +27,8 @@ import java.util.zip.Deflater;
 //   CORRIGE a la fin de l'entree (la sortie est un vrai fichier : pas de "data descriptor").
 // - ZIP64 : decide pour chaque limite separement (taille d'une entree, position d'une entree, nombre d'entrees,
 //   taille/position du repertoire central).
+// - Archive CHIFFREE (modpas~) : chaque entree est chiffree en AES-256 (WinZip AE-2 : PBKDF2-HMAC-SHA1 1000 tours, sel de 16 octets propre a
+//   chaque entree, AES-CTR, HMAC-SHA1 de 10 octets en fin de donnees, CRC32 a 0). Chiffrement par blocs dans le flux : rien de plus en memoire.
 // Toutes les methodes publiques renvoient "OK", "OK:valeur" ou "ERR:message". Aucune ne leve d'exception.
 // N'utilise QUE java.io / java.util (compatible Android API 22+, pas de java.nio.file).
 public final class MonLangageZip {
@@ -146,6 +150,8 @@ public final class MonLangageZip {
         byte[] nom;
         boolean utf8;
         int methode;               // 0 = stocke, 8 = deflate
+        boolean chiffre;           // entree chiffree AES-256 (archive ouverte avec modpas~)
+        MonLangageZipLecture.AesDech aes;
         long enteteOff;
         boolean zip64;             // place ZIP64 reservee dans l'en-tete local
         int heure, date;
@@ -159,6 +165,8 @@ public final class MonLangageZip {
         File dest, part, cd;
         String cle;
         boolean compressDefaut, ecra;
+        byte[] mdp;                    // mot de passe (UTF-8) : null = archive non chiffree
+        byte[] chif;                   // tampon de chiffrement (seulement si mdp != null)
         Sortie out;
         BufferedOutputStream cdOut;
         long nbEntrees = 0, cdTaille = 0;
@@ -178,7 +186,9 @@ public final class MonLangageZip {
     }
 
     // ------------------------------------------------------------------ ouverture
-    public static synchronized String ouvrir(String chemin, boolean compress, boolean ecra) {
+    public static String ouvrir(String chemin, boolean compress, boolean ecra) { return ouvrir(chemin, compress, ecra, null); }
+
+    public static synchronized String ouvrir(String chemin, boolean compress, boolean ecra, String modpas) {
         Archive a = null;
         try {
             if (chemin == null || chemin.trim().isEmpty()) return err("chemin vide");
@@ -199,6 +209,7 @@ public final class MonLangageZip {
             a.cle = cle;
             a.compressDefaut = compress;
             a.ecra = ecra;
+            if (modpas != null && !modpas.isEmpty()) { a.mdp = modpas.getBytes(StandardCharsets.UTF_8); a.chif = new byte[TAMPON]; }
             // restes d'une execution interrompue (aucune archive ouverte ne les utilise : verifie ci-dessus)
             if (a.part.exists() && !a.part.delete()) return err("impossible de supprimer l'ancien fichier temporaire '" + a.part.getPath() + "'");
             if (a.cd.exists() && !a.cd.delete()) return err("impossible de supprimer l'ancien fichier temporaire '" + a.cd.getPath() + "'");
@@ -237,6 +248,7 @@ public final class MonLangageZip {
             for (byte b : nomB) if (b < 0) { e.utf8 = true; break; }
             boolean comp = compress < 0 ? a.compressDefaut : compress == 1;
             e.methode = comp ? 8 : 0;
+            e.chiffre = a.mdp != null;
             e.zip64 = reserveZip64 || tailleConnue >= (double) 0xF0000000L;
             Calendar c = Calendar.getInstance();
             int an = Math.max(1980, c.get(Calendar.YEAR));
@@ -244,12 +256,12 @@ public final class MonLangageZip {
             e.date = ((an - 1980) << 9) | ((c.get(Calendar.MONTH) + 1) << 5) | c.get(Calendar.DAY_OF_MONTH);
             e.enteteOff = a.out.pos;
             if (comp) e.def = new Deflater(Deflater.DEFAULT_COMPRESSION, true);
-            int extraLen = e.zip64 ? 20 : 0;
+            int extraLen = (e.zip64 ? 20 : 0) + (e.chiffre ? 11 : 0);
             ByteBuffer h = ByteBuffer.allocate(30 + nomB.length + extraLen).order(ByteOrder.LITTLE_ENDIAN);
             h.putInt(0x04034b50);
-            h.putShort((short) (e.zip64 ? 45 : 20));
-            h.putShort((short) (e.utf8 ? 0x0800 : 0));
-            h.putShort((short) e.methode);
+            h.putShort((short) (e.chiffre ? 51 : e.zip64 ? 45 : 20));
+            h.putShort((short) ((e.utf8 ? 0x0800 : 0) | (e.chiffre ? 1 : 0)));
+            h.putShort((short) (e.chiffre ? 99 : e.methode));
             h.putShort((short) e.heure);
             h.putShort((short) e.date);
             h.putInt(0);                                   // crc (corrige a la fin)
@@ -259,13 +271,47 @@ public final class MonLangageZip {
             h.putShort((short) extraLen);
             h.put(nomB);
             if (e.zip64) { h.putShort((short) 1); h.putShort((short) 16); h.putLong(0); h.putLong(0); }
-            a.out.ecrire(h.array(), 0, h.capacity());
+            if (e.chiffre) extraAes(h, e.methode);
+            if (e.chiffre) {                                // sel + valeur de verification : places AVANT les donnees chiffrees
+                byte[] sel = new byte[16];
+                new SecureRandom().nextBytes(sel);
+                byte[] cle = MonLangageZipLecture.pbkdf2(a.mdp, sel, 1000, 66);
+                e.aes = new MonLangageZipLecture.AesDech(java.util.Arrays.copyOfRange(cle, 0, 32), java.util.Arrays.copyOfRange(cle, 32, 64));
+                a.out.ecrire(h.array(), 0, h.capacity());
+                a.out.ecrire(sel, 0, 16);
+                a.out.ecrire(cle, 64, 2);
+                e.compresse = 18;
+            } else {
+                a.out.ecrire(h.array(), 0, h.capacity());
+            }
             a.noms.ajoute(sig);
             a.cur = e;
             return ok();
-        } catch (IOException | RuntimeException | OutOfMemoryError ex) {
+        } catch (IOException | RuntimeException | OutOfMemoryError | GeneralSecurityException ex) {
             a.cassee = true;
             return err("ecriture impossible : " + ex.getMessage());
+        }
+    }
+
+    // Extra WinZip AES : 0x9901, version AE-2, "AE", AES-256 (3), vraie methode de compression.
+    private static void extraAes(ByteBuffer h, int vraieMethode) {
+        h.putShort((short) 0x9901);
+        h.putShort((short) 7);
+        h.putShort((short) 2);
+        h.put((byte) 'A'); h.put((byte) 'E');
+        h.put((byte) 3);
+        h.putShort((short) vraieMethode);
+    }
+
+    // Ecrit des octets de DONNEES de l'entree : chiffres au passage si l'archive a un mot de passe (par morceaux de 64 Ko).
+    private static void sortieDonnees(Archive a, Entree e, byte[] b, int off, int len) throws IOException {
+        if (e.aes == null) { a.out.ecrire(b, off, len); return; }
+        while (len > 0) {
+            int k = Math.min(len, a.chif.length);
+            System.arraycopy(b, off, a.chif, 0, k);
+            e.aes.chiffrer(a.chif, 0, k);
+            a.out.ecrire(a.chif, 0, k);
+            off += k; len -= k;
         }
     }
 
@@ -292,13 +338,13 @@ public final class MonLangageZip {
         e.crc.update(b, off, len);
         e.taille += len;
         if (e.def == null) {
-            a.out.ecrire(b, off, len);
+            sortieDonnees(a, e, b, off, len);
             e.compresse += len;
         } else {
             e.def.setInput(b, off, len);
             while (!e.def.needsInput()) {
                 int k = e.def.deflate(a.tmp);
-                if (k > 0) { a.out.ecrire(a.tmp, 0, k); e.compresse += k; }
+                if (k > 0) { sortieDonnees(a, e, a.tmp, 0, k); e.compresse += k; }
             }
         }
         if (!e.zip64 && e.compresse > MAX32) {
@@ -326,16 +372,22 @@ public final class MonLangageZip {
                 e.def.finish();
                 while (!e.def.finished()) {
                     int k = e.def.deflate(a.tmp);
-                    if (k > 0) { a.out.ecrire(a.tmp, 0, k); e.compresse += k; }
+                    if (k > 0) { sortieDonnees(a, e, a.tmp, 0, k); e.compresse += k; }
                 }
                 e.def.end();
                 e.def = null;
+            }
+            if (e.aes != null) {                            // marque d'authenticite AES : 10 octets apres les donnees chiffrees
+                byte[] marque = e.aes.marque();
+                a.out.ecrire(marque, 0, 10);
+                e.compresse += 10;
+                e.aes = null;
             }
             if (!e.zip64 && (e.taille > MAX32 || e.compresse > MAX32)) {
                 a.cassee = true;
                 return err("l'entree depasse 4 Go : non prise en charge sans ZIP64");
             }
-            long crc = e.crc.getValue();
+            long crc = e.chiffre ? 0 : e.crc.getValue();   // AE-2 : pas de CRC32 (l'authenticite est assuree par la marque HMAC)
             // 1) correction de l'en-tete local
             ByteBuffer p = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN);
             p.putInt((int) crc);
@@ -351,14 +403,14 @@ public final class MonLangageZip {
             // 2) enregistrement du repertoire central
             boolean tailleGrande = e.taille > MAX32, compGrande = e.compresse > MAX32, offGrand = e.enteteOff > MAX32;
             int nbExtra = (tailleGrande ? 8 : 0) + (compGrande ? 8 : 0) + (offGrand ? 8 : 0);
-            int extraLen = nbExtra > 0 ? 4 + nbExtra : 0;
+            int extraLen = (nbExtra > 0 ? 4 + nbExtra : 0) + (e.chiffre ? 11 : 0);
             boolean v45 = e.zip64 || nbExtra > 0;
             ByteBuffer c = ByteBuffer.allocate(46 + e.nom.length + extraLen).order(ByteOrder.LITTLE_ENDIAN);
             c.putInt(0x02014b50);
-            c.putShort((short) (v45 ? 45 : 20));
-            c.putShort((short) (v45 ? 45 : 20));
-            c.putShort((short) (e.utf8 ? 0x0800 : 0));
-            c.putShort((short) e.methode);
+            c.putShort((short) (e.chiffre ? 51 : v45 ? 45 : 20));
+            c.putShort((short) (e.chiffre ? 51 : v45 ? 45 : 20));
+            c.putShort((short) ((e.utf8 ? 0x0800 : 0) | (e.chiffre ? 1 : 0)));
+            c.putShort((short) (e.chiffre ? 99 : e.methode));
             c.putShort((short) e.heure);
             c.putShort((short) e.date);
             c.putInt((int) crc);
@@ -372,13 +424,14 @@ public final class MonLangageZip {
             c.putInt(0);                    // attributs externes
             c.putInt(offGrand ? 0xFFFFFFFF : (int) e.enteteOff);
             c.put(e.nom);
-            if (extraLen > 0) {
+            if (nbExtra > 0) {
                 c.putShort((short) 1);
                 c.putShort((short) nbExtra);
                 if (tailleGrande) c.putLong(e.taille);
                 if (compGrande) c.putLong(e.compresse);
                 if (offGrand) c.putLong(e.enteteOff);
             }
+            if (e.chiffre) extraAes(c, e.methode);
             a.cdOut.write(c.array(), 0, c.capacity());
             a.cdTaille += c.capacity();
             a.nbEntrees++;
