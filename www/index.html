@@ -2883,7 +2883,7 @@ function demanderFichierConsole() {
   return new Promise((resolve, reject) => {
     let input = document.createElement("input");
     input.type = "file";
-    input.accept = ".mld,application/json,text/plain";
+    input.accept = "*/*";
     input.style.display = "none";
     document.body.appendChild(input);
     let termine = false;
@@ -6631,7 +6631,7 @@ const _MOTS_RESERVES = new Set([
   'retour', 'donne', 'casse', 'continu', 'quitte', 'lever', 'global', 'englobant', 'import', 'de',
   'et', 'ou', 'non', 'dan', 'VRAI', 'V', 'FAUX', 'F', 'pasdefini',
   'sisinon', 'lettr', 'Lettr', 'pi', 'tous', 'exis',
-  'ouvrir.zip', 'entrer.zip'
+  'ouvrir.zip', 'creer.entrer.zip'
 ]);
 function _msgMotReserve(nom, role) {
   const python = nom === 'donne' ? " (comme yield en Python)" : (nom === 'retour' ? " (comme return en Python)" : "");
@@ -8485,19 +8485,19 @@ let aideCommandes = [
       "Ne fonctionne que dans l'app installee (pas en previsualisation navigateur).",
       "ecra~ peut aussi s'ecrire AVANT le chemin : creer.dossier(ecra~VRAI, chemin) est identique a creer.dossier(chemin, ecra~VRAI)."
     ], exemple: "creer.dossier(|/storage/emulated/0/Documents/Mes_scripts|)\ncreer.dossier(|/storage/emulated/0/Documents/Mes_scripts|, ecra~VRAI)   ->   FAUX (il existe deja)" },
-  { noms: ["ecrire.fichier"], categorie: "Sauvegarde", syntaxe: "ecrire.fichier(nom, valeur, ecra~FAUX)  ou  ecrire.fichier(chemin, val1, val2, ..., ecra~FAUX)  ou  ecrire.fichier(chemin, o1, o2, ...)  (octets)", description: [
-      "ecrire.fichier(nom, valeur) : ouvre le navigateur de fichiers integre pour choisir ou enregistrer un vrai fichier .mld.",
-      "ecrire.fichier(chemin, valeur) : si nom contient un '/', ecriture DIRECTE a cet emplacement, sans rien afficher a l'ecran.",
-      "Avec plusieurs valeurs, elles sont regroupees comme une liste() (meme regle que ecrire.cle()).",
+  { noms: ["ecrire.fichier"], categorie: "Sauvegarde", syntaxe: "ecrire.fichier(nom, texte, ecra~FAUX)  ou  ecrire.fichier(chemin, texte, ecra~FAUX, enco~|latin1|)  ou  ecrire.fichier(chemin, o1, o2, ...)  (octets)", description: [
+      "ecrire.fichier(chemin, texte) : ecrit le TEXTE tel quel dans un vrai fichier (UTF-8), sans aucun format : le fichier contient exactement ce texte.",
+      "Seul un TEXTE est accepte (ou des octets, voir plus bas) : une liste, un nombre ou un dictionnai donne une erreur claire. Pour convertir : texte(...). Un seul texte par appel : pour en assembler plusieurs, texte(...) ou +.",
+      "Si nom contient un '/', ecriture DIRECTE a cet emplacement, sans rien afficher a l'ecran. Sans '/', ouvre le navigateur de fichiers integre pour choisir l'emplacement.",
+      "Sans extension dans le nom, .txt est ajoute pour un texte (.bin pour des octets) : ecrire.fichier(|/sdcard/notes|, |Bonjour|) ecrit notes.txt ; rapport.csv reste rapport.csv.",
+      "enco~ choisit l'encodage du texte : |utf-8| (par defaut), |latin1| ou |utf-16| (petit-boutiste, avec BOM) : ecrire.fichier(chemin, texte, enco~|latin1|). Un caractere absent de l'encodage donne une erreur claire. enco~ ne s'applique pas aux octets.",
       "ecra~FAUX par defaut : si le fichier existe deja, l'ecriture est REFUSEE (erreur, a intercepter avec essai/attrape). ecra~VRAI ecrase sans verifier.",
       "Le chemin direct et la verification ecra ne fonctionnent que dans l'app installee (pas en previsualisation navigateur).",
-      "Contrairement a ecrire.cle(), le fichier peut ensuite etre partage, copie, deplace hors de l'app.",
-      "Un TEXTE est enregistre tel quel, avec ses vraies lignes (un journal reste lisible dans l'IDE) ; une liste ou un dictionnai est ecrit sur plusieurs lignes. lire.fichier(...) renvoie toujours la valeur d'origine.",
-      "Avec des OCTETS (voir aide(octets)) : ecrire.fichier(chemin, o) ecrit les octets TELS QUELS, sans format MLG, l'un apres l'autre si tu en donnes plusieurs : ecrire.fichier(|/storage/emulated/0/Download/test.bin|, b|\\x89PNG|, b|\\x0D\\x0A|).",
-      "Sans extension dans le nom, .bin est ajoute pour des octets (et non .mld, reserve aux donnees MLG) : ecrire.fichier(|/sdcard/donnees|, o) ecrit donnees.bin ; image.png reste image.png.",
+      "Le fichier peut ensuite etre partage, copie, deplace hors de l'app. Pour y AJOUTER du texte sans l'ecraser : ajout.fichier(...).",
+      "Avec des OCTETS (voir aide(octets)) : ecrire.fichier(chemin, o) ecrit les octets TELS QUELS, l'un apres l'autre si tu en donnes plusieurs : ecrire.fichier(|/storage/emulated/0/Download/test.bin|, b|\\x89PNG|, b|\\x0D\\x0A|).",
       "On ne melange pas texte et octets dans un meme appel : erreur claire (conver.texte.octets(...) ou conver.octets.texte(...) pour convertir). octets~VRAI est facultatif : il verifie que toutes les valeurs sont des octets.",
       "Les options ecra~ et octets~ s'ecrivent au debut ou a la fin de l'appel : ecrire.fichier(ecra~VRAI, chemin, o) est identique a ecrire.fichier(chemin, o, ecra~VRAI)."
-    ], exemple: "ecrire.fichier(|sauvegarde_banque|, moi, ecra~VRAI)\nsi(fichier.existe(|/storage/emulated/0/Download/banque.mld|)) { affi(|deja present|) }\nsinon { ecrire.fichier(|/storage/emulated/0/Download/banque.mld|, moi) }" },
+    ], exemple: "ecrire.fichier(|/storage/emulated/0/Download/notes.txt|, |Premiere ligne|, ecra~VRAI)\nsi(fichier.existe(|/storage/emulated/0/Download/notes.txt|)) { affi(|deja present|) }\nsinon { ecrire.fichier(|/storage/emulated/0/Download/notes.txt|, |Bonjour|) }" },
   { noms: ["fichier.existe"], categorie: "Sauvegarde", syntaxe: "fichier.existe(chemin)", description: [
       "Renvoie VRAI si un FICHIER existe vraiment a ce CHEMIN COMPLET (avec '/'), FAUX sinon (FAUX aussi si le chemin est un dossier).",
       "Ancien nom existe.fichier : il donne une erreur qui indique fichier.existe.",
@@ -8508,15 +8508,15 @@ let aideCommandes = [
       "Renvoie VRAI si un DOSSIER existe vraiment a ce CHEMIN COMPLET (avec '/'), FAUX sinon (FAUX aussi si le chemin est un fichier).",
       "Disponible uniquement dans l'app installee (pas en previsualisation navigateur)."
     ], exemple: "si(non dossier.existe(|/storage/emulated/0/Download/Mes_scripts|)){ creer.dossier(|/storage/emulated/0/Download/Mes_scripts|) }" },
-  { noms: ["lire.fichier"], categorie: "Sauvegarde", syntaxe: "lire.fichier()  ou  lire.fichier(chemin)  ou  lire.fichier(chemin, octets~VRAI, debut~1, longueur~1000)", description: [
-      "lire.fichier() : ouvre le navigateur de fichiers du telephone et attend que l'utilisateur choisisse un fichier sauvegarde avec ecrire.fichier(...).",
-      "lire.fichier(chemin) : lit DIRECTEMENT le fichier a ce chemin, sans rien afficher a l'ecran.",
+  { noms: ["lire.fichier"], categorie: "Sauvegarde", syntaxe: "lire.fichier()  ou  lire.fichier(chemin)  ou  lire.fichier(chemin, enco~|latin1|)  ou  lire.fichier(chemin, octets~VRAI, debut~1, longueur~1000)", description: [
+      "lire.fichier(chemin) : lit DIRECTEMENT le fichier a ce chemin et renvoie son contenu TEL QUEL, en TEXTE (UTF-8), sans rien interpreter : un fichier qui contient 123 donne le texte |123|.",
+      "lire.fichier() : ouvre le navigateur de fichiers du telephone et attend que l'utilisateur choisisse le fichier a lire.",
       "Le chemin direct ne fonctionne que dans l'app installee (pas en previsualisation navigateur).",
-      "Renvoie la valeur sauvegardee dans ce fichier.",
+      "enco~ choisit l'encodage utilise pour lire le texte : |utf-8| (par defaut), |latin1| ou |utf-16| (BOM reconnu) : lire.fichier(chemin, enco~|latin1|). Avec un autre encodage que utf-8, un fichier de plus de 16 Mo ne se lit pas d'un coup. enco~ ne s'applique pas aux octets.",
       "lire.fichier(chemin, octets~VRAI) lit le fichier TEL QUEL et renvoie des OCTETS (voir aide(octets)), sans le decoder : image, son, archive, fichier texte... Sans chemin, lire.fichier(octets~VRAI) ouvre le navigateur de fichiers.",
       "Par morceaux (gros fichiers) : debut~ (a partir de 1, comme lon et x[i]) et longueur~ : lire.fichier(chemin, octets~VRAI, debut~1, longueur~1000) lit 1000 octets. Un debut~ apres la fin du fichier donne des octets vides, une longueur~ trop grande s'arrete a la fin du fichier, sans erreur : avance debut~ a chaque tour jusqu'a recevoir des octets vides. Un seul appel lit au plus 16 Mo.",
       "Les options (octets~, debut~, longueur~) s'ecrivent au debut ou a la fin de l'appel : lire.fichier(octets~VRAI, chemin) est identique a lire.fichier(chemin, octets~VRAI). debut~ et longueur~ exigent octets~VRAI."
-    ], exemple: "c ~ lire.fichier()\nc ~ lire.fichier(|/storage/emulated/0/Download/banque.mld|)" },
+    ], exemple: "t ~ lire.fichier(|/storage/emulated/0/Download/notes.txt|)\naffi(t)\nc ~ lire.fichier()" },
   { noms: ["ajout.cle"], categorie: "Sauvegarde", syntaxe: "ajout.cle(cle, valeur, ...)", description: [
       "Ajoute une ou plusieurs valeurs a une cle DEJA SAUVEGARDEE avec ecrire.cle(...), sans rien ecraser.",
       "Erreur si la cle n'existe pas encore : utiliser ecrire.cle(...) pour la creer d'abord.",
@@ -8524,22 +8524,16 @@ let aideCommandes = [
       "Si la cle contient deja une liste(), les nouvelles valeurs s'y ajoutent simplement.",
       "Sinon (nombre, texte, booleen, matrice, instance), l'ancienne valeur devient le premier element d'une nouvelle liste()."
     ], exemple: "ecrire.cle(|notes|, c(12,15))\najout.cle(|notes|, 9, 18)   ** notes reste un vecteur : 12 15 9 18 **\necrire.cle(|score|, 12)\najout.cle(|score|, 15, 9)   ** score devient une liste() : 12, 15, 9 **" },
-  { noms: ["ajout.fichier"], categorie: "Sauvegarde", syntaxe: "ajout.fichier(nom, valeur, ...)  ou  ajout.fichier(chemin, valeur, ...)  ou  ajout.fichier(chemin, o)  (octets)", description: [
-      "Ajoute une ou plusieurs valeurs a un fichier DEJA SAUVEGARDE avec ecrire.fichier(...), sans l'ecraser.",
-      "ajout.fichier(nom, ...) : ouvre le navigateur de fichiers integre pour choisir le fichier existant a completer.",
-      "ajout.fichier(chemin, ...) : si nom contient un '/', le fichier doit deja exister exactement a cet emplacement.",
-      "Meme logique de fusion que ajout.cle(cle, ...) ci-dessus.",
+  { noms: ["ajout.fichier"], categorie: "Sauvegarde", syntaxe: "ajout.fichier(nom, texte)  ou  ajout.fichier(chemin, texte, enco~|latin1|)  ou  ajout.fichier(chemin, o)  (octets)", description: [
+      "Ajoute un TEXTE tel quel a la FIN d'un fichier DEJA EXISTANT, sans l'ecraser et sans rien transformer.",
+      "ajout.fichier(nom, texte) : sans '/', ouvre le navigateur de fichiers integre pour choisir le fichier existant a completer.",
+      "ajout.fichier(chemin, texte) : si nom contient un '/', le fichier doit deja exister exactement a cet emplacement (cree-le avec ecrire.fichier(chemin, ...)). Sans extension, .txt est ajoute.",
+      "Seul un TEXTE est accepte (une liste, un nombre ou un dictionnai donne une erreur claire : texte(...) pour convertir). Un seul texte par appel : pour en assembler plusieurs, texte(...) ou +. Pense a mettre toi-meme les retours a la ligne : ajout.fichier(chemin, texte(|ligne|, saulig)).",
+      "enco~ : encodage du texte ajoute (|utf-8| par defaut, |latin1| ou |utf-16|) ; il doit etre le meme que celui du fichier. En utf-16, aucun BOM n'est ajoute.",
       "Disponible uniquement dans l'app installee (pas de repli en previsualisation navigateur, contrairement a ecrire.fichier()).",
-      "Avec des OCTETS : ajout.fichier(chemin, o) ajoute les octets TELS QUELS a la FIN du fichier (qui doit deja exister : cree-le avec ecrire.fichier(chemin, ...)). Il n'y a pas de fusion en liste : un equivalent de ajout.Tfichier n'est donc pas necessaire pour les octets.",
-      "Sans '/' le navigateur de fichiers s'ouvre. Texte (ou autre valeur) et octets ne se melangent pas dans un meme appel. octets~ (facultatif) s'ecrit au debut ou a la fin."
-    ], exemple: "ajout.fichier(|/storage/emulated/0/Download/scores.mld|, 15, 9)" },
-  { noms: ["ajout.Tfichier"], categorie: "Sauvegarde", syntaxe: "ajout.Tfichier(nom, valeur, ...)  ou  ajout.Tfichier(chemin, valeur, ...)", description: [
-      "Variante de ajout.fichier(...) reservee aux fichiers dont le contenu sauvegarde est du TEXTE (cree avec ecrire.fichier(chemin, |...|)).",
-      "Concatene directement le texte a la suite de l'existant (comme le ferait toi-meme lire.fichier()+concatenation+ecrire.fichier(ecra~VRAI)), sans jamais transformer le contenu en liste().",
-      "ajout.fichier(...) classique ne sait pas faire ca : sur un texte, il transforme l'existant en 1er element d'une liste() au lieu de le prolonger -- ajout.Tfichier() comble ce cas precis.",
-      "Erreur si le fichier n'existe pas encore, ou si son contenu sauvegarde n'est pas du texte (utiliser ajout.fichier() dans ce cas).",
-      "Meme regle nom/chemin que ajout.fichier(...) : sans '/' ouvre le navigateur integre, avec '/' chemin direct."
-    ], exemple: "ecrire.fichier(|/sdcard/historique.mld|, ||)\najout.Tfichier(|/sdcard/historique.mld|, texte(|# Depot: |, 500, saulig))" },
+      "Avec des OCTETS : ajout.fichier(chemin, o) ajoute les octets TELS QUELS a la FIN du fichier.",
+      "Texte et octets ne se melangent pas dans un meme appel. octets~ (facultatif) s'ecrit au debut ou a la fin."
+    ], exemple: "ecrire.fichier(|/storage/emulated/0/Download/journal.txt|, texte(|Debut|, saulig))\najout.fichier(|/storage/emulated/0/Download/journal.txt|, texte(|Depot: |, 500, saulig))" },
   { noms: ["octets"], categorie: "Sauvegarde", syntaxe: "b|...|  /  o[i]  /  o[i] ~ valeur  /  lon(o)  /  o.extrait(debut, longueur)  /  o1 + o2", description: [
       "Des OCTETS sont une suite de nombres de 0 a 255 : le contenu brut d'un fichier (image, son, archive...). C'est un type a part, plus leger qu'une liste de nombres ; natu(o) donne |octets|.",
       "b|...| ecrit des octets directement, comme |...| ecrit un texte. \\xHH donne UN octet en hexadecimal : b|\\x89PNG| donne 137, 80, 78, 71. Les caracteres normaux comptent pour leur code, en UTF-8 : b|é| donne 2 octets. Les echappements \\| \\\\ \\n \\t \\r marchent comme dans un texte.",
@@ -8557,12 +8551,6 @@ let aideCommandes = [
       "Supprime UNE cle precise sauvegardee avec ecrire.cle(...), sans toucher aux autres.",
       "Erreur si la cle n'existe pas -- verifiable avant avec voir.cle()."
     ], exemple: "supri.cle(|scores|)" },
-  { noms: ["voir.fichier"], categorie: "Sauvegarde", syntaxe: "voir.fichier()  ou  voir.fichier(dossier)", description: [
-      "Renvoie un vecteur avec les NOMS des fichiers .mld presents dans un dossier (pas leur contenu).",
-      "Sans argument, utilise le dossier racine du stockage de l'appareil.",
-      "L'app ne tient pas de registre central de tous les fichiers crees avec ecrire.fichier() (ils peuvent etre ecrits a n'importe quel chemin) : voir.fichier() liste le contenu d'UN dossier donne, comme le navigateur de fichiers integre.",
-      "Disponible uniquement dans l'app installee (pas en previsualisation navigateur)."
-    ], exemple: "affi(voir.fichier(|/storage/emulated/0/Download|))" },
   { noms: ["supri.dossier"], categorie: "Sauvegarde", syntaxe: "supri.dossier(chemin)  ou  supri.dossier(chemin, tout~FAUX)", description: [
       "supri.dossier(chemin) supprime le dossier a ce chemin complet (avec des '/'), seulement s'il est VIDE : sinon erreur claire. Renvoie VRAI s'il a ete supprime, FAUX s'il n'existait pas (pas d'erreur).",
       "tout~VRAI supprime le dossier ET tout ce qu'il contient (fichiers et sous-dossiers), SANS RETOUR POSSIBLE. tout~FAUX par defaut.",
@@ -9359,20 +9347,20 @@ let aideCommandes = [
       "creer.zip(d) fabrique un fichier zip. d est un dictionnai dont chaque cle est le nom du fichier dans le zip (un '/' cree un dossier : |dos/b.txt|) et chaque valeur son contenu EN OCTETS (conver.texte.octets(...) pour un texte). Elle renvoie les octets du zip, a ecrire avec ecrire.fichier. L'ordre du dictionnai est conserve. Sans compression par defaut ; compress~VRAI active la compression (compress~ peut aussi s'ecrire avant d). Attention : creer.zip construit TOUTE l'archive en memoire ; pour un gros classeur, utilise ouvrir.zip (ecriture progressive directement dans un fichier).",
       "lire.zip(octets) fait l'inverse : elle prend les octets d'un fichier zip (lire.fichier(chemin, octets~VRAI)) et renvoie un dictionnai nom : octets. Elle decompresse (zip d'Excel, de Word...). Des octets qui ne sont pas un zip, un fichier abime (signature CRC32 differente) ou protege par mot de passe donnent une erreur claire. Les dossiers vides sont ignores."
     ], exemple: "d ~ dictionnai(|a.txt|: conver.texte.octets(|Bonjour|))\nz ~ creer.zip(d)\necrire.fichier(|/storage/emulated/0/Download/test.zip|, z, ecra~VRAI)\nc ~ lire.zip(lire.fichier(|/storage/emulated/0/Download/test.zip|, octets~VRAI))\naffi(conver.octets.texte(c[|a.txt|]))   ->   Bonjour" },
-  { noms: ["ouvrir.zip", "entrer.zip", "ajout.zip", "ecrire.entrer.zip", "abandon.zip"], categorie: "Sauvegarde", syntaxe: "ouvrir.zip(z, chemin) { ... }   /   ajout.zip(z, nom, octets)   /   ajout.zip(z, nom, fichier~chemin)   /   entrer.zip(z, nom) { ecrire.entrer.zip(z, morceau) }   /   abandon.zip(z)", description: [
-      "ouvrir.zip(z, chemin) { ... } est un BLOC qui ecrit un zip directement dans un fichier, sans jamais garder l'archive entiere en memoire (creer.zip construit tout en memoire : trop lourd pour un gros classeur xlsx). z, en premier, est la variable qui recoit l'archive ; chemin est un chemin complet. Options : compress~VRAI (compression par defaut des entrees ; sans compression sinon) et ecra~VRAI (remplacer un fichier existant ; sans ecra~VRAI un fichier existant est refuse). Elles peuvent s'ecrire avant ou apres le chemin.",
+  { noms: ["ouvrir.zip", "creer.entrer.zip", "ajout.entrer.zip", "ecrire.contenu", "abandon.zip"], categorie: "Sauvegarde", syntaxe: "ouvrir.zip(z, chemin, compress~VRAI, ecra~VRAI, modpas~|mot de passe|) { ... }   /   ajout.entrer.zip(z, nom, octets)   /   ajout.entrer.zip(z, nom, fichier~chemin)   /   creer.entrer.zip(z, nom) { ecrire.contenu(z, morceau) }   /   abandon.zip(z)", description: [
+      "ouvrir.zip(z, chemin) { ... } est un BLOC qui ecrit un zip directement dans un fichier, sans jamais garder l'archive entiere en memoire (creer.zip construit tout en memoire : trop lourd pour un gros classeur xlsx). z, en premier, est la variable qui recoit l'archive ; chemin est un chemin complet. Options : compress~VRAI (compression par defaut des entrees ; sans compression sinon), ecra~VRAI (remplacer un fichier existant ; sans ecra~VRAI un fichier existant est refuse) et modpas~|mot de passe| (zip CHIFFRE : toutes les entrees sont chiffrees en AES-256, lisibles par 7-Zip et WinZip ; chaque entree a son propre sel aleatoire ; le mot de passe est un texte non vide, encode en UTF-8). Elles peuvent s'ecrire avant ou apres le chemin. Les noms et les tailles des entrees ne sont pas chiffres ; pour relire : lire.entrer.zip(..., modpas~|mot de passe|).",
       "Le bloc ferme l'archive tout seul. Fin NORMALE du bloc = archive finalisee. Elle est ABANDONNEE (fichier temporaire supprime) si une erreur survient, si le script est arrete, ou si retour, casse, continu ou quitte SORTENT du bloc ; un casse ou un continu d'une boucle placee a l'interieur du bloc ne sort pas du bloc et n'abandonne rien. L'archive est ecrite dans chemin.part puis renommee tout a la fin : un ancien fichier du meme nom n'est jamais detruit avant que la nouvelle archive soit complete. Apres le bloc, z ne sert plus (erreur : archive deja fermee).",
-      "ajout.zip(z, nom, octets) ajoute une entree complete ; ajout.zip(z, nom, fichier~chemin) copie un fichier du telephone par morceaux, sans le charger en memoire. compress~VRAI ou compress~FAUX change la compression de cette seule entree. Un nom ne peut pas etre vide, finir par / ni exister deja dans l'archive ; un / dans le nom cree le dossier.",
-      "entrer.zip(z, nom) { ... } ecrit UNE entree par morceaux : dans le bloc, ecrire.entrer.zip(z, morceau, ...) ajoute des textes (ecrits en UTF-8) ou des octets, sans melanger texte et octets dans un meme appel. L'entree se ferme a la fin du bloc ; une seule entree a la fois (pas de entrer.zip dans entrer.zip). Elle accepte compress~VRAI ou compress~FAUX. Une entree ecrite par morceaux ne peut pas depasser 4 Go (erreur claire) ; les entrees de ajout.zip passent en zip64 toutes seules si besoin.",
-      "abandon.zip(z) annule volontairement l'archive en cours : rien n'est cree et la suite du bloc donne une erreur claire (archive abandonnee). Dans ces blocs, donne est interdit. ouvrir.zip et entrer.zip sont des mots reserves."
-    ], exemple: "ouvrir.zip(z, |/storage/emulated/0/Download/gros.zip|, ecra~VRAI, compress~VRAI) {\n  ajout.zip(z, |a.txt|, conver.texte.octets(|Bonjour|))\n  ajout.zip(z, |photo.jpg|, fichier~|/storage/emulated/0/DCIM/photo.jpg|, compress~FAUX)\n  entrer.zip(z, |donnees/lignes.txt|) {\n    pou(i, 1, 100000) { ecrire.entrer.zip(z, |ligne | + texte(i) + |\\n|) }\n  }\n}\naffi(|zip termine|)" },
-  { noms: ["liste.zip", "extrai.zip"], categorie: "Sauvegarde", syntaxe: "liste.zip(chemin)   /   lire.zip(chemin, nom, debut~1, longueur~1000, max~)   /   extrai.zip(chemin, nom, destination)", description: [
+      "ajout.entrer.zip(z, nom, octets) ajoute une entree complete ; ajout.entrer.zip(z, nom, fichier~chemin) copie un fichier du telephone par morceaux, sans le charger en memoire. compress~VRAI ou compress~FAUX change la compression de cette seule entree. Un nom ne peut pas etre vide, finir par / ni exister deja dans l'archive ; un / dans le nom cree le dossier.",
+      "creer.entrer.zip(z, nom) { ... } ecrit UNE entree par morceaux : dans le bloc, ecrire.contenu(z, morceau, ...) ajoute des textes (ecrits en UTF-8) ou des octets, sans melanger texte et octets dans un meme appel. L'entree se ferme a la fin du bloc ; une seule entree a la fois (pas de creer.entrer.zip dans creer.entrer.zip). Elle accepte compress~VRAI ou compress~FAUX. Une entree ecrite par morceaux ne peut pas depasser 4 Go (erreur claire) ; les entrees de ajout.entrer.zip passent en zip64 toutes seules si besoin.",
+      "abandon.zip(z) annule volontairement l'archive en cours : rien n'est cree et la suite du bloc donne une erreur claire (archive abandonnee). Dans ces blocs, donne est interdit. ouvrir.zip et creer.entrer.zip sont des mots reserves."
+    ], exemple: "ouvrir.zip(z, |/storage/emulated/0/Download/gros.zip|, ecra~VRAI, compress~VRAI) {\n  ajout.entrer.zip(z, |a.txt|, conver.texte.octets(|Bonjour|))\n  ajout.entrer.zip(z, |photo.jpg|, fichier~|/storage/emulated/0/DCIM/photo.jpg|, compress~FAUX)\n  creer.entrer.zip(z, |donnees/lignes.txt|) {\n    pou(i, 1, 100000) { ecrire.contenu(z, |ligne | + texte(i) + |\\n|) }\n  }\n}\naffi(|zip termine|)" },
+  { noms: ["liste.zip", "lire.entrer.zip", "extrait.entrer.zip"], categorie: "Sauvegarde", syntaxe: "liste.zip(chemin)   /   lire.entrer.zip(chemin, nom, debut~1, longueur~1000, max~, modpas~|mot de passe|)   /   extrait.entrer.zip(chemin, nom, destination, ecra~VRAI, modpas~|mot de passe|)", description: [
       "Lecture d'un zip DU TELEPHONE, par son chemin, sans jamais le charger en memoire (lire.zip(octets) charge le zip entier : trop lourd pour un gros fichier). liste.zip(chemin) renvoie un dictionnai nom : taille (octets decompresses), lu dans le repertoire central ; les dossiers sont ignores. Un nom present plusieurs fois dans l'archive : le dernier l'emporte.",
-      "lire.zip(chemin, nom) renvoie les octets d'UNE entree. debut~ (a partir de 1) et longueur~ lisent un morceau, comme lire.fichier : debut~ apres la fin donne des octets vides, longueur~ trop grande s'arrete a la fin, sans erreur (une boucle s'arrete donc quand lon(o) vaut 0). max~ (64 Mo par defaut) limite la taille renvoyee : au-dela, erreur claire. Les options s'ecrivent avant ou apres les valeurs.",
+      "lire.entrer.zip(chemin, nom) renvoie les octets d'UNE entree. debut~ (a partir de 1) et longueur~ lisent un morceau, comme lire.fichier : debut~ apres la fin donne des octets vides, longueur~ trop grande s'arrete a la fin, sans erreur (une boucle s'arrete donc quand lon(o) vaut 0). max~ (64 Mo par defaut) limite la taille renvoyee : au-dela, erreur claire. Les options s'ecrivent avant ou apres les valeurs.",
       "Entree NON compressee : lecture directe a n'importe quelle position. Entree COMPRESSEE : le deflate ne se lit que depuis le debut de l'entree ; le dernier flux ouvert est conserve, donc lire les morceaux A LA SUITE est rapide (chaque appel continue la ou le precedent s'est arrete) ; revenir en arriere ou sauter loin en avant oblige a decompresser depuis le debut jusqu'a la position demandee.",
-      "La signature CRC32 est verifiee quand l'entree a ete lue en entier depuis son debut ; une tranche prise au milieu d'une entree non compressee ne peut pas etre verifiee. Une entree abimee, protegee par mot de passe ou compressee autrement qu'en 'stockage' ou 'deflate' donne une erreur claire qui cite son nom.",
-      "extrai.zip(chemin, nom, destination) decompresse UNE entree directement vers un fichier, pas a pas, sans la mettre en memoire (a utiliser pour les gros fichiers). Elle ecrit dans destination.part puis renomme a la fin : jamais de fichier a moitie ecrit ; en cas d'erreur (CRC32 faux...), rien ne reste. Un fichier existant est refuse, sauf ecra~VRAI ; le dossier de destination est cree au besoin. Les zip de plus de 4 Go ou de plus de 65 535 entrees (zip64) sont lus."
-    ], exemple: "d ~ liste.zip(|/storage/emulated/0/Download/gros.zip|)\naffi(lon(d), d[|donnees/lignes.txt|])\nextrai.zip(|/storage/emulated/0/Download/gros.zip|, |donnees/lignes.txt|, |/storage/emulated/0/Download/lignes.txt|, ecra~VRAI)\ndebut ~ 1\ntanqer VRAI {\n  morceau ~ lire.zip(|/storage/emulated/0/Download/gros.zip|, |donnees/lignes.txt|, debut~debut, longueur~1000000)\n  si(lon(morceau) == 0) { casse }\n  debut ~ debut + lon(morceau)\n}" },
+      "La signature CRC32 est verifiee quand l'entree a ete lue en entier depuis son debut ; une tranche prise au milieu d'une entree non compressee ne peut pas etre verifiee. Les entrees en 'stockage', 'deflate' et 'deflate64' (zips de l'Explorateur Windows et de 7-Zip pour les gros fichiers) sont lues. Une entree abimee ou compressee autrement (bzip2, lzma...) donne une erreur claire qui cite son nom et la methode. Une entree CHIFFREE (ZipCrypto, ou AES-128/192/256 de 7-Zip et WinZip) se lit avec modpas~|mot de passe| (texte, lu en UTF-8) : sans mot de passe, ou avec un mauvais, erreur claire qui cite l'entree. Avec l'AES, l'authenticite est aussi verifiee quand l'entree est lue jusqu'au bout. Une entree chiffree se lit comme une entree compressee (depuis le debut ; les morceaux a la suite restent rapides). liste.zip n'a pas besoin du mot de passe (les noms et les tailles ne sont pas chiffres).",
+      "extrait.entrer.zip(chemin, nom, destination) decompresse UNE entree directement vers un fichier, pas a pas, sans la mettre en memoire (a utiliser pour les gros fichiers). Elle ecrit dans destination.part puis renomme a la fin : jamais de fichier a moitie ecrit ; en cas d'erreur (CRC32 faux...), rien ne reste. Un fichier existant est refuse, sauf ecra~VRAI ; modpas~ donne le mot de passe d'une entree chiffree ; le dossier de destination est cree au besoin. Les zip de plus de 4 Go ou de plus de 65 535 entrees (zip64) sont lus."
+    ], exemple: "d ~ liste.zip(|/storage/emulated/0/Download/gros.zip|)\naffi(lon(d), d[|donnees/lignes.txt|])\nextrait.entrer.zip(|/storage/emulated/0/Download/gros.zip|, |donnees/lignes.txt|, |/storage/emulated/0/Download/lignes.txt|, ecra~VRAI)\ndebut ~ 1\ntanqer VRAI {\n  morceau ~ lire.entrer.zip(|/storage/emulated/0/Download/gros.zip|, |donnees/lignes.txt|, debut~debut, longueur~1000000)\n  si(lon(morceau) == 0) { casse }\n  debut ~ debut + lon(morceau)\n}" },
   { noms: ["conver.cara.code", "conver.code.cara"], categorie: "Base", syntaxe: "conver.cara.code(caractere)  /  conver.code.cara(code)", description: [
       "conver.cara.code(|A|) donne le code du caractere (ici 65). Il faut un texte d'un seul caractere ; un emoji compte pour un seul caractere (code Unicode).",
       "conver.code.cara(65) fait l'inverse : donne le caractere de ce code (ici A). Le code doit etre un entier de 0 a 1114111."
@@ -9526,11 +9514,11 @@ let aideCommandes = [
     ], exemple: "si(niveau.batterie() < 20 et non batterie.encharge()){\n    affi(|Pense a charger le telephone|)\n}" },
 
   { noms: ["dossier.liste"], categorie: "Sauvegarde", syntaxe: "dossier.liste()  ou  dossier.liste(dossier)", description: [
-      "Liste les NOMS de TOUS les fichiers d'un dossier (contrairement a voir.fichier(), pas",
-      "seulement les .mld). Sans argument, utilise le dossier racine du stockage de",
+      "Liste les NOMS de TOUS les fichiers d'un dossier (quelle que soit leur extension).",
+      "Sans argument, utilise le dossier racine du stockage de",
       "l'appareil. Utile pour detecter l'apparition d'un nouveau fichier, en comparant deux",
       "appels successifs a intervalle regulier (tanqer/attendre).",
-      "Necessite l'app native et la permission de stockage (comme voir.fichier())."
+      "Necessite l'app native et la permission de stockage."
     ], exemple: "avant ~ dossier.liste(|/sdcard/Download|)\ntanqer VRAI{\n    attendre(10)\n    maintenant ~ dossier.liste(|/sdcard/Download|)\n    pou(f dan maintenant){\n        si(non (f dan avant)){ affi(|Nouveau fichier : |, f) }\n    }\n    avant ~ maintenant\n}" },
 
   { noms: ["sms.recus", "envoyer.sms"], categorie: "Controle", syntaxe: "sms.recus(depuisSecondes)  /  envoyer.sms(numero, message)", description: [
@@ -10288,7 +10276,7 @@ function enregistrerFonctionsBase() {
                 throw new ErreurPermissionRefusee(nom + "(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
             }
             let cheminFinal = chemin;
-            if (ajouterMld && !/\.[a-zA-Z0-9]+$/.test(chemin)) cheminFinal = chemin + ".mld";
+            if (ajouterMld && !/\.[a-zA-Z0-9]+$/.test(chemin)) cheminFinal = chemin + ".txt";
             else if (!ajouterMld && chemin.length > 1) cheminFinal = chemin.replace(/\/+$/, "");
             return window.MonLangage[methodePont](cheminFinal);
         };
@@ -10332,7 +10320,7 @@ function enregistrerFonctionsBase() {
     };
 
     // ecrire.fichier(nom, valeur) ou ecrire.fichier(nom, val1, val2, ..., ecra~FAUX) :
-    // export REEL -- sur l'app native (Android), ecrit directement un vrai fichier .mld a
+    // export REEL -- sur l'app native (Android), ecrit directement un vrai fichier texte a
     // l'emplacement choisi par l'utilisateur dans le navigateur de fichiers integre de l'app
     // (pas de selecteur systeme). En previsualisation navigateur (pas d'app native), repli
     // sur un telechargement classique.
@@ -10352,7 +10340,50 @@ function enregistrerFonctionsBase() {
     // ---- Fichiers d'OCTETS (binaires, tels quels) : ecriture, ajout a la fin, lecture (en entier ou par morceaux) ----
     // Le pont natif echange les octets en base64 : ecrireFichierOctets(chemin, b64), ajouterFichierOctets(chemin, b64),
     // lireFichierOctets(chemin, debut0, longueur) (debut0 = decalage a partir de 0 ; longueur -1 = jusqu'a la fin).
-    async function ecrireOctetsFichier(nomCmd, nom, u8, ecra) {
+    // ---- Encodage des TEXTES (option enco~) : |utf-8| par defaut, |latin1|, |utf-16| ----
+    function normaliserEnco(nomCmd, v) {
+        if (typeof v !== 'string') throw new ErreurTypeInvalide(nomCmd + "(...) : enco~ attend un texte (ex. enco~|latin1|)");
+        const c = v.toLowerCase().replace(/[-_ ]/g, "");
+        if (c === "utf8") return "utf-8";
+        if (c === "latin1" || c === "iso88591") return "latin1";
+        if (c === "utf16") return "utf-16";
+        throw new ErreurTypeInvalide(nomCmd + "(...) : enco~ ne connait pas '" + v + "' (valeurs possibles : |utf-8|, |latin1|, |utf-16|)");
+    }
+    function encoderTexte(nomCmd, texte, enco, sansBom) {
+        if (enco === "utf-8") return new TextEncoder().encode(texte);
+        if (enco === "latin1") {
+            const u8 = new Uint8Array(texte.length);
+            for (let i = 0; i < texte.length; i++) {
+                const c = texte.charCodeAt(i);
+                if (c > 255) throw new ErreurTypeInvalide(nomCmd + "(...) : le caractere '" + texte[i] + "' n'existe pas en latin1 (utilise enco~|utf-8|)");
+                u8[i] = c;
+            }
+            return u8;
+        }
+        // utf-16 : petit-boutiste, avec BOM (FF FE) sauf pour un ajout a la fin d'un fichier existant
+        const dec = sansBom ? 0 : 2;
+        const u8 = new Uint8Array(dec + texte.length * 2);
+        if (!sansBom) { u8[0] = 0xFF; u8[1] = 0xFE; }
+        for (let i = 0; i < texte.length; i++) { const c = texte.charCodeAt(i); u8[dec + 2 * i] = c & 255; u8[dec + 2 * i + 1] = c >> 8; }
+        return u8;
+    }
+    function decoderTexte(nomCmd, u8, enco) {
+        if (enco === "latin1") {
+            let r = "";
+            for (let i = 0; i < u8.length; i += 8192) r += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
+            return r;
+        }
+        if (enco === "utf-16") {
+            let deb = 0, ordre = "utf-16le";
+            if (u8.length >= 2 && u8[0] === 0xFF && u8[1] === 0xFE) deb = 2;
+            else if (u8.length >= 2 && u8[0] === 0xFE && u8[1] === 0xFF) { deb = 2; ordre = "utf-16be"; }
+            if ((u8.length - deb) % 2 !== 0) throw new ErreurFichierInvalide(nomCmd + "(...) : ce fichier n'est pas de l'utf-16 valide (nombre d'octets impair)");
+            return new TextDecoder(ordre).decode(u8.subarray(deb));
+        }
+        return new TextDecoder("utf-8", { ignoreBOM: true }).decode(u8);
+    }
+    async function ecrireOctetsFichier(nomCmd, nom, u8, ecra, extDefaut) {
+        extDefaut = extDefaut || ".bin";
         const mExt = nom.match(/\.[a-zA-Z0-9]+$/);
         const dejaExiste = (chemin) => !ecra && typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(chemin);
         const natif = window.MonLangage && typeof window.MonLangage.ecrireFichierOctets === "function";
@@ -10363,7 +10394,7 @@ function enregistrerFonctionsBase() {
             if (!verifierPermissionStockage()) {
                 throw new ErreurPermissionRefusee(nomCmd + "(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
             }
-            const cheminDirect = mExt ? nom : nom + ".bin";
+            const cheminDirect = mExt ? nom : nom + extDefaut;
             if (dejaExiste(cheminDirect)) {
                 throw new ErreurFichierDejaExistant(nomCmd + "(...) : le fichier '" + cheminDirect + "' existe deja (utilise ecra~VRAI pour l'ecraser, ou fichier.existe(...) pour verifier avant)");
             }
@@ -10371,7 +10402,7 @@ function enregistrerFonctionsBase() {
             return true;
         }
         if (natif) {
-            const cheminComplet = await demanderEmplacementEcritureFichier(mExt ? nom.slice(0, -mExt[0].length) : nom, mExt ? mExt[0] : ".bin");
+            const cheminComplet = await demanderEmplacementEcritureFichier(mExt ? nom.slice(0, -mExt[0].length) : nom, mExt ? mExt[0] : extDefaut);
             if (dejaExiste(cheminComplet)) {
                 throw new ErreurFichierDejaExistant(nomCmd + "(...) : le fichier '" + cheminComplet + "' existe deja (utilise ecra~VRAI pour l'ecraser, ou fichier.existe(...) pour verifier avant)");
             }
@@ -10383,14 +10414,15 @@ function enregistrerFonctionsBase() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = mExt ? nom : nom + ".bin";
+        a.download = mExt ? nom : nom + extDefaut;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         setTimeout(() => URL.revokeObjectURL(url), 1000);
         return true;
     }
-    async function ajouterOctetsFichier(nomCmd, nom, u8) {
+    async function ajouterOctetsFichier(nomCmd, nom, u8, extDefaut) {
+        extDefaut = extDefaut || ".bin";
         if (!(window.MonLangage && typeof window.MonLangage.ajouterFichierOctets === "function")) {
             throw new ErreurIndisponibleHorsApp(nomCmd + "(...) : l'ajout d'octets est disponible uniquement dans l'app installee (rebuild requis)");
         }
@@ -10399,7 +10431,7 @@ function enregistrerFonctionsBase() {
         }
         let cheminComplet;
         if (nom.indexOf("/") !== -1) {
-            cheminComplet = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".bin";
+            cheminComplet = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + extDefaut;
             if (!(typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminComplet))) {
                 throw new ErreurFichierIntrouvable(nomCmd + "(...) : le fichier '" + cheminComplet + "' n'existe pas (utilise ecrire.fichier(...) pour le creer)");
             }
@@ -10424,7 +10456,7 @@ function enregistrerFonctionsBase() {
 
     fonctionsBase["ecrire.fichier"] = fonctionsExpression["ecrire.fichier"] = async function(args, ctxExpr) {
         // Options nommees (ecra~, octets~) : au debut ou a la fin de l'appel.
-        const { pos: posE, opts: optsE } = separerOptionsArgs(args, "ecrire.fichier", ["ecra", "octets"]);
+        const { pos: posE, opts: optsE } = separerOptionsArgs(args, "ecrire.fichier", ["ecra", "octets", "enco"]);
         args = posE;
         if (args.length < 2) throw new Error("ecrire.fichier(nom, valeur, ...) attend au moins 2 arguments");
         let nom = await evalExpr(args[0], ctxExpr);
@@ -10438,26 +10470,35 @@ function enregistrerFonctionsBase() {
             const veutOctets = optsE.octets !== undefined ? estVrai(await evalExpr(optsE.octets, ctxExpr)) : null;
             if (veutOctets === false && nbOctets > 0) throw new ErreurTypeInvalide("ecrire.fichier(...) : octets~FAUX demande du texte, mais la valeur est faite d'octets");
             if (nbOctets > 0 || veutOctets === true) {
+                if (optsE.enco !== undefined) throw new ErreurTypeInvalide("ecrire.fichier(...) : enco~ ne s'applique qu'au texte, pas aux octets");
                 if (nbOctets !== valeursBrutes.length) {
                     throw new ErreurTypeInvalide("ecrire.fichier(...) : on ne mele pas du texte (ou autre chose) et des octets dans un meme appel (recu : " + valeursBrutes.map(nomNature).join(", ") + "). Pour convertir : conver.texte.octets(...) ou conver.octets.texte(...)");
                 }
                 return await ecrireOctetsFichier("ecrire.fichier", nom, concatOctetsBruts(valeursBrutes.map(v => v.d)), ecra);
             }
         }
-        let valeur = valeursBrutes.length === 1 ? valeursBrutes[0] : { __type: "liste", elements: valeursBrutes };
-
-        let texte;
-        try { texte = contenuFichierMld(valeur); }
-        catch (e) { throw new Error("ecrire.fichier(...) : cette valeur ne peut pas etre sauvegardee"); }
+        // TEXTE : ecrit TEL QUEL (UTF-8), sans aucun format. Seul un texte est accepte ici : les autres
+        // valeurs (liste, dictionnai, nombre...) sont des cas a part (formats), pas des fichiers.
+        if (valeursBrutes.length > 1) {
+            throw new ErreurTypeInvalide("ecrire.fichier(...) : un seul texte est attendu (recu : " + valeursBrutes.length + " valeurs). Pour assembler plusieurs morceaux : texte(...) ou +");
+        }
+        let texte = valeursBrutes[0];
+        if (typeof texte !== 'string') {
+            throw new ErreurTypeInvalide("ecrire.fichier(...) : il faut un TEXTE (recu : " + nomNature(texte) + "). Pour convertir en texte : texte(...) ; pour des octets : conver.texte.octets(...)");
+        }
+        const encoE = optsE.enco !== undefined ? normaliserEnco("ecrire.fichier", await evalExpr(optsE.enco, ctxExpr)) : "utf-8";
+        if (encoE !== "utf-8") {   // autre encodage : le texte est converti en octets (les octets passent par le pont natif)
+            return await ecrireOctetsFichier("ecrire.fichier", nom, encoderTexte("ecrire.fichier", texte, encoE), ecra, ".txt");
+        }
 
         if (nom.indexOf("/") !== -1) {
             if (!(window.MonLangage && typeof window.MonLangage.ecrireFichier === "function")) {
-                throw new Error("ecrire.fichier(chemin, valeur, ...) : l'ecriture directe par chemin n'est possible que dans l'app installee (utilise ecrire.fichier(nom, valeur, ...) sans '/' en previsualisation navigateur)");
+                throw new Error("ecrire.fichier(chemin, texte) : l'ecriture directe par chemin n'est possible que dans l'app installee (utilise ecrire.fichier(nom, texte) sans '/' en previsualisation navigateur)");
             }
             if (!verifierPermissionStockage()) {
                 throw new ErreurPermissionRefusee("ecrire.fichier(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
             }
-            let cheminDirect = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".mld";
+            let cheminDirect = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".txt";
             if (!ecra && typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminDirect)) {
                 throw new ErreurFichierDejaExistant("ecrire.fichier(...) : le fichier '" + cheminDirect + "' existe deja (utilise ecra~VRAI pour l'ecraser, ou fichier.existe(...) pour verifier avant)");
             }
@@ -10468,7 +10509,8 @@ function enregistrerFonctionsBase() {
 
         if (window.MonLangage && typeof window.MonLangage.ecrireFichier === "function") {
             let nomSansExt = nom.replace(/\.[a-zA-Z0-9]+$/, "");
-            let cheminComplet = await demanderEmplacementEcritureFichier(nomSansExt, ".mld");
+            let mExtNom = nom.match(/\.[a-zA-Z0-9]+$/);
+            let cheminComplet = await demanderEmplacementEcritureFichier(nomSansExt, mExtNom ? mExtNom[0] : ".txt");
             if (!ecra && typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminComplet)) {
                 throw new ErreurFichierDejaExistant("ecrire.fichier(...) : le fichier '" + cheminComplet + "' existe deja (utilise ecra~VRAI pour l'ecraser, ou fichier.existe(...) pour verifier avant)");
             }
@@ -10478,10 +10520,9 @@ function enregistrerFonctionsBase() {
         }
 
         // Repli navigateur web (previsualisation hors app) : telechargement classique.
-        // Pas de verification d'existence possible ici (voir commentaire plus haut) : ecra
-        // est ignore dans ce cas precis.
-        let nomFichier = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".mld";
-        let blob = new Blob([texte], { type: "application/json" });
+        // Pas de verification d'existence possible ici : ecra est ignore dans ce cas precis.
+        let nomFichier = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".txt";
+        let blob = new Blob([texte], { type: "text/plain;charset=utf-8" });
         let url = URL.createObjectURL(blob);
         let a = document.createElement("a");
         a.href = url;
@@ -10553,7 +10594,7 @@ function enregistrerFonctionsBase() {
     // Necessite l'app native (lecture + reecriture reelles sur le stockage) : pas de repli
     // navigateur web, contrairement a ecrire.fichier().
     fonctionsBase["ajout.fichier"] = fonctionsExpression["ajout.fichier"] = async function(args, ctxExpr) {
-        const { pos: posA, opts: optsA } = separerOptionsArgs(args, "ajout.fichier", ["octets"]);
+        const { pos: posA, opts: optsA } = separerOptionsArgs(args, "ajout.fichier", ["octets", "enco"]);
         args = posA;
         if (args.length < 2) throw new Error("ajout.fichier(nom, valeur, ...) attend au moins 2 arguments");
         let nom = await evalExpr(args[0], ctxExpr);
@@ -10566,11 +10607,12 @@ function enregistrerFonctionsBase() {
         }
         let nouvelles = [];
         for (let i = 1; i < args.length; i++) nouvelles.push(await evaluerElementBrut(args[i], ctxExpr));
-        {   // OCTETS : ajoutes tels quels a la FIN du fichier (pas de fusion en liste, donc pas besoin d'un equivalent de ajout.Tfichier)
+        {   // OCTETS : ajoutes tels quels a la FIN du fichier
             const nbOctets = nouvelles.filter(estOctets).length;
             const veutOctets = optsA.octets !== undefined ? estVrai(await evalExpr(optsA.octets, ctxExpr)) : null;
-            if (veutOctets === false && nbOctets > 0) throw new ErreurTypeInvalide("ajout.fichier(...) : octets~FAUX demande une sauvegarde MLG, mais la valeur est faite d'octets");
+            if (veutOctets === false && nbOctets > 0) throw new ErreurTypeInvalide("ajout.fichier(...) : octets~FAUX demande du texte, mais la valeur est faite d'octets");
             if (nbOctets > 0 || veutOctets === true) {
+                if (optsA.enco !== undefined) throw new ErreurTypeInvalide("ajout.fichier(...) : enco~ ne s'applique qu'au texte, pas aux octets");
                 if (nbOctets !== nouvelles.length) {
                     throw new ErreurTypeInvalide("ajout.fichier(...) : on ne mele pas du texte (ou autre chose) et des octets dans un meme appel (recu : " + nouvelles.map(nomNature).join(", ") + "). Pour convertir : conver.texte.octets(...) ou conver.octets.texte(...)");
                 }
@@ -10578,85 +10620,17 @@ function enregistrerFonctionsBase() {
             }
         }
 
-        let cheminComplet;
-        if (nom.indexOf("/") !== -1) {
-            cheminComplet = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".mld";
-            if (!(typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminComplet))) {
-                throw new ErreurFichierIntrouvable("ajout.fichier(...) : le fichier '" + cheminComplet + "' n'existe pas (utilise ecrire.fichier(...) pour le creer)");
-            }
-        } else {
-            cheminComplet = await demanderEmplacementLectureFichier();
+        // TEXTE : ajoute TEL QUEL a la FIN du fichier (UTF-8), sans relire ni transformer l'existant.
+        if (nouvelles.length > 1) {
+            throw new ErreurTypeInvalide("ajout.fichier(...) : un seul texte est attendu (recu : " + nouvelles.length + " valeurs). Pour assembler plusieurs morceaux : texte(...) ou +");
         }
-
-        let texteExistant = window.MonLangage.lireFichier(cheminComplet);
-        if (texteExistant === null || texteExistant === undefined) throw new Error("ajout.fichier(...) : impossible de lire '" + cheminComplet + "'");
-        let existant;
-        try { existant = valeurDepuisContenuMld(texteExistant); }
-        catch (e) { throw new ErreurFichierInvalide("ajout.fichier(...) : le fichier '" + cheminComplet + "' n'est pas une sauvegarde valide"); }
-
-        let fusion = fusionnerPourAjout(existant, nouvelles);
-        let texteFinal;
-        try { texteFinal = contenuFichierMld(fusion); }
-        catch (e) { throw new Error("ajout.fichier(...) : cette valeur ne peut pas etre sauvegardee"); }
-        let ok = window.MonLangage.ecrireFichier(cheminComplet, texteFinal);
-        if (!ok) throw new Error("ajout.fichier(...) : echec de l'ecriture sur '" + cheminComplet + "'");
-        return true;
-    };
-
-    // ajout.Tfichier(nom, valeur, ...) : variante de ajout.fichier(...) reservee au cas ou le
-    // fichier contient du TEXTE (cree avec ecrire.fichier(chemin, |...|)). fusionnerPourAjout()
-    // ne sait pas prolonger un texte (elle le transforme en 1er element d'une liste()) -- cette
-    // commande gere ce cas precis en concatenant reellement, comme le ferait a la main
-    // lire.fichier() + concatenation + ecrire.fichier(ecra~VRAI), mais en un seul appel.
-    // Meme contrat que ajout.fichier() sinon : fichier deja existant obligatoire, app native
-    // obligatoire, meme regle nom (navigateur integre) / chemin (acces direct avec '/').
-    fonctionsBase["ajout.Tfichier"] = fonctionsExpression["ajout.Tfichier"] = async function(args, ctxExpr) {
-        if (args.length < 2) throw new Error("ajout.Tfichier(nom, valeur, ...) attend au moins 2 arguments");
-        let nom = await evalExpr(args[0], ctxExpr);
-        if (typeof nom !== 'string') throw new ErreurTypeInvalide("ajout.Tfichier(nom, valeur, ...) : nom doit etre du texte");
-        if (!(window.MonLangage && typeof window.MonLangage.lireFichier === "function" && typeof window.MonLangage.ecrireFichier === "function")) {
-            throw new ErreurIndisponibleHorsApp("ajout.Tfichier(...) : disponible uniquement dans l'app installee (rebuild requis)");
+        const texteAjout = nouvelles[0];
+        if (typeof texteAjout !== 'string') {
+            throw new ErreurTypeInvalide("ajout.fichier(...) : il faut un TEXTE (recu : " + nomNature(texteAjout) + "). Pour convertir en texte : texte(...) ; pour des octets : conver.texte.octets(...)");
         }
-        if (!verifierPermissionStockage()) {
-            throw new ErreurPermissionRefusee("ajout.Tfichier(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
-        }
-
-        let nouvelles = [];
-        for (let i = 1; i < args.length; i++) nouvelles.push(await evaluerElementBrut(args[i], ctxExpr));
-        if (nouvelles.some(estOctets)) throw new ErreurTypeInvalide("ajout.Tfichier(...) : cette commande ajoute du TEXTE ; pour des octets, utilise ajout.fichier(chemin, octets)");
-
-        let cheminComplet;
-        if (nom.indexOf("/") !== -1) {
-            cheminComplet = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".mld";
-            if (!(typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminComplet))) {
-                throw new ErreurFichierIntrouvable("ajout.Tfichier(...) : le fichier '" + cheminComplet + "' n'existe pas (utilise ecrire.fichier(...) pour le creer)");
-            }
-        } else {
-            cheminComplet = await demanderEmplacementLectureFichier();
-        }
-
-        let texteExistantBrut = window.MonLangage.lireFichier(cheminComplet);
-        if (texteExistantBrut === null || texteExistantBrut === undefined) throw new Error("ajout.Tfichier(...) : impossible de lire '" + cheminComplet + "'");
-        let existant;
-        try { existant = valeurDepuisContenuMld(texteExistantBrut); }
-        catch (e) { throw new ErreurFichierInvalide("ajout.Tfichier(...) : le fichier '" + cheminComplet + "' n'est pas une sauvegarde valide"); }
-        if (typeof existant !== 'string') {
-            throw new Error("ajout.Tfichier(...) : le fichier '" + cheminComplet + "' ne contient pas du texte (utilise ajout.fichier() pour ce type de contenu)");
-        }
-
-        // Meme concatenation que texte()/affi() : |texte| brut, valeurs non-texte formatees,
-        // espaces multiples fusionnes, espaces autour d'un saut de ligne nettoyes.
-        let ajoutTexte = nouvelles.map(v => typeof v === 'string' ? v : formatValeur(v))
-                                   .join(" ")
-                                   .replace(/ {2,}/g, " ")
-                                   .replace(/ *\n */g, "\n");
-
-        let texteFinal;
-        try { texteFinal = contenuFichierMld(existant + ajoutTexte); }
-        catch (e) { throw new Error("ajout.Tfichier(...) : cette valeur ne peut pas etre sauvegardee"); }
-        let ok = window.MonLangage.ecrireFichier(cheminComplet, texteFinal);
-        if (!ok) throw new Error("ajout.Tfichier(...) : echec de l'ecriture sur '" + cheminComplet + "'");
-        return true;
+        const encoA = optsA.enco !== undefined ? normaliserEnco("ajout.fichier", await evalExpr(optsA.enco, ctxExpr)) : "utf-8";
+        // utf-16 : sans BOM, puisqu'on ajoute a la fin d'un fichier qui en a deja un (l'encodage doit etre le meme que celui du fichier)
+        return await ajouterOctetsFichier("ajout.fichier", nom, encoderTexte("ajout.fichier", texteAjout, encoA, true), ".txt");
     };
 
     // voir.cle() : liste les NOMS de toutes les cles actuellement sauvegardees avec
@@ -10685,35 +10659,6 @@ function enregistrerFonctionsBase() {
         return true;
     };
 
-    // voir.fichier() ou voir.fichier(dossier) : liste les NOMS des fichiers .mld presents
-    // dans un dossier (pas leur contenu). Sans argument, utilise le dossier racine du
-    // stockage de l'appareil. Contrairement aux cles ecrire.cle()/lire.cle(), l'app ne tient pas de
-    // registre central des fichiers crees avec ecrire.fichier() (ils peuvent etre ecrits a
-    // n'importe quel chemin) : voir.fichier() liste donc le CONTENU D'UN DOSSIER donne,
-    // comme le navigateur de fichiers integre, plutot que "tous les fichiers jamais crees".
-    // Necessite l'app native.
-    fonctionsBase["voir.fichier"] = fonctionsExpression["voir.fichier"] = async function(args, ctxExpr) {
-        if (args.length > 1) throw new Error("voir.fichier(dossier) attend 0 ou 1 argument");
-        if (!(window.MonLangage && typeof window.MonLangage.listerDossier === "function")) {
-            throw new ErreurIndisponibleHorsApp("voir.fichier(...) : disponible uniquement dans l'app installee (rebuild requis)");
-        }
-        if (!verifierPermissionStockage()) {
-            throw new ErreurPermissionRefusee("voir.fichier(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
-        }
-        let dossier;
-        if (args.length === 1) {
-            dossier = await evalExpr(args[0], ctxExpr);
-            if (typeof dossier !== 'string') throw new ErreurTypeInvalide("voir.fichier(dossier) : dossier doit etre du texte");
-        } else {
-            dossier = (typeof window.MonLangage.dossierRacine === "function") ? window.MonLangage.dossierRacine() : null;
-            if (!dossier) throw new Error("voir.fichier(...) : impossible de determiner le dossier par defaut, precise un dossier");
-        }
-        let elements;
-        try { elements = JSON.parse(window.MonLangage.listerDossier(dossier) || "[]"); }
-        catch (e) { elements = []; }
-        return elements.filter(el => !el.dossier && /\.mld$/i.test(el.nom)).map(el => el.nom);
-    };
-
     // supri.fichier(nom) ou supri.fichier(chemin) : supprime UN fichier precis, sans toucher
     // aux autres. nom sans '/' : ouvre le navigateur de fichiers integre en mode "ouvrir"
     // pour choisir le fichier a supprimer. chemin avec '/' : suppression DIRECTE a cet
@@ -10732,7 +10677,7 @@ function enregistrerFonctionsBase() {
 
         let cheminComplet;
         if (nom.indexOf("/") !== -1) {
-            cheminComplet = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".mld";
+            cheminComplet = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".txt";
             if (!(typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminComplet))) {
                 throw new ErreurFichierIntrouvable("supri.fichier(...) : le fichier '" + cheminComplet + "' n'existe pas");
             }
@@ -10790,12 +10735,13 @@ function enregistrerFonctionsBase() {
     // un navigateur web ne peut pas lire un fichier arbitraire sans selecteur, par securite).
     fonctionsBase["lire.fichier"] = fonctionsExpression["lire.fichier"] = async function(args, ctxExpr) {
         // Options nommees (octets~, debut~, longueur~) : au debut ou a la fin de l'appel.
-        const { pos: posL, opts: optsL } = separerOptionsArgs(args, "lire.fichier", ["octets", "debut", "longueur"]);
+        const { pos: posL, opts: optsL } = separerOptionsArgs(args, "lire.fichier", ["octets", "debut", "longueur", "enco"]);
         args = posL;
         const veutOctetsL = optsL.octets !== undefined ? estVrai(await evalExpr(optsL.octets, ctxExpr)) : false;
         if (!veutOctetsL && (optsL.debut !== undefined || optsL.longueur !== undefined)) {
             throw new Error("lire.fichier(...) : debut~ et longueur~ ne servent qu'a lire des octets (ajoute octets~VRAI)");
         }
+        if (veutOctetsL && optsL.enco !== undefined) throw new ErreurTypeInvalide("lire.fichier(...) : enco~ ne s'applique qu'au texte, pas aux octets");
         if (veutOctetsL) {   // lecture TELLE QUELLE, en octets : en entier, ou par morceaux avec debut~ (a partir de 1) et longueur~
             let cheminO;
             if (args.length >= 1) {
@@ -10813,6 +10759,24 @@ function enregistrerFonctionsBase() {
             }
             return await lireOctetsFichier("lire.fichier", cheminO, debutO, longueurO);
         }
+        const encoL = optsL.enco !== undefined ? normaliserEnco("lire.fichier", await evalExpr(optsL.enco, ctxExpr)) : "utf-8";
+        if (encoL !== "utf-8") {   // autre encodage : lecture en octets puis decodage
+            let cheminE;
+            if (args.length >= 1) {
+                cheminE = await evalExpr(args[0], ctxExpr);
+                if (typeof cheminE !== 'string') throw new ErreurTypeInvalide("lire.fichier(chemin) : chemin doit etre du texte");
+            }
+            const oct = await lireOctetsFichier("lire.fichier", cheminE, 1, undefined);
+            return decoderTexte("lire.fichier", oct.d, encoL);
+        }
+        // TEXTE : renvoie le contenu TEL QUEL (UTF-8), sans aucune interpretation : un fichier qui contient 123
+        // donne le texte |123|. lireFichierEditeur est la lecture exacte (retours a la ligne conserves).
+        const lireTexteNatif = (cheminT, quoi) => {
+            const pont = window.MonLangage;
+            const t = (typeof pont.lireFichierEditeur === "function") ? pont.lireFichierEditeur(cheminT) : pont.lireFichier(cheminT);
+            if (t === null || t === undefined) throw new Error("lire.fichier(...) : impossible de lire " + quoi);
+            return t;
+        };
         if (args.length >= 1) {
             let chemin = await evalExpr(args[0], ctxExpr);
             if (typeof chemin !== 'string') throw new ErreurTypeInvalide("lire.fichier(chemin) : chemin doit etre du texte");
@@ -10822,25 +10786,16 @@ function enregistrerFonctionsBase() {
             if (!verifierPermissionStockage()) {
                 throw new ErreurPermissionRefusee("lire.fichier(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
             }
-            let texte = window.MonLangage.lireFichier(chemin);
-            if (texte === null || texte === undefined) throw new Error("lire.fichier(...) : impossible de lire '" + chemin + "'");
-            try { return valeurDepuisContenuMld(texte); }
-            catch (e) { throw new ErreurFichierInvalide("lire.fichier(...) : le fichier '" + chemin + "' n'est pas une sauvegarde valide"); }
+            return lireTexteNatif(chemin, "'" + chemin + "'");
         }
 
         if (window.MonLangage && typeof window.MonLangage.lireFichier === "function") {
             let cheminComplet = await demanderEmplacementLectureFichier();
-            let texte = window.MonLangage.lireFichier(cheminComplet);
-            if (texte === null || texte === undefined) throw new Error("lire.fichier(...) : impossible de lire ce fichier");
-            try { return valeurDepuisContenuMld(texte); }
-            catch (e) { throw new ErreurFichierInvalide("lire.fichier(...) : le fichier choisi n'est pas une sauvegarde valide"); }
+            return lireTexteNatif(cheminComplet, "ce fichier");
         }
 
-        let texte = await demanderFichierConsole();
-        try { return valeurDepuisContenuMld(texte); }
-        catch (e) { throw new ErreurFichierInvalide("lire.fichier(...) : le fichier choisi n'est pas une sauvegarde valide"); }
+        return await demanderFichierConsole();
     };
-
 
     // lon(...) : longueur d'un vecteur/matrice (nombre total d'elements). Un scalaire vaut 1.
     fonctionsBase["lon"] = fonctionsExpression["lon"] = async function(args, ctxExpr) {
@@ -11682,10 +11637,10 @@ function enregistrerFonctionsBase() {
     };
 
     // dossier.liste() ou dossier.liste(dossier) : liste les NOMS de TOUS les fichiers d'un
-    // dossier (contrairement a voir.fichier(), pas seulement les .mld) -- utile pour detecter
+    // dossier (quelle que soit leur extension) -- utile pour detecter
     // un nouveau fichier en comparant deux appels successifs dans une boucle. Sans argument,
     // utilise le dossier racine du stockage de l'appareil. Necessite l'app native et la
-    // permission de stockage (comme voir.fichier()).
+    // permission de stockage.
     fonctionsBase["dossier.liste"] = fonctionsExpression["dossier.liste"] = async function(args, ctxExpr) {
         if (args.length > 1) throw new Error("dossier.liste(dossier) attend 0 ou 1 argument");
         if (!(window.MonLangage && typeof window.MonLangage.listerDossier === "function")) {
@@ -12398,55 +12353,55 @@ function enregistrerFonctionsBase() {
             const compresser = opts.compress === undefined ? false : estVrai(await evalExpr(opts.compress, ctxExpr));
             return creerOctets(await fabriquerZip(d, compresser, "creer.zip"));
         };
-        // Zip progressif : ajout.zip(z, nom, octets) / ajout.zip(z, nom, fichier~chemin), ecrire.entrer.zip(z, morceau, ...), abandon.zip(z)
-        // (les blocs ouvrir.zip et entrer.zip sont geres par executerTokens : voir _executerBlocZip).
-        fonctionsBase["ajout.zip"] = fonctionsExpression["ajout.zip"] = async function(args, ctxExpr) {
-            const { pos, opts } = separerOptionsArgs(args, "ajout.zip", ["compress", "fichier"]);   // options au debut ou a la fin
+        // Zip progressif : ajout.entrer.zip(z, nom, octets) / ajout.entrer.zip(z, nom, fichier~chemin), ecrire.contenu(z, morceau, ...), abandon.zip(z)
+        // (les blocs ouvrir.zip et creer.entrer.zip sont geres par executerTokens : voir _executerBlocZip).
+        fonctionsBase["ajout.entrer.zip"] = fonctionsExpression["ajout.entrer.zip"] = async function(args, ctxExpr) {
+            const { pos, opts } = separerOptionsArgs(args, "ajout.entrer.zip", ["compress", "fichier"]);   // options au debut ou a la fin
             const veutFichier = opts.fichier !== undefined;
-            if (pos.length !== (veutFichier ? 2 : 3)) throw new Error("ajout.zip(z, nom, octets) ou ajout.zip(z, nom, fichier~chemin) : " + (veutFichier ? "fichier~ remplace les octets (2 valeurs attendues : z et nom)" : "3 valeurs attendues : z, nom et les octets") + " ; compress~VRAI ou FAUX facultatif");
-            const archive = _zipArchive(await evalExpr(pos[0], ctxExpr), "ajout.zip");
-            const nom = _zipTexteNom(await evalExpr(pos[1], ctxExpr), "ajout.zip(z, nom, ...)");
-            if (archive.entree !== null) throw new Error("ajout.zip : une entree est ouverte (" + archive.entree + ") : termine le bloc entrer.zip avant d'ajouter une autre entree");
+            if (pos.length !== (veutFichier ? 2 : 3)) throw new Error("ajout.entrer.zip(z, nom, octets) ou ajout.entrer.zip(z, nom, fichier~chemin) : " + (veutFichier ? "fichier~ remplace les octets (2 valeurs attendues : z et nom)" : "3 valeurs attendues : z, nom et les octets") + " ; compress~VRAI ou FAUX facultatif");
+            const archive = _zipArchive(await evalExpr(pos[0], ctxExpr), "ajout.entrer.zip");
+            const nom = _zipTexteNom(await evalExpr(pos[1], ctxExpr), "ajout.entrer.zip(z, nom, ...)");
+            if (archive.entree !== null) throw new Error("ajout.entrer.zip : une entree est ouverte (" + archive.entree + ") : termine le bloc creer.entrer.zip avant d'ajouter une autre entree");
             const comp = await _zipCompress(opts, ctxExpr);
-            const pont = _pontZip("ajout.zip");
+            const pont = _pontZip("ajout.entrer.zip");
             if (veutFichier) {
-                const src = _zipCheminComplet(await evalExpr(opts.fichier, ctxExpr), "ajout.zip(...)", "fichier~");
-                _zipNatif(pont.zipAjouterFichierDebut(archive.id, nom, src, comp), "ajout.zip");
+                const src = _zipCheminComplet(await evalExpr(opts.fichier, ctxExpr), "ajout.entrer.zip(...)", "fichier~");
+                _zipNatif(pont.zipAjouterFichierDebut(archive.id, nom, src, comp), "ajout.entrer.zip");
                 archive.entree = nom;
                 try {
                     for (;;) {                                  // copie pas a pas : on cede la main entre deux pas
                         await _zipCeder(true);
-                        if (archive.etat !== 'ouverte') throw new Error("ajout.zip : archive abandonnee");
-                        if (_zipNatif(pont.zipAjouterFichierPas(archive.id, ZIP_PAS_COPIE), "ajout.zip") === "0") break;
+                        if (archive.etat !== 'ouverte') throw new Error("ajout.entrer.zip : archive abandonnee");
+                        if (_zipNatif(pont.zipAjouterFichierPas(archive.id, ZIP_PAS_COPIE), "ajout.entrer.zip") === "0") break;
                     }
                     archive.entree = null;
                 } catch (e) { _zipAbandonner(archive); throw e; }
                 return true;
             }
             const contenu = await evalExpr(pos[2], ctxExpr);
-            if (!estOctets(contenu)) throw new ErreurTypeInvalide("ajout.zip(z, nom, octets) : le contenu doit etre des octets (recu : " + nomNature(contenu) + "). Pour un texte : conver.texte.octets(...)");
-            _zipNatif(pont.zipEntrer(archive.id, nom, comp, contenu.d.length, false), "ajout.zip");
+            if (!estOctets(contenu)) throw new ErreurTypeInvalide("ajout.entrer.zip(z, nom, octets) : le contenu doit etre des octets (recu : " + nomNature(contenu) + "). Pour un texte : conver.texte.octets(...)");
+            _zipNatif(pont.zipEntrer(archive.id, nom, comp, contenu.d.length, false), "ajout.entrer.zip");
             archive.entree = nom;
             try {
-                await _zipEnvoyer(archive, contenu.d, "ajout.zip");
-                _zipNatif(pont.zipFinEntree(archive.id), "ajout.zip");
+                await _zipEnvoyer(archive, contenu.d, "ajout.entrer.zip");
+                _zipNatif(pont.zipFinEntree(archive.id), "ajout.entrer.zip");
                 archive.entree = null;
             } catch (e) { _zipAbandonner(archive); throw e; }
             return true;
         };
-        fonctionsBase["ecrire.entrer.zip"] = fonctionsExpression["ecrire.entrer.zip"] = async function(args, ctxExpr) {
-            if (args.length < 2) throw new Error("ecrire.entrer.zip(z, morceau, ...) attend l'archive puis au moins un morceau (texte ou octets)");
-            const archive = _zipArchive(await evalExpr(args[0], ctxExpr), "ecrire.entrer.zip");
-            if (archive.entree === null) throw new Error("ecrire.entrer.zip(...) n'est utilisable qu'a l'interieur d'un bloc entrer.zip(z, nom) { ... }");
+        fonctionsBase["ecrire.contenu"] = fonctionsExpression["ecrire.contenu"] = async function(args, ctxExpr) {
+            if (args.length < 2) throw new Error("ecrire.contenu(z, morceau, ...) attend l'archive puis au moins un morceau (texte ou octets)");
+            const archive = _zipArchive(await evalExpr(args[0], ctxExpr), "ecrire.contenu");
+            if (archive.entree === null) throw new Error("ecrire.contenu(...) n'est utilisable qu'a l'interieur d'un bloc creer.entrer.zip(z, nom) { ... }");
             const valeurs = [];
             for (let i = 1; i < args.length; i++) valeurs.push(await evaluerElementBrut(args[i].trim(), ctxExpr));
             const nbOctets = valeurs.filter(estOctets).length;
-            if (nbOctets !== 0 && nbOctets !== valeurs.length) throw new ErreurTypeInvalide("ecrire.entrer.zip(...) : on ne mele pas du texte et des octets dans un meme appel (recu : " + valeurs.map(nomNature).join(", ") + "). Pour convertir : conver.texte.octets(...) ou conver.octets.texte(...)");
-            if (nbOctets === 0 && !valeurs.every(v => typeof v === 'string')) throw new ErreurTypeInvalide("ecrire.entrer.zip(...) : des textes ou des octets sont attendus (recu : " + valeurs.map(nomNature).join(", ") + "). Pour un nombre ou autre valeur : texte(...)");
+            if (nbOctets !== 0 && nbOctets !== valeurs.length) throw new ErreurTypeInvalide("ecrire.contenu(...) : on ne mele pas du texte et des octets dans un meme appel (recu : " + valeurs.map(nomNature).join(", ") + "). Pour convertir : conver.texte.octets(...) ou conver.octets.texte(...)");
+            if (nbOctets === 0 && !valeurs.every(v => typeof v === 'string')) throw new ErreurTypeInvalide("ecrire.contenu(...) : des textes ou des octets sont attendus (recu : " + valeurs.map(nomNature).join(", ") + "). Pour un nombre ou autre valeur : texte(...)");
             try {
                 for (const v of valeurs) {
-                    if (estOctets(v)) await _zipEnvoyer(archive, v.d, "ecrire.entrer.zip");
-                    else await _zipEnvoyerTexte(archive, v, "ecrire.entrer.zip");
+                    if (estOctets(v)) await _zipEnvoyer(archive, v.d, "ecrire.contenu");
+                    else await _zipEnvoyerTexte(archive, v, "ecrire.contenu");
                 }
             } catch (e) { _zipAbandonner(archive); throw e; }
             return true;
@@ -12459,23 +12414,27 @@ function enregistrerFonctionsBase() {
             _zipAbandonner(a);
             return true;
         };
+        // lire.zip(octets) : decode un zip DEJA EN MEMOIRE (inchange). Pour une entree d'un zip du telephone : lire.entrer.zip(chemin, nom).
         fonctionsBase["lire.zip"] = fonctionsExpression["lire.zip"] = async function(args, ctxExpr) {
-            // lire.zip(octets) : zip deja en memoire (inchange).  lire.zip(chemin, nom, debut~, longueur~, max~) : une entree d'un zip du telephone.
-            const { pos, opts } = separerOptionsArgs(args, "lire.zip", ["debut", "longueur", "max"]);
-            if (pos.length < 1 || pos.length > 2) throw new Error("lire.zip(octets) attend les octets d'un fichier zip ; lire.zip(chemin, nom) lit une entree d'un zip du telephone (options debut~, longueur~, max~)");
-            const v = await evalExpr(pos[0], ctxExpr);
-            if (estOctets(v)) {
-                if (pos.length !== 1 || Object.keys(opts).length > 0) throw new Error("lire.zip(octets) ne prend ni nom ni option : pour une entree d'un zip du telephone, utilise lire.zip(chemin, nom, debut~, longueur~, max~)");
-                return lireZip(v.d, "lire.zip");
-            }
-            if (typeof v !== 'string') throw new ErreurTypeInvalide("lire.zip(octets) attend des octets (recu : " + nomNature(v) + "). Un fichier se lit avec lire.fichier(chemin, octets~VRAI) ; un texte se convertit avec conver.texte.octets(...) ; lire.zip(chemin, nom) lit une entree d'un zip du telephone");
-            if (pos.length !== 2) throw new Error("lire.zip(chemin, nom) : il faut aussi le nom de l'entree (liste.zip(chemin) donne les noms)");
-            const chemin = _zipCheminComplet(v, "lire.zip(chemin, nom)", "chemin");
-            const nom = _zipTexteNom(await evalExpr(pos[1], ctxExpr), "lire.zip(chemin, nom)");
-            const debut = opts.debut === undefined ? 1 : _zipEntierMin(await evalExpr(opts.debut, ctxExpr), "lire.zip", "debut", 1);
-            const longueur = opts.longueur === undefined ? undefined : _zipEntierMin(await evalExpr(opts.longueur, ctxExpr), "lire.zip", "longueur", 0);
-            const max = opts.max === undefined ? ZIP_MAX_LIRE_DEFAUT : _zipEntierMin(await evalExpr(opts.max, ctxExpr), "lire.zip", "max", 0);
-            return _zipLireEntree(chemin, nom, debut, longueur, max, "lire.zip");
+            if (args.length !== 1) throw new Error("lire.zip(octets) attend les octets d'un fichier zip. Pour lire une entree d'un zip du telephone, la commande s'appelle lire.entrer.zip(chemin, nom, debut~, longueur~, max~, modpas~)");
+            const v = await evalExpr(args[0], ctxExpr);
+            if (estOctets(v)) return lireZip(v.d, "lire.zip");
+            if (typeof v === 'string') throw new Error("lire.zip(chemin, nom) s'appelle maintenant lire.entrer.zip(chemin, nom) (options debut~, longueur~, max~, modpas~) ; lire.zip(octets) ne decode que des octets deja en memoire");
+            throw new ErreurTypeInvalide("lire.zip(octets) attend des octets (recu : " + nomNature(v) + "). Un fichier se lit avec lire.fichier(chemin, octets~VRAI) ; un texte se convertit avec conver.texte.octets(...) ; lire.entrer.zip(chemin, nom) lit une entree d'un zip du telephone");
+        };
+        // lire.entrer.zip(chemin, nom, debut~, longueur~, max~, modpas~) : une entree (ou une tranche) d'un zip du telephone.
+        fonctionsBase["lire.entrer.zip"] = fonctionsExpression["lire.entrer.zip"] = async function(args, ctxExpr) {
+            const { pos, opts } = separerOptionsArgs(args, "lire.entrer.zip", ["debut", "longueur", "max", "modpas"]);
+            if (pos.length !== 2) throw new Error("lire.entrer.zip(chemin, nom) attend le chemin d'un zip du telephone puis le nom de l'entree (liste.zip(chemin) donne les noms ; options debut~, longueur~, max~, modpas~)");
+            const v0 = await evalExpr(pos[0], ctxExpr);
+            if (estOctets(v0)) throw new Error("lire.entrer.zip(chemin, nom) lit un zip du telephone par son chemin ; pour un zip deja en memoire (octets), utilise lire.zip(octets)");
+            const chemin = _zipCheminComplet(v0, "lire.entrer.zip(chemin, nom)", "chemin");
+            const nom = _zipTexteNom(await evalExpr(pos[1], ctxExpr), "lire.entrer.zip(chemin, nom)");
+            const debut = opts.debut === undefined ? 1 : _zipEntierMin(await evalExpr(opts.debut, ctxExpr), "lire.entrer.zip", "debut", 1);
+            const longueur = opts.longueur === undefined ? undefined : _zipEntierMin(await evalExpr(opts.longueur, ctxExpr), "lire.entrer.zip", "longueur", 0);
+            const max = opts.max === undefined ? ZIP_MAX_LIRE_DEFAUT : _zipEntierMin(await evalExpr(opts.max, ctxExpr), "lire.entrer.zip", "max", 0);
+            const modpas = opts.modpas === undefined ? "" : _zipModpas(await evalExpr(opts.modpas, ctxExpr), "lire.entrer.zip");
+            return _zipLireEntree(chemin, nom, debut, longueur, max, "lire.entrer.zip", modpas);
         };
         // liste.zip(chemin) : dictionnai nom : taille (octets decompresses), lu par pages dans le repertoire central (dossiers ignores).
         fonctionsBase["liste.zip"] = fonctionsExpression["liste.zip"] = async function(args, ctxExpr) {
@@ -12493,24 +12452,25 @@ function enregistrerFonctionsBase() {
             }
             return dico;
         };
-        // extrai.zip(chemin, nom, destination) : decompresse UNE entree directement vers un fichier, pas a pas (jamais en memoire).
-        fonctionsBase["extrai.zip"] = fonctionsExpression["extrai.zip"] = async function(args, ctxExpr) {
-            const { pos, opts } = separerOptionsArgs(args, "extrai.zip", ["ecra"]);
-            if (pos.length !== 3) throw new Error("extrai.zip(chemin, nom, destination) attend 3 valeurs (ecra~VRAI facultatif pour remplacer un fichier existant)");
-            const chemin = _zipCheminComplet(await evalExpr(pos[0], ctxExpr), "extrai.zip(chemin, nom, destination)", "chemin");
-            const nom = _zipTexteNom(await evalExpr(pos[1], ctxExpr), "extrai.zip(chemin, nom, destination)");
-            const dest = _zipCheminComplet(await evalExpr(pos[2], ctxExpr), "extrai.zip(chemin, nom, destination)", "destination");
+        // extrait.entrer.zip(chemin, nom, destination) : decompresse UNE entree directement vers un fichier, pas a pas (jamais en memoire).
+        fonctionsBase["extrait.entrer.zip"] = fonctionsExpression["extrait.entrer.zip"] = async function(args, ctxExpr) {
+            const { pos, opts } = separerOptionsArgs(args, "extrait.entrer.zip", ["ecra", "modpas"]);
+            if (pos.length !== 3) throw new Error("extrait.entrer.zip(chemin, nom, destination) attend 3 valeurs (options facultatives : ecra~VRAI pour remplacer un fichier existant, modpas~|mot de passe| pour une entree chiffree)");
+            const chemin = _zipCheminComplet(await evalExpr(pos[0], ctxExpr), "extrait.entrer.zip(chemin, nom, destination)", "chemin");
+            const nom = _zipTexteNom(await evalExpr(pos[1], ctxExpr), "extrait.entrer.zip(chemin, nom, destination)");
+            const dest = _zipCheminComplet(await evalExpr(pos[2], ctxExpr), "extrait.entrer.zip(chemin, nom, destination)", "destination");
             const ecra = opts.ecra === undefined ? false : estVrai(await evalExpr(opts.ecra, ctxExpr));
-            const pont = _pontZipLire("extrai.zip");
+            const modpas = opts.modpas === undefined ? "" : _zipModpas(await evalExpr(opts.modpas, ctxExpr), "extrait.entrer.zip");
+            const pont = _pontZipLire("extrait.entrer.zip");
             if (!ecra && typeof pont.existeFichier === "function" && pont.existeFichier(dest)) {
-                throw new ErreurFichierDejaExistant("extrai.zip(...) : le fichier '" + dest + "' existe deja (utilise ecra~VRAI pour le remplacer, ou fichier.existe(...) pour verifier avant)");
+                throw new ErreurFichierDejaExistant("extrait.entrer.zip(...) : le fichier '" + dest + "' existe deja (utilise ecra~VRAI pour le remplacer, ou fichier.existe(...) pour verifier avant)");
             }
             await _zipCeder(true);
-            _zipNatif(pont.zipExtraireDebut(chemin, nom, dest, ecra), "extrai.zip");
+            _zipNatif(pont.zipExtraireDebut(chemin, nom, dest, ecra, modpas), "extrait.entrer.zip");
             try {
                 for (;;) {                                         // pas a pas : on cede la main entre deux pas
                     await _zipCeder(true);
-                    if (_zipNatif(pont.zipExtrairePas(ZIP_PAS_COPIE), "extrai.zip") === "0") break;
+                    if (_zipNatif(pont.zipExtrairePas(ZIP_PAS_COPIE), "extrait.entrer.zip") === "0") break;
                 }
             } catch (e) { try { pont.zipExtraireAbandon(); } catch (_) {} throw e; }
             return true;
@@ -15430,7 +15390,7 @@ function verifierSyntaxeProgramme(code, tokens) {
     try { verifierSyntaxeExpression(str); }
     catch (e) { err(ligne, (contexte ? contexte + " : " : "") + e.message); }
   };
-  // Vrai si un bloc ouvrir.zip / entrer.zip englobe l'instruction DANS la meme fonction (donne y est interdit).
+  // Vrai si un bloc ouvrir.zip / creer.entrer.zip englobe l'instruction DANS la meme fonction (donne y est interdit).
   const dansBlocZipLocal = (kinds) => {
     for (let k = pile.length - 1; k >= 0; k--) {
       const kd = pile[k].kind;
@@ -15473,7 +15433,7 @@ function verifierSyntaxeProgramme(code, tokens) {
     if (m && _MOTS_RESERVES.has(m[1])) { err(l, _msgMotReserve(m[1], "variable")); i++; continue; }
 
     if (t === '{') {
-      fatal(l, "Accolade { inattendue : elle doit suivre une instruction de bloc (si, sinon, pou, tanqer, rythme, ouvrir.zip, entrer.zip, fonc, classe, essai, attrape, finalement)");
+      fatal(l, "Accolade { inattendue : elle doit suivre une instruction de bloc (si, sinon, pou, tanqer, rythme, ouvrir.zip, creer.entrer.zip, fonc, classe, essai, attrape, finalement)");
       break;
     }
     if (t === '}') {
@@ -15575,7 +15535,7 @@ function verifierSyntaxeProgramme(code, tokens) {
       continue;
     }
 
-    if ((t.startsWith('ouvrir.zip(') || t.startsWith('entrer.zip(')) && t.endsWith(')')) {
+    if ((t.startsWith('ouvrir.zip(') || t.startsWith('creer.entrer.zip(')) && t.endsWith(')')) {
       const estOuvrirZ = t.startsWith('ouvrir.zip(');
       try {
         if (estOuvrirZ) {
@@ -15585,13 +15545,13 @@ function verifierSyntaxeProgramme(code, tokens) {
           for (const k of Object.keys(e.opts)) testExpr(e.opts[k], l, k + "~ de ouvrir.zip(...)");
         } else {
           const e = analyserEnTeteZipEntrer(t);
-          testExpr(e.zExpr, l, "archive de entrer.zip(...)");
-          testExpr(e.nomExpr, l, "nom de entrer.zip(...)");
-          for (const k of Object.keys(e.opts)) testExpr(e.opts[k], l, k + "~ de entrer.zip(...)");
-          if (dansBlocZipLocal(['zipentree'])) err(l, "entrer.zip ne peut pas contenir entrer.zip : une seule entree a la fois dans l'archive");
+          testExpr(e.zExpr, l, "archive de creer.entrer.zip(...)");
+          testExpr(e.nomExpr, l, "nom de creer.entrer.zip(...)");
+          for (const k of Object.keys(e.opts)) testExpr(e.opts[k], l, k + "~ de creer.entrer.zip(...)");
+          if (dansBlocZipLocal(['zipentree'])) err(l, "creer.entrer.zip ne peut pas contenir creer.entrer.zip : une seule entree a la fois dans l'archive");
         }
       } catch (e) { err(l, e.message); }
-      i = ouvrirBloc(estOuvrirZ ? 'zip' : 'zipentree', estOuvrirZ ? "ouvrir.zip(...)" : "entrer.zip(...)", i, l, erreurs.length > nbAvant);
+      i = ouvrirBloc(estOuvrirZ ? 'zip' : 'zipentree', estOuvrirZ ? "ouvrir.zip(...)" : "creer.entrer.zip(...)", i, l, erreurs.length > nbAvant);
       continue;
     }
 
@@ -15647,7 +15607,7 @@ function verifierSyntaxeProgramme(code, tokens) {
       continue;
     }
     if (_tokenDonne(t)) {
-      if (dansBlocZipLocal(['zip', 'zipentree'])) err(l, "donne n'est pas utilisable a l'interieur d'un bloc ouvrir.zip ou entrer.zip : l'archive resterait ouverte pendant la pause du generateur");
+      if (dansBlocZipLocal(['zip', 'zipentree'])) err(l, "donne n'est pas utilisable a l'interieur d'un bloc ouvrir.zip ou creer.entrer.zip : l'archive resterait ouverte pendant la pause du generateur");
       if (!dansFonction()) err(l, "donne n'est utilisable qu'a l'interieur d'une fonction (fonc) : une fonction qui contient donne devient un generateur");
       const resteD = t.slice(5).trim();
       if (resteD !== "") {
@@ -15674,7 +15634,7 @@ function verifierSyntaxeProgramme(code, tokens) {
 
     // ---- une ligne suivie de { qui n'est aucun des en-tetes ci-dessus : en-tete mal forme ----
     if (tokens[i + 1] && tokens[i + 1].texte === '{') {
-      err(l, "Instruction de bloc inconnue ou mal formee avant { : \"" + _court(t) + "\" (attendu : si(condition), sinon si(condition), sinon, pou(...), tanqer(condition), tanqer VRAI, rythme(secondes), ouvrir.zip(z, chemin), entrer.zip(z, nom), fonc nom(...), classe Nom, essai ou attrape)");
+      err(l, "Instruction de bloc inconnue ou mal formee avant { : \"" + _court(t) + "\" (attendu : si(condition), sinon si(condition), sinon, pou(...), tanqer(condition), tanqer VRAI, rythme(secondes), ouvrir.zip(z, chemin), creer.entrer.zip(z, nom), fonc nom(...), classe Nom, essai ou attrape)");
       pile.push({ kind: 'inconnu', nom: t, ligne: l });
       i += 2;
       continue;
@@ -15800,7 +15760,7 @@ function _construireNoeudInstruction(tokens, index) {
     if (!tokens[index+1] || tokens[index+1].texte !== "{") throw new Error("Manque { apres pou");
     return { t: 'pou', entete: entete, finBloc: trouverFinBloc(tokens, index + 2, ligne) };
   }
-  if ((token.startsWith('ouvrir.zip(') || token.startsWith('entrer.zip(')) && token.endsWith(')')) return _NOEUD_AUTRE;
+  if ((token.startsWith('ouvrir.zip(') || token.startsWith('creer.entrer.zip(')) && token.endsWith(')')) return _NOEUD_AUTRE;
   if (token.startsWith('rythme(') && token.endsWith(')')) return _NOEUD_AUTRE;
   const infinie = /^tanqer\s+(VRAI|V)$/.test(token);
   if ((token.startsWith('tanqer(') && token.endsWith(')')) || infinie) {
@@ -16027,7 +15987,7 @@ const _RES_CASSE = { index: 0, signal: { type: 'casse' } };
 const _RES_CONTINU = { index: 0, signal: { type: 'continu' } };
 function _resSync(sig) { return sig === null ? _RES_AUCUN : (sig === 'casse' ? _RES_CASSE : _RES_CONTINU); }
 // Corps synchrone d'une boucle (compile une seule fois, memorise dans le noeud) ; null si non eligible.
-/* ===================== ZIP PROGRESSIF : ouvrir.zip(z, chemin){...} et entrer.zip(z, nom){...} ===================== */
+/* ===================== ZIP PROGRESSIF : ouvrir.zip(z, chemin){...} et creer.entrer.zip(z, nom){...} ===================== */
 // L'ecriture se fait cote Java (MonLangageZip) directement dans un fichier : aucune archive complete en memoire.
 // Le bloc ouvrir.zip FERME tout seul : fin normale du bloc = archive finalisee ; erreur, arret, retour/casse/continu
 // qui SORTENT du bloc, quitte, ou abandon.zip(z) = archive abandonnee (le fichier temporaire est supprime).
@@ -16083,15 +16043,15 @@ async function _zipCompress(opts, ctxExpr) {
 }
 function analyserEnTeteZipOuvrir(token) {
   const parties = splitTopLevelComma(token.slice(11, -1).trim()).map(x => x.trim());
-  if (parties.length < 2 || !/^[A-Za-z_]\w*$/.test(parties[0])) throw new Error("Syntaxe: ouvrir.zip(z, chemin) { ... } : z (en premier) est la variable qui recevra l'archive ; options facultatives : compress~VRAI, ecra~VRAI");
-  const { pos, opts } = separerOptionsArgs(parties.slice(1), "ouvrir.zip", ["compress", "ecra"]);
+  if (parties.length < 2 || !/^[A-Za-z_]\w*$/.test(parties[0])) throw new Error("Syntaxe: ouvrir.zip(z, chemin) { ... } : z (en premier) est la variable qui recevra l'archive ; options facultatives : compress~VRAI, ecra~VRAI, modpas~|mot de passe|");
+  const { pos, opts } = separerOptionsArgs(parties.slice(1), "ouvrir.zip", ["compress", "ecra", "modpas"]);
   if (pos.length !== 1 || pos[0].trim() === "") throw new Error("Syntaxe: ouvrir.zip(z, chemin) { ... } : il faut exactement un chemin");
   return { varNom: parties[0], cheminExpr: pos[0].trim(), opts: opts };
 }
 function analyserEnTeteZipEntrer(token) {
-  const parties = splitTopLevelComma(token.slice(11, -1).trim()).map(x => x.trim());
-  const { pos, opts } = separerOptionsArgs(parties, "entrer.zip", ["compress"]);
-  if (pos.length !== 2 || pos[0].trim() === "" || pos[1].trim() === "") throw new Error("Syntaxe: entrer.zip(z, nom) { ... } ou entrer.zip(z, nom, compress~FAUX) { ... }");
+  const parties = splitTopLevelComma(token.slice("creer.entrer.zip(".length, -1).trim()).map(x => x.trim());
+  const { pos, opts } = separerOptionsArgs(parties, "creer.entrer.zip", ["compress"]);
+  if (pos.length !== 2 || pos[0].trim() === "" || pos[1].trim() === "") throw new Error("Syntaxe: creer.entrer.zip(z, nom) { ... } ou creer.entrer.zip(z, nom, compress~FAUX) { ... }");
   return { zExpr: pos[0].trim(), nomExpr: pos[1].trim(), opts: opts };
 }
 // Base64 par table sur tableaux types puis TextDecoder : environ 2 fois plus rapide que fromCharCode.apply + btoa
@@ -16143,9 +16103,9 @@ async function _zipEnvoyer(archive, u8, nomCmd) {
 // Retourne { res, finBloc } : res = resultat d'une sortie anticipee du bloc (a renvoyer tel quel), ou null.
 async function _executerBlocZip(tokens, index, ligne, token, ctxExpr) {
   const estOuvrir = token.startsWith('ouvrir.zip(');
-  const nomBloc = estOuvrir ? "ouvrir.zip" : "entrer.zip";
+  const nomBloc = estOuvrir ? "ouvrir.zip" : "creer.entrer.zip";
   if (!tokens[index + 1] || tokens[index + 1].texte !== "{") {
-    throw new Error(nomBloc + " est un bloc : " + (estOuvrir ? "ouvrir.zip(z, chemin) { ... }" : "entrer.zip(z, nom) { ... }") + " (il manque { apres " + nomBloc + "(...))");
+    throw new Error(nomBloc + " est un bloc : " + (estOuvrir ? "ouvrir.zip(z, chemin) { ... }" : "creer.entrer.zip(z, nom) { ... }") + " (il manque { apres " + nomBloc + "(...))");
   }
   const finBloc = trouverFinBloc(tokens, index + 2, ligne);
   if (estOuvrir) {
@@ -16153,13 +16113,14 @@ async function _executerBlocZip(tokens, index, ligne, token, ctxExpr) {
     const chemin = _zipCheminComplet(await evalExpr(h.cheminExpr, ctxExpr), "ouvrir.zip(z, chemin)", "chemin");
     const compress = h.opts.compress === undefined ? false : estVrai(await evalExpr(h.opts.compress, ctxExpr));
     const ecra = h.opts.ecra === undefined ? false : estVrai(await evalExpr(h.opts.ecra, ctxExpr));
+    const modpas = h.opts.modpas === undefined ? "" : _zipModpas(await evalExpr(h.opts.modpas, ctxExpr), "ouvrir.zip");
     const pont = _pontZip("ouvrir.zip");
     await _zipCeder(true);     // laisse le panneau d'execution s'afficher avant le premier appel natif
     if (typeof pont.permissionStockageAccordee === "function" && !pont.permissionStockageAccordee()) throw new ErreurPermissionRefusee("ouvrir.zip(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
     if (!ecra && typeof pont.existeFichier === "function" && pont.existeFichier(chemin)) {
       throw new ErreurFichierDejaExistant("ouvrir.zip(...) : le fichier '" + chemin + "' existe deja (utilise ecra~VRAI pour le remplacer, ou fichier.existe(...) pour verifier avant)");
     }
-    const id = parseInt(_zipNatif(pont.zipOuvrir(chemin, compress, ecra), "ouvrir.zip"), 10);
+    const id = parseInt(_zipNatif(pont.zipOuvrir(chemin, compress, ecra, modpas), "ouvrir.zip"), 10);
     const archive = { __type: 'archivezip', id: id, chemin: chemin, etat: 'ouverte', entree: null };
     setVar(h.varNom, archive);
     try {
@@ -16174,25 +16135,25 @@ async function _executerBlocZip(tokens, index, ligne, token, ctxExpr) {
     return { res: null, finBloc: finBloc };
   }
   const h = analyserEnTeteZipEntrer(token);
-  const archive = _zipArchive(await evalExpr(h.zExpr, ctxExpr), "entrer.zip");
-  const nom = _zipTexteNom(await evalExpr(h.nomExpr, ctxExpr), "entrer.zip(z, nom)");
-  if (archive.entree !== null) throw new Error("entrer.zip : une entree est deja ouverte (" + archive.entree + ") : entrer.zip ne peut pas contenir entrer.zip");
+  const archive = _zipArchive(await evalExpr(h.zExpr, ctxExpr), "creer.entrer.zip");
+  const nom = _zipTexteNom(await evalExpr(h.nomExpr, ctxExpr), "creer.entrer.zip(z, nom)");
+  if (archive.entree !== null) throw new Error("creer.entrer.zip : une entree est deja ouverte (" + archive.entree + ") : creer.entrer.zip ne peut pas contenir creer.entrer.zip");
   const comp = await _zipCompress(h.opts, ctxExpr);
-  const pont = _pontZip("entrer.zip");
-  _zipNatif(pont.zipEntrer(archive.id, nom, comp, -1, false), "entrer.zip");
+  const pont = _pontZip("creer.entrer.zip");
+  _zipNatif(pont.zipEntrer(archive.id, nom, comp, -1, false), "creer.entrer.zip");
   archive.entree = nom;
   try {
     const res = await executerTokens(tokens, index + 2, finBloc - 1);
     if (res.signal) { _zipAbandonner(archive); return { res: res, finBloc: finBloc }; }
     if (archive.etat === 'ouverte') {
-      _zipNatif(pont.zipFinEntree(archive.id), "entrer.zip");
+      _zipNatif(pont.zipFinEntree(archive.id), "creer.entrer.zip");
       archive.entree = null;
     }
   } catch (e) { _zipAbandonner(archive); throw e; }
   return { res: null, finBloc: finBloc };
 }
 
-/* ===================== LECTURE ZIP DE GROS FICHIERS : liste.zip / lire.zip(chemin, nom) / extrai.zip ===================== */
+/* ===================== LECTURE ZIP DE GROS FICHIERS : liste.zip / lire.entrer.zip(chemin, nom) / extrait.entrer.zip ===================== */
 // Cote Java (MonLangageZipLecture) : le repertoire central est lu par morceaux, une entree se lit par morceaux, et une
 // extraction se fait directement de fichier a fichier : jamais le zip entier en memoire.
 const ZIP_MAX_LIRE_DEFAUT = 64 * 1024 * 1024;
@@ -16206,21 +16167,26 @@ function _zipEntierMin(v, nomCmd, option, minimum) {
   if (typeof v !== 'number' || !Number.isInteger(v) || v < minimum) throw new ErreurTypeInvalide(nomCmd + " : " + option + "~ doit etre un entier >= " + minimum + " (recu : " + (typeof v === 'number' ? v : nomNature(v)) + ")");
   return v;
 }
-// lire.zip(chemin, nom, debut~, longueur~, max~) : lit une entree (ou une tranche) par morceaux de 1 Mo, avec cession de la main.
-async function _zipLireEntree(chemin, nom, debut, longueur, max, nomCmd) {
+// lire.entrer.zip(chemin, nom, debut~, longueur~, max~) : lit une entree (ou une tranche) par morceaux de 1 Mo, avec cession de la main.
+function _zipModpas(v, nomCmd) {
+  if (typeof v !== 'string' || v === "") throw new ErreurTypeInvalide(nomCmd + " : modpas~ doit etre un texte non vide (le mot de passe), recu : " + (typeof v === 'string' ? "texte vide" : nomNature(v)));
+  return v;
+}
+async function _zipLireEntree(chemin, nom, debut, longueur, max, nomCmd, modpas) {
+  modpas = modpas || "";
   const pont = _pontZipLire(nomCmd);
   await _zipCeder(true);
-  const taille = parseInt(_zipNatif(pont.zipLireInfo(chemin, nom), nomCmd), 10);
+  const taille = parseInt(_zipNatif(pont.zipLireInfo(chemin, nom, modpas), nomCmd), 10);
   const debut0 = debut - 1;
   if (debut0 >= taille) return creerOctets(new Uint8Array(0));
   const dispo = taille - debut0;
   const n = longueur === undefined ? dispo : Math.min(longueur, dispo);
-  if (n > max) throw new Error(nomCmd + "(...) : " + n + " octets demandes, plus que max~ (" + max + ") : lis par morceaux avec debut~ et longueur~, augmente max~, ou utilise extrai.zip(chemin, nom, destination) pour ecrire dans un fichier");
+  if (n > max) throw new Error(nomCmd + "(...) : " + n + " octets demandes, plus que max~ (" + max + ") : lis par morceaux avec debut~ et longueur~, augmente max~, ou utilise extrait.entrer.zip(chemin, nom, destination) pour ecrire dans un fichier");
   let sortie;
-  try { sortie = new Uint8Array(n); } catch (e) { throw new Error(nomCmd + "(...) : pas assez de memoire pour " + n + " octets : lis par morceaux avec debut~ et longueur~ ou utilise extrai.zip(...)"); }
+  try { sortie = new Uint8Array(n); } catch (e) { throw new Error(nomCmd + "(...) : pas assez de memoire pour " + n + " octets : lis par morceaux avec debut~ et longueur~ ou utilise extrait.entrer.zip(...)"); }
   for (let o = 0; o < n; o += ZIP_TAILLE_MORCEAU) {
     await _zipCeder(true);
-    const morceau = base64VersOctets(_zipNatif(pont.zipLire(chemin, nom, debut0 + o, Math.min(ZIP_TAILLE_MORCEAU, n - o)), nomCmd), nomCmd);
+    const morceau = base64VersOctets(_zipNatif(pont.zipLire(chemin, nom, debut0 + o, Math.min(ZIP_TAILLE_MORCEAU, n - o), modpas), nomCmd), nomCmd);
     sortie.set(morceau, o);
   }
   return creerOctets(sortie);
@@ -16511,8 +16477,8 @@ async function executerTokens(tokens, debut = 0, fin = tokens.length) {
         continue;
       }
 
-      // ouvrir.zip(z, chemin){...} / entrer.zip(z, nom){...} : blocs du zip progressif (ferment tout seuls).
-      if ((token.startsWith('ouvrir.zip(') || token.startsWith('entrer.zip(')) && token.endsWith(')')) {
+      // ouvrir.zip(z, chemin){...} / creer.entrer.zip(z, nom){...} : blocs du zip progressif (ferment tout seuls).
+      if ((token.startsWith('ouvrir.zip(') || token.startsWith('creer.entrer.zip(')) && token.endsWith(')')) {
         const rz = await _executerBlocZip(tokens, index, ligneActuelle, token, ctxExpr);
         if (rz.res) return rz.res;
         index = rz.finBloc;
@@ -16686,7 +16652,7 @@ let navFichiersCheminPropre = "";          // chemin du fichier que l'onglet est
 // promesses) de rejeter proprement au lieu de rester bloque indefiniment.
 let navFichiersOnAnnule = null;
 // Extension ajoutee automatiquement au nom de fichier en mode "enregistrer" (".mlg" pour
-// les scripts, mais ecrire.fichier() par exemple utilise ".mld") -- affichee a cote du
+// les scripts, mais ecrire.fichier() par exemple utilise ".txt") -- affichee a cote du
 // champ de saisie du nom.
 let navFichiersExtension = ".mlg";
 let navFichiersExtensionModifiable = false;   // vrai pour l'enregistrement depuis l'editeur (champ extension modifiable)
@@ -17617,7 +17583,7 @@ async function executerScriptLocal(script, options = {}) {
     else if (e instanceof ErreurLangage) { print("Erreur ligne " + e.ligne + ": " + e.message, "erreur"); for (const lp of lignesPileAppels(e)) print(lp, "erreur"); }
     else print("Erreur: " + e.message, "erreur");
   }
-  // Referme le zip conserve ouvert par lire.zip(chemin, nom) (flux de lecture) : rien ne reste ouvert apres le script.
+  // Referme le zip conserve ouvert par lire.entrer.zip(chemin, nom) (flux de lecture) : rien ne reste ouvert apres le script.
   try { if (window.MonLangage && typeof window.MonLangage.zipLireFermer === "function") window.MonLangage.zipLireFermer(); } catch (_) {}
   arreterIndicateurAttente();
   executionEnCours = false;
