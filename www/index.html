@@ -5041,6 +5041,97 @@ function coreParties(v, args) {
   if (courant !== null) blocs.push(courant);
   return { __type: "liste", elements: blocs.map(b => b.lignes.join("\n")) };
 }
+// recherch.parties(chemin, motif, contexte, limite, debut~, longueur~) : meme resultat que texte.parties(...), mais la recherche se fait
+// DIRECTEMENT dans le fichier du telephone, par morceaux de 2 Mo : le fichier n'est jamais charge en entier ni modifie.
+// debut~ (octets, a partir de 1) et longueur~ (octets) delimitent la zone ; les numeros de ligne restent ceux du FICHIER ENTIER.
+function creerRechercheParties(teste, contexte, limite, numeroDepart) {
+  let numero = numeroDepart, blocs = [], courant = null, restant = 0, avant = [], fini = false;
+  return {
+    estFini() { return fini; },
+    ajouter(ligne) {
+      if (ligne.charCodeAt(ligne.length - 1) === 13) ligne = ligne.slice(0, -1);   // fin de ligne Windows
+      if (teste(ligne)) {
+        if (courant === null) {
+          let premier = avant.length > 0 ? avant[0].n : numero;
+          let prec = blocs.length > 0 ? blocs[blocs.length - 1] : null;
+          if (prec !== null && prec.dernier >= premier - 1) courant = blocs.pop();   // blocs qui se touchent : on les fusionne
+          else {
+            if (blocs.length >= limite) { fini = true; return; }
+            courant = { lignes: [], dernier: 0 };
+          }
+          for (let a of avant) if (a.n > courant.dernier) { courant.lignes.push(a.n + "- " + a.t); courant.dernier = a.n; }
+          avant = [];
+        }
+        courant.lignes.push(numero + ": " + ligne);
+        courant.dernier = numero;
+        restant = contexte;
+      } else if (courant !== null && restant > 0) {
+        courant.lignes.push(numero + "- " + ligne);
+        courant.dernier = numero;
+        restant--;
+      } else {
+        if (courant !== null) { blocs.push(courant); courant = null; }
+        if (contexte > 0) { avant.push({ n: numero, t: ligne }); if (avant.length > contexte) avant.shift(); }
+        if (blocs.length >= limite && numero > blocs[blocs.length - 1].dernier + contexte + 1) { fini = true; return; }
+      }
+      numero++;
+    },
+    resultat() {
+      if (courant !== null) blocs.push(courant);
+      courant = null;
+      return { __type: "liste", elements: blocs.map(b => b.lignes.join("\n")) };
+    }
+  };
+}
+// lireMorceau(decalage0, nombre) -> Uint8Array (vide apres la fin du fichier) ; ceder() rend la main a l'interface.
+async function rechercherPartiesFichier(nomCmd, lireMorceau, ceder, teste, contexte, limite, debut, longueur) {
+  const MORCEAU = 2 * 1024 * 1024, MAX_LIGNE = 16 * 1024 * 1024;
+  if (limite === 0) return { __type: "liste", elements: [] };   // limite 0 : aucun bloc, le fichier n'est meme pas lu
+  const zoneFin = longueur === undefined ? Infinity : debut - 1 + longueur;   // decalage (base 0) exclu
+  // 1. numero de la premiere ligne de la zone : on compte les sauts de ligne avant debut, sans decoder
+  let numero = 1, pos = 0;
+  while (pos < debut - 1) {
+    const b = await lireMorceau(pos, Math.min(MORCEAU, debut - 1 - pos));
+    if (b.length === 0) return { __type: "liste", elements: [] };   // debut apres la fin du fichier : rien a trouver
+    for (let i = b.indexOf(10); i !== -1; i = b.indexOf(10, i + 1)) numero++;
+    pos += b.length;
+    await ceder();
+  }
+  // 2. lecture de la zone par morceaux, ligne par ligne (une ligne coupee en bout de morceau est reportee au suivant)
+  const rech = creerRechercheParties(teste, contexte, limite, numero);
+  const decodeur = new TextDecoder("utf-8", { ignoreBOM: true });
+  let reste = new Uint8Array(0), fin = false;
+  const traiter = (u8, dernierePartie) => {
+    const t = decodeur.decode(u8);
+    let p = 0;
+    while (p < t.length && !rech.estFini()) {
+      let f = t.indexOf("\n", p);
+      if (f === -1) { if (!dernierePartie) break; f = t.length; }
+      rech.ajouter(t.slice(p, f));
+      p = f + 1;
+    }
+  };
+  pos = debut - 1;
+  while (!fin && !rech.estFini()) {
+    const voulu = Math.min(MORCEAU, zoneFin - pos);
+    let b = voulu > 0 ? await lireMorceau(pos, voulu) : new Uint8Array(0);
+    pos += b.length;
+    if (b.length < voulu || voulu <= 0) fin = true;   // fin du fichier ou fin de la zone
+    let tout = b;
+    if (reste.length > 0) { tout = new Uint8Array(reste.length + b.length); tout.set(reste, 0); tout.set(b, reste.length); }
+    if (fin) { traiter(tout, true); break; }
+    const dernier = tout.lastIndexOf(10);
+    if (dernier === -1) {
+      if (tout.length > MAX_LIGNE) throw new Error(nomCmd + " : une ligne depasse 16 Mo (recherche impossible)");
+      reste = tout;
+    } else {
+      traiter(tout.subarray(0, dernier + 1), false);
+      reste = tout.slice(dernier + 1);
+    }
+    await ceder();
+  }
+  return rech.resultat();
+}
 // depart (facultatif, pour cherch, cherch.dernier et cherch.tout) : position (a partir de 1) ou la recherche commence ; les
 // positions rendues restent celles du texte/de la liste entier(e). Un depart invalide ou qui DEPASSE LA FIN est une erreur
 // claire (jamais un 0 silencieux). Exception voulue : depart = taille + 1 (juste apres la fin) est accepte et ne trouve
@@ -9195,6 +9286,12 @@ let aideCommandes = [
       "Aucune correspondance : liste vide. Une fin de ligne Windows (\\r\\n) est geree. Le texte est lu ligne par ligne sans etre decoupe en liste : adapte aux gros fichiers (rapports de bogues, journaux).",
       "Pour recuperer seulement les numeros des lignes qui correspondent : texte.decoup(saulig).cherch.tout(motif). Pour un autre decoupage en parties que les lignes : texte.decoup(sep).garder.contenant(motif)."
     ], exemple: "t ~ lire.fichier(|rapport.txt|)\nblocs ~ t.parties(/FATAL EXCEPTION|Process:.*moncalcul|Caused by:/i, 15)\naffi(blocs.lon())\naffi(blocs[1])   # les lignes 120- ... 120: ... 135- ...\n\nt.parties(|erreur|, 2, 10)        # au plus 10 blocs, 2 lignes de contexte\nt.parties(|erreur|, 0, 5, 40001)   # 5 premieres lignes qui correspondent apres la position 40001" },
+  { noms: ["recherch.parties"], categorie: "Texte", syntaxe: "recherch.parties(chemin, motif)  /  recherch.parties(chemin, motif, contexte)  /  recherch.parties(chemin, motif, contexte, limite)  /  recherch.parties(chemin, motif, contexte, limite, debut~1, longueur~1000000)", description: [
+      "Comme texte.parties(...) (voir aide(parties)), mais la recherche se fait DIRECTEMENT dans le fichier du telephone, par son chemin : le fichier n'est jamais charge en memoire ni modifie. Adapte aux tres gros fichiers (journaux, rapports de bogues). Renvoie une LISTE de blocs ; chaque ligne est precedee de son numero : \"120: ligne qui correspond\" et \"119- ligne de contexte\".",
+      "chemin : chemin complet du fichier (avec des /). motif, contexte et limite : exactement comme texte.parties (motif = texte ou /.../i, m|...|, fam|...| ; contexte = lignes avant ET apres ; limite = nombre maximum de blocs, 0 = liste vide). Les blocs qui se touchent sont fusionnes ; la recherche s'arrete des que la limite est atteinte.",
+      "debut~ (octets, a partir de 1, comme lire.fichier) et longueur~ (octets) delimitent la ZONE de recherche : seules les lignes de cette zone sont cherchees et rendues, contexte compris (il ne deborde pas de la zone). La premiere et la derniere ligne de la zone peuvent etre coupees. Un debut~ apres la fin du fichier, ou une longueur~ de 0, donne une liste vide ; une longueur~ trop grande s'arrete a la fin du fichier, sans erreur. Les options s'ecrivent au debut ou a la fin de l'appel.",
+      "Les numeros de ligne sont toujours ceux du FICHIER ENTIER, meme si la zone commence loin. Le fichier est lu en UTF-8, ligne par ligne (une ligne de plus de 16 Mo donne une erreur claire). Disponible uniquement dans l'app installee. Pour chercher dans un texte deja en memoire : texte.parties(...), qui reste inchange."
+    ], exemple: "c ~ |/storage/emulated/0/Download/rapport.txt|\nblocs ~ recherch.parties(c, /FATAL EXCEPTION|Caused by:/i, 15)\naffi(blocs.lon())\naffi(blocs[1])\n\nrecherch.parties(c, |erreur|, 2, 10)                          ** au plus 10 blocs, 2 lignes de contexte **\nrecherch.parties(c, |erreur|, 0, 5, debut~40001, longueur~1000000)   ** seulement dans 1 Mo a partir de l'octet 40001 **" },
   { noms: ["decoup", "decoup.pos", "joindr", "remplace", "cherch", "cherch.dernier", "cherch.tout", "commence", "termine"], categorie: "Texte", syntaxe: "texte.decoup(separateur)  /  texte.decoup(separateur, limite)  /  texte.decoup(limite)  /  x.decoup.pos(p1, p2, ...)  /  x.decoup.pos(vecteur de positions)  /  liste.joindr(separateur)  /  texte.remplace(ancien, nouveau)  /  texte.remplace(ancien, nouveau, max)  /  x.cherch(morceau)  /  x.cherch(morceau, depart)  /  x.cherch.dernier(morceau)  /  x.cherch.dernier(morceau, depart)  /  x.cherch.tout(morceau)  /  x.cherch.tout(morceau, depart)  /  x.cherch.tout(morceau, depart, limite)  /  texte.commence(debut)  /  texte.termine(fin)", description: [
       "texte.decoup(sep) coupe le texte a chaque sep (n'importe quel texte, de n'importe quelle longueur) et renvoie une liste. Sans sep : coupe sur les espaces (plusieurs espaces de suite comptent pour un seul, ceux du debut et de la fin sont ignores). Avec sep vide || : coupe lettre par lettre. saulig est accepte comme argument : texte.decoup(saulig) coupe a chaque saut de ligne, liste.joindr(saulig) colle avec des sauts de ligne, texte.remplace(saulig, | |) enleve les sauts de ligne.",
       "texte.decoup(sep, limite) fait au plus limite morceaux : le dernier garde tout le reste. texte.decoup(limite) fait pareil en coupant sur les espaces. Limite 0 ou negative : liste vide. Limite plus grande que le nombre de morceaux possibles : meme resultat que decoup(sep). Limite non entiere (2.5) : erreur claire. Un nombre seul est toujours la limite : pour couper sur un chiffre, l'ecrire en texte : decoup(|1|).",
@@ -11148,6 +11245,40 @@ function enregistrerFonctionsBase() {
         }
 
         return await demanderFichierConsole();
+    };
+
+    // recherch.parties(chemin, motif, contexte, limite, debut~, longueur~) : comme texte.parties(...) (voir coreParties), mais directement
+    // dans un fichier du telephone, sans le charger en memoire ni le modifier. debut~ (octets, a partir de 1) et longueur~ delimitent la zone.
+    fonctionsBase["recherch.parties"] = fonctionsExpression["recherch.parties"] = async function(args, ctxExpr) {
+        const nomR = "recherch.parties";
+        const { pos: posR, opts: optsR } = separerOptionsArgs(args, nomR, ["debut", "longueur"]);
+        if (posR.length < 2 || posR.length > 4) throw new Error(nomR + "(chemin, motif, contexte, limite, debut~, longueur~) attend de 2 a 4 valeurs : le chemin du fichier, le motif, puis le contexte et la limite (facultatifs) ; recu : " + posR.length);
+        const chemin = await evalExpr(posR[0], ctxExpr);
+        if (typeof chemin !== 'string' || chemin === "") throw new ErreurTypeInvalide(nomR + "(chemin, motif) : chemin doit etre un texte non vide (recu : " + nomNature(chemin) + "). Pour chercher dans un texte deja en memoire : texte.parties(motif)");
+        if (chemin.indexOf("/") === -1) throw new Error(nomR + "(chemin, motif) : chemin doit etre un chemin complet avec des / (ex: |/storage/emulated/0/Download/rapport.txt|). Pour chercher dans un texte deja en memoire : texte.parties(motif)");
+        const motif = await evalExpr(posR[1], ctxExpr);
+        let teste;
+        if (estMotif(motif)) { const re = reDuMotif(motif, false); teste = l => re.test(l); }
+        else {
+            const t = exigerTexte(motif, nomR, "la valeur cherchee");
+            if (t === "") throw new Error(nomR + " : la valeur cherchee ne peut pas etre vide");
+            teste = l => l.includes(t);
+        }
+        const contexte = posR.length > 2 ? exigerEntier(await evalExpr(posR[2], ctxExpr), nomR, "le contexte (nombre de lignes avant et apres)") : 0;
+        if (contexte < 0) throw new Error(nomR + " : le contexte doit etre >= 0 (recu : " + contexte + ")");
+        const limite = posR.length > 3 ? exigerEntier(await evalExpr(posR[3], ctxExpr), nomR, "la limite (nombre maximum de blocs)") : Infinity;
+        if (limite < 0) throw new Error(nomR + " : la limite doit etre >= 0 (recu : " + limite + ")");
+        const debut = optsR.debut === undefined ? 1 : _zipEntierMin(await evalExpr(optsR.debut, ctxExpr), nomR, "debut", 1);
+        const longueur = optsR.longueur === undefined ? undefined : _zipEntierMin(await evalExpr(optsR.longueur, ctxExpr), nomR, "longueur", 0);
+        const pont = window.MonLangage;
+        if (!(pont && typeof pont.lireFichierOctets === "function")) throw new ErreurIndisponibleHorsApp(nomR + "(chemin, motif) : la recherche dans un fichier est disponible uniquement dans l'app installee");
+        if (!verifierPermissionStockage()) throw new ErreurPermissionRefusee(nomR + "(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
+        const lireMorceau = async (decalage, n) => {
+            const b64 = pont.lireFichierOctets(chemin, decalage, n);
+            if (b64 === null || b64 === undefined) throw new Error(nomR + "(...) : impossible de lire '" + chemin + "' (fichier introuvable ou illisible)");
+            return base64VersOctets(String(b64), nomR);
+        };
+        return await rechercherPartiesFichier(nomR, lireMorceau, () => _zipCeder(false), teste, contexte, limite, debut, longueur);
     };
 
     // lon(...) : longueur d'un vecteur/matrice (nombre total d'elements). Un scalaire vaut 1.
