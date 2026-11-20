@@ -5112,11 +5112,26 @@ async function rechercherPartiesFichier(nomCmd, lireMorceau, ceder, teste, conte
     }
   };
   pos = debut - 1;
+  let premier = true;
   while (!fin && !rech.estFini()) {
     const voulu = Math.min(MORCEAU, zoneFin - pos);
-    let b = voulu > 0 ? await lireMorceau(pos, voulu) : new Uint8Array(0);
-    pos += b.length;
-    if (b.length < voulu || voulu <= 0) fin = true;   // fin du fichier ou fin de la zone
+    const bordFin = voulu > 0 && pos + voulu >= zoneFin;   // ce morceau touche la fin de la zone
+    // La coupure ne tombe jamais au milieu d'un caractere UTF-8 : un caractere appartient a la zone ou se trouve son PREMIER octet
+    // (comme lire.fichier en texte). Au bord de fin, on lit jusqu'a 3 octets de plus pour finir le dernier caractere commence dans la zone.
+    const demande = bordFin ? voulu + 3 : voulu;
+    let b = voulu > 0 ? await lireMorceau(pos, demande) : new Uint8Array(0);
+    const lus = b.length;
+    pos += lus;
+    if (lus < demande || voulu <= 0 || bordFin) fin = true;   // fin du fichier ou fin de la zone
+    {
+      let d0 = 0, e = lus;
+      if (premier && debut > 1) while (d0 < e && d0 < 3 && (b[d0] & 0xC0) === 0x80) d0++;   // fin d'un caractere commence avant la zone : ignoree
+      if (bordFin && lus > voulu) { e = voulu; while (e < lus && e < voulu + 3 && (b[e] & 0xC0) === 0x80) e++; }   // fin du dernier caractere commence dans la zone
+      else if (bordFin) e = lus;
+      if (bordFin && d0 >= voulu) b = new Uint8Array(0);   // la zone n'est que la fin d'un caractere commence avant elle
+      else if (d0 > 0 || e < lus) b = b.subarray(d0, e);
+    }
+    premier = false;
     let tout = b;
     if (reste.length > 0) { tout = new Uint8Array(reste.length + b.length); tout.set(reste, 0); tout.set(b, reste.length); }
     if (fin) { traiter(tout, true); break; }
@@ -8812,14 +8827,14 @@ let aideCommandes = [
       "Renvoie VRAI si un DOSSIER existe vraiment a ce CHEMIN COMPLET (avec '/'), FAUX sinon (FAUX aussi si le chemin est un fichier).",
       "Disponible uniquement dans l'app installee (pas en previsualisation navigateur)."
     ], exemple: "si(non dossier.existe(|/storage/emulated/0/Download/Mes_scripts|)){ creer.dossier(|/storage/emulated/0/Download/Mes_scripts|) }" },
-  { noms: ["lire.fichier"], categorie: "Sauvegarde", syntaxe: "lire.fichier()  ou  lire.fichier(chemin)  ou  lire.fichier(chemin, enco~|latin1|)  ou  lire.fichier(chemin, octets~VRAI, debut~1, longueur~1000)", description: [
+  { noms: ["lire.fichier"], categorie: "Sauvegarde", syntaxe: "lire.fichier()  ou  lire.fichier(chemin)  ou  lire.fichier(chemin, enco~|latin1|)  ou  lire.fichier(chemin, octets~VRAI)  ou  lire.fichier(chemin, debut~1, longueur~1000)  ou  lire.fichier(chemin, octets~VRAI, debut~1, longueur~1000)", description: [
       "lire.fichier(chemin) : lit DIRECTEMENT le fichier a ce chemin et renvoie son contenu TEL QUEL, en TEXTE (UTF-8), sans rien interpreter : un fichier qui contient 123 donne le texte |123|.",
       "lire.fichier() : ouvre le navigateur de fichiers du telephone et attend que l'utilisateur choisisse le fichier a lire.",
       "Le chemin direct ne fonctionne que dans l'app installee (pas en previsualisation navigateur).",
       "enco~ choisit l'encodage utilise pour lire le texte : |utf-8| (par defaut), |latin1| ou |utf-16| (BOM reconnu) : lire.fichier(chemin, enco~|latin1|). Avec un autre encodage que utf-8, un fichier de plus de 16 Mo ne se lit pas d'un coup. enco~ ne s'applique pas aux octets.",
       "lire.fichier(chemin, octets~VRAI) lit le fichier TEL QUEL et renvoie des OCTETS (voir aide(octets)), sans le decoder : image, son, archive, fichier texte... Sans chemin, lire.fichier(octets~VRAI) ouvre le navigateur de fichiers.",
-      "Par morceaux (gros fichiers) : debut~ (a partir de 1, comme lon et x[i]) et longueur~ : lire.fichier(chemin, octets~VRAI, debut~1, longueur~1000) lit 1000 octets. Un debut~ apres la fin du fichier donne des octets vides, une longueur~ trop grande s'arrete a la fin du fichier, sans erreur : avance debut~ a chaque tour jusqu'a recevoir des octets vides. Un seul appel lit au plus 16 Mo.",
-      "Les options (octets~, debut~, longueur~) s'ecrivent au debut ou a la fin de l'appel : lire.fichier(octets~VRAI, chemin) est identique a lire.fichier(chemin, octets~VRAI). debut~ et longueur~ exigent octets~VRAI."
+      "Par morceaux (gros fichiers) : debut~ (a partir de 1, comme lon et x[i]) et longueur~, comptes en OCTETS, directement sur la lecture de texte : lire.fichier(chemin, debut~1, longueur~1000) renvoie le texte brut des 1000 premiers octets ; avec octets~VRAI, ce sont les octets eux-memes. Un debut~ apres la fin du fichier donne un texte (ou des octets) vide, une longueur~ trop grande s'arrete a la fin du fichier, sans erreur : avance debut~ a chaque tour jusqu'a recevoir du vide. Un seul appel lit au plus 16 Mo. En texte (UTF-8), les positions restent des octets (acces direct, sans relire le debut du fichier) mais la coupure ne tombe jamais au milieu d'un caractere : un caractere appartient au morceau ou se trouve son premier octet (au debut, les octets d'un caractere commence dans le morceau precedent sont sautes ; a la fin, le dernier caractere commence dans la zone est complete). En enchainant debut~ par pas de longueur~, aucun caractere n'est coupe, perdu ni repete ; le texte rendu peut depasser longueur~ de 1 a 3 octets. Avec octets~VRAI, tu recois exactement les octets demandes.",
+      "Les options (octets~, debut~, longueur~) s'ecrivent au debut ou a la fin de l'appel : lire.fichier(octets~VRAI, chemin) est identique a lire.fichier(chemin, octets~VRAI). debut~ et longueur~ marchent en texte comme en octets."
     ], exemple: "t ~ lire.fichier(|/storage/emulated/0/Download/notes.txt|)\naffi(t)\nc ~ lire.fichier()" },
   { noms: ["ajout.cle"], categorie: "Sauvegarde", syntaxe: "ajout.cle(cle, valeur, ...)", description: [
       "Ajoute une ou plusieurs valeurs a une cle DEJA SAUVEGARDEE avec ecrire.cle(...), sans rien ecraser.",
@@ -9289,7 +9304,7 @@ let aideCommandes = [
   { noms: ["recherch.parties"], categorie: "Texte", syntaxe: "recherch.parties(chemin, motif)  /  recherch.parties(chemin, motif, contexte)  /  recherch.parties(chemin, motif, contexte, limite)  /  recherch.parties(chemin, motif, contexte, limite, debut~1, longueur~1000000)", description: [
       "Comme texte.parties(...) (voir aide(parties)), mais la recherche se fait DIRECTEMENT dans le fichier du telephone, par son chemin : le fichier n'est jamais charge en memoire ni modifie. Adapte aux tres gros fichiers (journaux, rapports de bogues). Renvoie une LISTE de blocs ; chaque ligne est precedee de son numero : \"120: ligne qui correspond\" et \"119- ligne de contexte\".",
       "chemin : chemin complet du fichier (avec des /). motif, contexte et limite : exactement comme texte.parties (motif = texte ou /.../i, m|...|, fam|...| ; contexte = lignes avant ET apres ; limite = nombre maximum de blocs, 0 = liste vide). Les blocs qui se touchent sont fusionnes ; la recherche s'arrete des que la limite est atteinte.",
-      "debut~ (octets, a partir de 1, comme lire.fichier) et longueur~ (octets) delimitent la ZONE de recherche : seules les lignes de cette zone sont cherchees et rendues, contexte compris (il ne deborde pas de la zone). La premiere et la derniere ligne de la zone peuvent etre coupees. Un debut~ apres la fin du fichier, ou une longueur~ de 0, donne une liste vide ; une longueur~ trop grande s'arrete a la fin du fichier, sans erreur. Les options s'ecrivent au debut ou a la fin de l'appel.",
+      "debut~ (octets, a partir de 1, comme lire.fichier) et longueur~ (octets) delimitent la ZONE de recherche : seules les lignes de cette zone sont cherchees et rendues, contexte compris (il ne deborde pas de la zone). La premiere et la derniere ligne de la zone peuvent etre coupees, mais jamais au milieu d'un caractere : les positions restent des octets (acces direct au fichier), et un caractere appartient a la zone ou se trouve son premier octet (comme lire.fichier en texte). Un debut~ apres la fin du fichier, ou une longueur~ de 0, donne une liste vide ; une longueur~ trop grande s'arrete a la fin du fichier, sans erreur. Les options s'ecrivent au debut ou a la fin de l'appel.",
       "Les numeros de ligne sont toujours ceux du FICHIER ENTIER, meme si la zone commence loin. Le fichier est lu en UTF-8, ligne par ligne (une ligne de plus de 16 Mo donne une erreur claire). Disponible uniquement dans l'app installee. Pour chercher dans un texte deja en memoire : texte.parties(...), qui reste inchange."
     ], exemple: "c ~ |/storage/emulated/0/Download/rapport.txt|\nblocs ~ recherch.parties(c, /FATAL EXCEPTION|Caused by:/i, 15)\naffi(blocs.lon())\naffi(blocs[1])\n\nrecherch.parties(c, |erreur|, 2, 10)                          ** au plus 10 blocs, 2 lignes de contexte **\nrecherch.parties(c, |erreur|, 0, 5, debut~40001, longueur~1000000)   ** seulement dans 1 Mo a partir de l'octet 40001 **" },
   { noms: ["decoup", "decoup.pos", "joindr", "remplace", "cherch", "cherch.dernier", "cherch.tout", "commence", "termine"], categorie: "Texte", syntaxe: "texte.decoup(separateur)  /  texte.decoup(separateur, limite)  /  texte.decoup(limite)  /  x.decoup.pos(p1, p2, ...)  /  x.decoup.pos(vecteur de positions)  /  liste.joindr(separateur)  /  texte.remplace(ancien, nouveau)  /  texte.remplace(ancien, nouveau, max)  /  x.cherch(morceau)  /  x.cherch(morceau, depart)  /  x.cherch.dernier(morceau)  /  x.cherch.dernier(morceau, depart)  /  x.cherch.tout(morceau)  /  x.cherch.tout(morceau, depart)  /  x.cherch.tout(morceau, depart, limite)  /  texte.commence(debut)  /  texte.termine(fin)", description: [
@@ -11188,11 +11203,9 @@ function enregistrerFonctionsBase() {
         const { pos: posL, opts: optsL } = separerOptionsArgs(args, "lire.fichier", ["octets", "debut", "longueur", "enco"]);
         args = posL;
         const veutOctetsL = optsL.octets !== undefined ? estVrai(await evalExpr(optsL.octets, ctxExpr)) : false;
-        if (!veutOctetsL && (optsL.debut !== undefined || optsL.longueur !== undefined)) {
-            throw new Error("lire.fichier(...) : debut~ et longueur~ ne servent qu'a lire des octets (ajoute octets~VRAI)");
-        }
+        const veutTrancheL = optsL.debut !== undefined || optsL.longueur !== undefined;   // debut~/longueur~ : fonctionnent aussi en TEXTE (positions en octets)
         if (veutOctetsL && optsL.enco !== undefined) throw new ErreurTypeInvalide("lire.fichier(...) : enco~ ne s'applique qu'au texte, pas aux octets");
-        if (veutOctetsL) {   // lecture TELLE QUELLE, en octets : en entier, ou par morceaux avec debut~ (a partir de 1) et longueur~
+        if (veutOctetsL || veutTrancheL) {   // lecture par OCTETS : en entier, ou par morceaux avec debut~ (a partir de 1) et longueur~ ; rendue en octets (octets~VRAI) ou decodee en texte
             let cheminO;
             if (args.length >= 1) {
                 cheminO = await evalExpr(args[0], ctxExpr);
@@ -11207,7 +11220,23 @@ function enregistrerFonctionsBase() {
                 longueurO = await evalExpr(optsL.longueur, ctxExpr);
                 if (!(typeof longueurO === 'number' && Number.isInteger(longueurO) && longueurO >= 0)) throw new ErreurTypeInvalide("lire.fichier(...) : longueur~ attend un entier positif ou nul (recu : " + formatValeur(longueurO) + ")");
             }
-            return await lireOctetsFichier("lire.fichier", cheminO, debutO, longueurO);
+            // TEXTE : positions en OCTETS (un seul acces direct au fichier, aucun parcours depuis le debut), mais la coupure ne tombe jamais au
+            // milieu d'un caractere UTF-8 : un caractere appartient au morceau ou se trouve son PREMIER octet.
+            const encoT = (!veutOctetsL && optsL.enco !== undefined) ? normaliserEnco("lire.fichier", await evalExpr(optsL.enco, ctxExpr)) : "utf-8";
+            const ajusteT = !veutOctetsL && encoT === "utf-8";
+            const extraT = (ajusteT && longueurO !== undefined) ? Math.max(0, Math.min(3, 16 * 1024 * 1024 - longueurO)) : 0;   // jusqu'a 3 octets de plus pour finir le dernier caractere
+            const octetsO = await lireOctetsFichier("lire.fichier", cheminO, debutO, longueurO === undefined ? undefined : longueurO + extraT);
+            if (veutOctetsL) return octetsO;
+            if (!ajusteT) return decoderTexte("lire.fichier", octetsO.d, encoT);
+            const u = octetsO.d;
+            let degT = 0, finT = u.length;
+            while (degT < finT && degT < 3 && (u[degT] & 0xC0) === 0x80) degT++;   // octets de fin d'un caractere commence dans le morceau precedent : ignores
+            if (longueurO !== undefined) {
+                if (degT >= longueurO) return "";   // toute la zone n'est que la fin d'un caractere commence avant elle
+                finT = Math.min(u.length, longueurO);
+                while (finT < u.length && finT < longueurO + 3 && (u[finT] & 0xC0) === 0x80) finT++;   // fin du dernier caractere commence dans la zone
+            }
+            return decoderTexte("lire.fichier", u.subarray(degT, finT), "utf-8");
         }
         const encoL = optsL.enco !== undefined ? normaliserEnco("lire.fichier", await evalExpr(optsL.enco, ctxExpr)) : "utf-8";
         if (encoL !== "utf-8") {   // autre encodage : lecture en octets puis decodage
