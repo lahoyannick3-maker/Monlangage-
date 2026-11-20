@@ -1,4 +1,4 @@
-# MonLangage (MLG)
+# LE LANGAGE MLG (MonLangage)
 
 **MonLangage est un langage de programmation à syntaxe française, accompagné d’un environnement de développement Android.** Il permet d’écrire des scripts `.mlg`, de les exécuter dans une console intégrée et d’utiliser les fonctionnalités proposées par le moteur ainsi que, dans l’application Android, certaines capacités natives de l’appareil.
 
