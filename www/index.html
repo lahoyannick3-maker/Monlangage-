@@ -1038,7 +1038,6 @@ function chargerFichierDansNouvelOnglet(texte, nom, dossier) {
   // Le champ de saisie normalise les retours a la ligne (\r\n et \r deviennent \n) : on fait pareil ici pour que le texte
   // memorise corresponde exactement a ce que l'editeur affichera (sinon un fichier Windows paraitrait modifie des l'ouverture).
   texte = String(texte).replace(/\r\n?/g, "\n");
-  if (/\.mld$/i.test(nom)) texte = affichageLisibleMld(texte);   // fichier de sauvegarde : lisible sur plusieurs lignes
   // Fichier deja ouvert dans un onglet : on y retourne au lieu de le dupliquer. Un meme fichier peut arriver
   // deux fois (Android relit le fichier d'ouverture quand l'activite est recreee, ou ouverture repetee).
   //  - meme nom (+ meme dossier s'il est connu) ET meme contenu que sur le disque : on active cet onglet ;
@@ -4491,65 +4490,279 @@ function valeurDepuisJson(texte) {
   });
 }
 
-// ---------- Fichiers .mld : contenu lisible (IDE, editeur de texte) ----------
-// Un TEXTE est enregistre tel quel, avec de vraies lignes (un journal reste lisible) ; il n'est mis entre guillemets
-// JSON que si une relecture pourrait le confondre avec du JSON (commence par [ { " ou est deja du JSON valide).
-// Les autres valeurs (liste, dictionnai, nombre...) sont ecrites en JSON repartis sur plusieurs lignes.
-function premierCaractereNonVide(t) { let m = String(t).match(/\S/); return m ? m[0] : ""; }
-function texteSeRangeBrut(texte) {
-  if (typeof texte !== 'string') return false;
-  let c = premierCaractereNonVide(texte);
-  if (c === "[" || c === "{" || c === '"') return false;
-  try { JSON.parse(texte); return false; } catch (e) { return true; }
+// ---------- Fichiers .mld : format MLG (valeurs ecrites avec la syntaxe du langage, sans JSON) ----------
+// Premiere ligne : le marqueur ** MLD ** (un commentaire MLG). Puis UNE valeur : nombre, texte |...|, VRAI / FAUX, pasdefini,
+// liste(...), c(...), matrice(c(...), nlig~, ncol~), dictionnai(|cle|: valeur, ...), b|...| (octets), entier(|chiffres|) (grand entier).
+// Ecrit par ecrire.mld / ajout.mld, relu par lire.mld ; assez simple pour etre ecrit a la main (commentaires **, virgule finale).
+const MLD_MARQUEUR = "** MLD **";
+function mldHex2(n) { return (n < 16 ? "0" : "") + n.toString(16).toUpperCase(); }
+function mldNombre(v, nc) {
+  if (!Number.isFinite(v)) throw new ErreurTypeInvalide(nc + "(...) : un nombre non fini (infini, NaN) ne peut pas etre sauvegarde dans un fichier mld");
+  if (Object.is(v, -0)) return "-0";
+  const s = String(v);
+  if (!/e/i.test(s)) return s;
+  // MLG ne connait pas la notation scientifique (1e-7) : on ecrit le nombre en toutes lettres
+  const m = /^(-?)(\d)(?:\.(\d+))?e([+-]\d+)$/i.exec(s);
+  const chiffres = m[2] + (m[3] || ""), exp = parseInt(m[4], 10);
+  if (exp >= 0) {
+    const posPoint = 1 + exp;
+    if (chiffres.length <= posPoint) return m[1] + chiffres + "0".repeat(posPoint - chiffres.length);
+    return m[1] + chiffres.slice(0, posPoint) + "." + chiffres.slice(posPoint);
+  }
+  return m[1] + "0." + "0".repeat(-exp - 1) + chiffres;
 }
-function formaterJsonLisible(v, niveau) {
-  const LARGEUR = 76;
-  let compact = JSON.stringify(v);
-  if (v === null || typeof v !== 'object') return compact;
-  let ind = "  ".repeat(niveau + 1), indFin = "  ".repeat(niveau);
-  if (Array.isArray(v)) {
-    if (v.length === 0) return "[]";
-    if (compact.length + indFin.length <= LARGEUR) return compact;
-    if (v.every(x => x === null || typeof x !== 'object')) {
-      let lignes = [], cur = "";
-      for (let x of v) {
-        let t = JSON.stringify(x);
+function mldTexte(t, lignesReelles) {
+  const out = ["|"];
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i], code = t.charCodeAt(i);
+    if (c === "\\") out.push("\\\\");
+    else if (c === "|") out.push("\\|");
+    else if (c === "\n") out.push(lignesReelles ? "\n" : "\\n");
+    else if (c === "\t") out.push("\\t");
+    else if (c === "\r") out.push("\\r");
+    else if (code === 0xA0) out.push("\\s");
+    else if (code < 0x20 || code === 0x7F) out.push("\\x" + mldHex2(code));
+    else if (code >= 0xD800 && code <= 0xDFFF) {
+      const suivant = i + 1 < t.length ? t.charCodeAt(i + 1) : 0;
+      if (code <= 0xDBFF && suivant >= 0xDC00 && suivant <= 0xDFFF) { out.push(c, t[i + 1]); i++; }
+      else out.push("\\u" + code.toString(16).toUpperCase().padStart(4, "0"));
+    }
+    else out.push(c);
+  }
+  out.push("|");
+  return out.join("");
+}
+function mldOctets(u8) {
+  const out = ["b|"];
+  for (let i = 0; i < u8.length; i++) {
+    const b = u8[i];
+    if (b === 0x5C) out.push("\\\\");
+    else if (b === 0x7C) out.push("\\|");
+    else if (b >= 0x20 && b < 0x7F) out.push(String.fromCharCode(b));
+    else out.push("\\x" + mldHex2(b));
+  }
+  out.push("|");
+  return out.join("");
+}
+function mldEstAtome(v) { return !(estListe(v) || estVecteur(v) || estMatrice(v) || estDictionnai(v)); }
+function mldAtome(v, nc, lignesReelles) {
+  if (v === undefined) return "pasdefini";
+  if (typeof v === "boolean") return v ? "VRAI" : "FAUX";
+  if (typeof v === "number") return mldNombre(v, nc);
+  if (typeof v === "bigint") return "entier(|" + v.toString() + "|)";
+  if (typeof v === "string") return mldTexte(v, !!lignesReelles);
+  if (estOctets(v)) return mldOctets(v.d);
+  throw new ErreurTypeInvalide(nc + "(...) : une valeur de type " + nomNature(v) + " ne peut pas etre sauvegardee dans un fichier mld (types possibles : nombre, entier, texte, booleen, pasdefini, liste, vecteur, matrice, dictionnai, octets)");
+}
+// Valeur sur UNE ligne de au plus "lim" caracteres, ou null si elle ne tient pas.
+function mldEnLigne(v, nc, lim) {
+  if (lim < 0) return null;
+  let nom, elements;
+  if (estListe(v)) { nom = "liste"; elements = v.elements; }
+  else if (estVecteur(v)) { nom = "c"; elements = v; }
+  else if (estDictionnai(v)) {
+    if (v.entrees.size * 5 > lim) return null;
+    const parts = []; let reste = lim - 12;
+    for (const e of v.entrees.values()) {
+      const k = mldAtome(e.cle, nc, false);
+      const sv = mldEnLigne(e.valeur, nc, reste - k.length - 2);
+      if (sv === null) return null;
+      const part = k + ": " + sv;
+      reste -= part.length + 2;
+      if (reste < 0) return null;
+      parts.push(part);
+    }
+    return "dictionnai(" + parts.join(", ") + ")";
+  }
+  else if (estMatrice(v)) {
+    const dd = mldEnLigne(v.donnees, nc, lim - 30);
+    if (dd === null) return null;
+    const sm = "matrice(" + dd + ", nlig~" + v.nlig + ", ncol~" + v.ncol + ")";
+    return sm.length <= lim ? sm : null;
+  }
+  else { const sa = mldAtome(v, nc, false); return sa.length <= lim ? sa : null; }
+  if (elements.length * 3 > lim) return null;
+  const parts = []; let reste = lim - nom.length - 2;
+  for (const x of elements) {
+    const sx = mldEnLigne(x, nc, reste);
+    if (sx === null) return null;
+    reste -= sx.length + 2;
+    if (reste < 0) return null;
+    parts.push(sx);
+  }
+  return nom + "(" + parts.join(", ") + ")";
+}
+function mldFormater(v, nc, niveau) {
+  const LARGEUR = 76, ind = "  ".repeat(niveau + 1), indFin = "  ".repeat(niveau);
+  const court = mldEnLigne(v, nc, LARGEUR - indFin.length);
+  if (court !== null) return court;
+  if (estListe(v) || estVecteur(v)) {
+    const nom = estListe(v) ? "liste" : "c", els = estListe(v) ? v.elements : v;
+    if (els.every(mldEstAtome)) {   // valeurs simples : plusieurs par ligne
+      const lignes = []; let cur = "";
+      for (const x of els) {
+        const t = mldAtome(x, nc, false);
         if (cur !== "" && (ind + cur + ", " + t).length > LARGEUR) { lignes.push(cur + ","); cur = t; }
         else cur = cur === "" ? t : cur + ", " + t;
       }
       lignes.push(cur);
-      return "[\n" + lignes.map(l => ind + l).join("\n") + "\n" + indFin + "]";
+      return nom + "(\n" + lignes.map(l => ind + l).join("\n") + "\n" + indFin + ")";
     }
-    return "[\n" + v.map(x => ind + formaterJsonLisible(x, niveau + 1)).join(",\n") + "\n" + indFin + "]";
+    return nom + "(\n" + els.map(x => ind + mldFormater(x, nc, niveau + 1)).join(",\n") + "\n" + indFin + ")";
   }
-  let cles = Object.keys(v);
-  if (cles.length === 0) return "{}";
-  if (compact.length + indFin.length <= LARGEUR) return compact;
-  return "{\n" + cles.map(k => ind + JSON.stringify(k) + ": " + formaterJsonLisible(v[k], niveau + 1)).join(",\n") + "\n" + indFin + "}";
-}
-function contenuFichierMld(valeur) {
-  if (typeof valeur === 'string' && texteSeRangeBrut(valeur)) return valeur;
-  let brut = jsonDepuisValeur(valeur);
-  if (typeof brut !== 'string') return brut;
-  return formaterJsonLisible(JSON.parse(brut), 0);
-}
-function valeurDepuisContenuMld(texte) {
-  try { return valeurDepuisJson(texte); }
-  catch (e) {
-    let c = premierCaractereNonVide(texte);
-    if (c === "[" || c === "{" || c === '"') throw e;   // vrai JSON abime : on ne le prend pas pour du texte
-    return texte;                                       // fichier de texte brut
+  if (estDictionnai(v)) {
+    const lignes = [];
+    for (const e of v.entrees.values()) lignes.push(ind + mldAtome(e.cle, nc, false) + ": " + mldFormater(e.valeur, nc, niveau + 1));
+    return "dictionnai(\n" + lignes.join(",\n") + "\n" + indFin + ")";
   }
+  if (estMatrice(v)) return "matrice(\n" + ind + mldFormater(v.donnees, nc, niveau + 1) + ",\n" + ind + "nlig~" + v.nlig + ", ncol~" + v.ncol + "\n" + indFin + ")";
+  return mldAtome(v, nc, false);
 }
-// Affichage dans l'IDE d'un fichier .mld ouvert : texte (ancien format entre guillemets, "\n" ecrits en clair) -> vraies lignes ;
-// JSON trop long pour l'ecran -> repartis sur plusieurs lignes. Le contenu reste relu correctement par lire.fichier.
-function affichageLisibleMld(texte) {
-  let data;
-  try { data = JSON.parse(texte); } catch (e) { return texte; }
-  if (typeof data === 'string') return texteSeRangeBrut(data) ? data : texte;
-  if (data === null || typeof data !== 'object') return texte;
-  let plusLongue = texte.split("\n").reduce((m, l) => Math.max(m, l.length), 0);
-  return plusLongue <= 120 ? texte : formaterJsonLisible(data, 0);
+// Contenu complet d'un fichier .mld : marqueur, puis la valeur. Un texte seul s'ecrit sur de vraies lignes.
+function mldContenu(valeur, nc) {
+  const corps = typeof valeur === "string" ? mldTexte(valeur, true) : mldFormater(valeur, nc, 0);
+  return MLD_MARQUEUR + "\n" + corps + "\n";
+}
+// Relit un fichier .mld : ne lit que des VALEURS (aucun code execute) ; les erreurs donnent le numero de ligne.
+function mldLire(texte, nc) {
+  if (texte.charCodeAt(0) === 0xFEFF) texte = texte.slice(1);
+  const n = texte.length;
+  let pos = 0;
+  const ligneDe = (p) => { let l = 1; for (let i = 0; i < p && i < n; i++) if (texte.charCodeAt(i) === 10) l++; return l; };
+  const err = (msg, p) => new ErreurFichierInvalide(nc + "(...) : ligne " + ligneDe(p === undefined ? pos : p) + " : " + msg);
+  const sauter = () => {
+    for (;;) {
+      while (pos < n && texte.charCodeAt(pos) <= 32) pos++;
+      if (texte.charCodeAt(pos) === 42 && texte.charCodeAt(pos + 1) === 42) { while (pos < n && texte.charCodeAt(pos) !== 10) pos++; continue; }
+      return;
+    }
+  };
+  // marqueur obligatoire en premiere ligne
+  while (pos < n && texte.charCodeAt(pos) <= 32) pos++;
+  let finLigne = texte.indexOf("\n", pos); if (finLigne === -1) finLigne = n;
+  if (!/^\*\*\s*MLD\s*(\*\*)?\s*$/i.test(texte.slice(pos, finLigne))) {
+    throw new ErreurFichierInvalide(nc + "(...) : ce n'est pas un fichier mld : la premiere ligne doit etre " + MLD_MARQUEUR + " (pour lire un texte ou un autre fichier, utilise lire.fichier(...))");
+  }
+  pos = finLigne;
+  const finBarre = (debut) => { for (let i = debut; i < n; i++) { const c = texte.charCodeAt(i); if (c === 92) { i++; continue; } if (c === 124) return i; } return -1; };
+  const litTexte = (decalage) => {
+    const p0 = pos, debutBarre = pos + decalage, fin = finBarre(debutBarre + 1);
+    if (fin === -1) throw err("texte | jamais ferme (ecris \\| pour une barre dans un texte)", p0);
+    pos = fin + 1;
+    return { brut: texte.slice(debutBarre + 1, fin).replace(/\r\n/g, "\n"), p0: p0 };
+  };
+  const reNombre = /[+-]?\d+(?:\.\d+)?/y, reId = /[A-Za-z_][A-Za-z0-9_]*/y, reNom = /([A-Za-z_][A-Za-z0-9_]*)\s*~/y;
+  const litNombre = () => {
+    reNombre.lastIndex = pos;
+    const m = reNombre.exec(texte);
+    if (!m) throw err("nombre invalide");
+    const fin = pos + m[0].length;
+    if (/[eE]/.test(texte[fin] || "") && /[\d+-]/.test(texte[fin + 1] || "")) throw err("la notation scientifique (1e3) n'existe pas en MLG : ecris le nombre en toutes lettres (1000)");
+    pos = fin;
+    return Number(m[0]);
+  };
+  const suite = (pParen, lireItem) => {
+    const items = [];
+    for (;;) {
+      sauter();
+      if (pos >= n) throw err("parenthese ouverte jamais fermee", pParen);
+      if (texte[pos] === ")") { pos++; return items; }
+      items.push(lireItem());
+      sauter();
+      if (texte[pos] === ",") { pos++; continue; }
+      if (texte[pos] === ")") { pos++; return items; }
+      if (pos >= n) throw err("parenthese ouverte jamais fermee", pParen);
+      throw err("une virgule ou une parenthese fermante etait attendue");
+    }
+  };
+  const valeur = () => {
+    sauter();
+    if (pos >= n) throw err("une valeur est attendue ici");
+    const c = texte[pos];
+    if (c === "|") return decoderEchappements(litTexte(0).brut);
+    if (c === "b" && texte[pos + 1] === "|") {
+      const r = litTexte(1);
+      try { return creerOctets(decoderOctetsLitteral(r.brut)); } catch (e) { throw err(e.message, r.p0); }
+    }
+    if (c === "-" || c === "+" || (c >= "0" && c <= "9")) return litNombre();
+    if (/[A-Za-z_]/.test(c)) {
+      reId.lastIndex = pos;
+      const nomId = reId.exec(texte)[0], p0 = pos;
+      pos += nomId.length;
+      if (nomId === "VRAI") return true;
+      if (nomId === "FAUX") return false;
+      if (nomId === "pasdefini") return undefined;
+      sauter();
+      const permis = "nombre, |texte|, VRAI, FAUX, pasdefini, liste(...), c(...), matrice(...), dictionnai(...), entier(...), b|...|";
+      if (texte[pos] !== "(") throw err("'" + nomId + "' n'est pas permis dans un fichier mld (seules des valeurs sont permises : " + permis + ")", p0);
+      const pParen = pos; pos++;
+      if (nomId === "liste") return { __type: "liste", elements: suite(pParen, valeur) };
+      if (nomId === "c") return unifierTypeVecteur(suite(pParen, valeur));
+      if (nomId === "dictionnai") {
+        const m = new Map();
+        suite(pParen, () => {
+          sauter();
+          const pk = pos, cle = valeur();
+          if (!(typeof cle === "string" || typeof cle === "bigint" || (typeof cle === "number" && Number.isFinite(cle)))) throw err("une cle de dictionnai doit etre un texte ou un nombre", pk);
+          sauter();
+          if (texte[pos] !== ":") throw err("':' attendu apres la cle " + descriptionCleDico(cle));
+          pos++;
+          const val = valeur(), k = normaliserCleDico(cle, nc);
+          if (m.has(k)) throw err("la cle " + descriptionCleDico(cle) + " est ecrite deux fois", pk);
+          m.set(k, { cle: cle, valeur: val });
+          return null;
+        });
+        return { __type: "dictionnai", entrees: m };
+      }
+      if (nomId === "entier") {
+        const a = suite(pParen, valeur), x = a[0];
+        if (a.length !== 1) throw err("entier(...) attend UNE valeur", p0);
+        if (typeof x === "string" && /^\s*[+-]?\d+\s*$/.test(x)) return BigInt(x.trim());
+        if (typeof x === "number" && Number.isInteger(x)) return BigInt(x);
+        throw err("entier(...) attend un texte de chiffres (ex: entier(|12345678901234567890|)) ou un nombre entier", p0);
+      }
+      if (nomId === "matrice") {
+        let elements = null, nlig = null, ncol = null, parLigne = false;
+        suite(pParen, () => {
+          sauter();
+          reNom.lastIndex = pos;
+          const mn = reNom.exec(texte);
+          if (mn) {
+            const pn = pos; pos += mn[0].length;
+            const v = valeur();
+            if (mn[1] === "nlig") nlig = v; else if (mn[1] === "ncol") ncol = v; else if (mn[1] === "parlig") parLigne = v;
+            else throw err("parametre inconnu pour matrice(...) : " + mn[1] + "~ (possibles : nlig~, ncol~, parlig~)", pn);
+          } else {
+            if (elements !== null) throw err("matrice(...) attend UN vecteur c(...), puis nlig~ / ncol~ / parlig~");
+            const pe = pos; elements = valeur();
+            if (!estVecteur(elements)) throw err("le premier argument de matrice(...) doit etre un vecteur c(...)", pe);
+          }
+          return null;
+        });
+        if (elements === null || elements.length === 0) throw err("matrice(...) : il faut un vecteur c(...) non vide", p0);
+        if (typeof parLigne !== "boolean") throw err("matrice(...) : parlig~ attend VRAI ou FAUX", p0);
+        const entierPos = (x) => typeof x === "number" && Number.isInteger(x) && x > 0;
+        if (nlig !== null && !entierPos(nlig)) throw err("matrice(...) : nlig~ doit etre un entier positif", p0);
+        if (ncol !== null && !entierPos(ncol)) throw err("matrice(...) : ncol~ doit etre un entier positif", p0);
+        if (nlig === null && ncol === null) throw err("matrice(...) : nlig~ et/ou ncol~ sont attendus", p0);
+        if (nlig === null) nlig = elements.length / ncol; else if (ncol === null) ncol = elements.length / nlig;
+        if (!entierPos(nlig) || !entierPos(ncol) || nlig * ncol !== elements.length) throw err("matrice(...) : " + elements.length + " elements ne remplissent pas exactement " + nlig + " x " + ncol + " cases", p0);
+        elements = unifierTypeVecteur(elements);
+        const donnees = new Array(nlig * ncol);
+        for (let idx = 0; idx < donnees.length; idx++) {
+          if (parLigne) donnees[(idx % ncol) * nlig + Math.floor(idx / ncol)] = elements[idx];
+          else donnees[idx] = elements[idx];
+        }
+        return { __type: "matrice", nlig: nlig, ncol: ncol, donnees: donnees };
+      }
+      throw err("'" + nomId + "(...)' n'est pas permis dans un fichier mld (seules des valeurs sont permises : " + permis + ")", p0);
+    }
+    throw err("caractere inattendu '" + c + "'");
+  };
+  const resultat = valeur();
+  sauter();
+  if (pos < n) throw err("du contenu apres la valeur : un fichier mld ne contient qu'UNE valeur (pour en sauvegarder plusieurs, utilise liste(...) ou dictionnai(...))");
+  return resultat;
 }
 function exigerTexte(v, nomCmd, quoi) {
   if (typeof v !== 'string') throw new ErreurTypeInvalide(nomCmd + " : " + quoi + " doit etre du texte (recu : " + nomNature(v) + ")");
@@ -8534,6 +8747,34 @@ let aideCommandes = [
       "Avec des OCTETS : ajout.fichier(chemin, o) ajoute les octets TELS QUELS a la FIN du fichier.",
       "Texte et octets ne se melangent pas dans un meme appel. octets~ (facultatif) s'ecrit au debut ou a la fin."
     ], exemple: "ecrire.fichier(|/storage/emulated/0/Download/journal.txt|, texte(|Debut|, saulig))\najout.fichier(|/storage/emulated/0/Download/journal.txt|, texte(|Depot: |, 500, saulig))" },
+  { noms: ["ecrire.mld"], categorie: "Sauvegarde", syntaxe: "ecrire.mld(nom, valeur, ecra~FAUX)  ou  ecrire.mld(chemin, valeur, ecra~FAUX)", description: [
+      "Sauvegarde UNE valeur, avec tous ses types (nombre, entier, texte, booleen, liste, vecteur, matrice, dictionnai, octets), dans un fichier .mld : le format MLG, lisible et modifiable a la main (voir aide(mld)).",
+      "Une seule valeur par appel : pour en sauvegarder plusieurs, ecris liste(...) ou dictionnai(...). Une fonction, une instance de classe, un generateur, un motif ou une archive zip donne une erreur claire.",
+      "Si nom contient un '/', ecriture DIRECTE a cet emplacement. Sans '/', ouvre le navigateur de fichiers integre pour choisir l'emplacement. Sans extension, .mld est ajoute.",
+      "ecra~FAUX par defaut : si le fichier existe deja, l'ecriture est REFUSEE (erreur, a intercepter avec essai/attrape). ecra~VRAI ecrase sans verifier.",
+      "Relire avec lire.mld(...). Pour ecrire un simple texte ou un autre format : ecrire.fichier(...)."
+    ], exemple: "d ~ dictionnai(|nom|: |Yannick|, |scores|: liste(12, 15, 9))\necrire.mld(|/storage/emulated/0/Download/profil|, d, ecra~VRAI)" },
+  { noms: ["lire.mld"], categorie: "Sauvegarde", syntaxe: "lire.mld(chemin)  ou  lire.mld()", description: [
+      "Lit un fichier .mld (voir aide(mld)) et renvoie la valeur qu'il contient, avec ses types : liste, vecteur, matrice, dictionnai, octets, nombre, texte, booleen...",
+      "lire.mld(chemin) : lit directement ce fichier (sans extension, .mld est ajoute). lire.mld() : ouvre le navigateur de fichiers du telephone.",
+      "La premiere ligne doit etre le marqueur ** MLD ** : sinon erreur claire (pour lire un texte ou un autre fichier : lire.fichier(...)). Une erreur de syntaxe indique le numero de la ligne.",
+      "Ne lit que des VALEURS : aucun code n'est execute, meme dans un fichier modifie a la main.",
+      "Le chemin direct ne fonctionne que dans l'app installee (pas en previsualisation navigateur)."
+    ], exemple: "d ~ lire.mld(|/storage/emulated/0/Download/profil.mld|)\naffi(d.lire(|nom|))" },
+  { noms: ["ajout.mld"], categorie: "Sauvegarde", syntaxe: "ajout.mld(nom, valeur)  ou  ajout.mld(chemin, valeur)", description: [
+      "Ajoute UNE valeur a un fichier .mld DEJA EXISTANT, sans l'ecraser : le fichier est relu, fusionne, puis reecrit en entier (avec son marqueur).",
+      "Fusion (comme ajout.cle) : si le fichier contient une liste ou un vecteur, la valeur est ajoutee a la fin ; sinon, l'ancienne valeur devient le premier element d'une nouvelle liste.",
+      "Si nom contient un '/', le fichier doit deja exister exactement a cet emplacement (cree-le avec ecrire.mld(...)). Sans '/', ouvre le navigateur de fichiers pour choisir le fichier existant. Sans extension, .mld est ajoute.",
+      "Une seule valeur par appel (liste(...) pour en ajouter plusieurs a la fois). Disponible uniquement dans l'app installee."
+    ], exemple: "ecrire.mld(|/storage/emulated/0/Download/scores|, liste(12, 15))\najout.mld(|/storage/emulated/0/Download/scores|, 9)   ** le fichier contient liste(12, 15, 9)" },
+  { noms: ["mld"], categorie: "Sauvegarde", syntaxe: "** MLD **   (premiere ligne d'un fichier .mld)", description: [
+      "Un fichier .mld sauvegarde UNE valeur du langage, ecrite avec la syntaxe de MLG (pas de JSON). Il est cree par ecrire.mld(...), relu par lire.mld(...), et peut aussi s'ecrire a la main.",
+      "Premiere ligne obligatoire : le marqueur ** MLD ** (un commentaire MLG). Ensuite, UNE valeur.",
+      "Valeurs permises : nombre (5, -2, 0.5 : jamais de notation 1e3), grand entier entier(|12345678901234567890|), texte |...| (antislash comme partout : \\| \\\\ \\n \\t \\xHH...), VRAI, FAUX, pasdefini, liste(...), vecteur c(...), matrice(c(...), nlig~2, ncol~3 [, parlig~VRAI]), dictionnai(|cle|: valeur, ...) (cles : texte ou nombre), octets b|...| (\\xHH = un octet).",
+      "Espaces, lignes vides et commentaires (** jusqu'a la fin de la ligne) sont libres ; une virgule finale est toleree avant la parenthese fermante.",
+      "Un texte seul s'ecrit sur de vraies lignes ; dans une liste ou un dictionnai, un retour a la ligne s'ecrit \\n.",
+      "Rien d'autre n'est permis (variables, calculs, appels de commandes) : lire.mld ne lit que des valeurs et indique la ligne de l'erreur."
+    ], exemple: "** MLD **\n** profil de test\ndictionnai(\n  |nom|: |Yannick|,\n  |scores|: liste(12, 15, 9),\n  |poids|: c(1.5, 2, 3),\n  |image|: b|\\x89PNG|,\n)" },
   { noms: ["octets"], categorie: "Sauvegarde", syntaxe: "b|...|  /  o[i]  /  o[i] ~ valeur  /  lon(o)  /  o.extrait(debut, longueur)  /  o1 + o2", description: [
       "Des OCTETS sont une suite de nombres de 0 a 255 : le contenu brut d'un fichier (image, son, archive...). C'est un type a part, plus leger qu'une liste de nombres ; natu(o) donne |octets|.",
       "b|...| ecrit des octets directement, comme |...| ecrit un texte. \\xHH donne UN octet en hexadecimal : b|\\x89PNG| donne 137, 80, 78, 71. Les caracteres normaux comptent pour leur code, en UTF-8 : b|é| donne 2 octets. Les echappements \\| \\\\ \\n \\t \\r marchent comme dans un texte.",
@@ -10631,6 +10872,118 @@ function enregistrerFonctionsBase() {
         const encoA = optsA.enco !== undefined ? normaliserEnco("ajout.fichier", await evalExpr(optsA.enco, ctxExpr)) : "utf-8";
         // utf-16 : sans BOM, puisqu'on ajoute a la fin d'un fichier qui en a deja un (l'encodage doit etre le meme que celui du fichier)
         return await ajouterOctetsFichier("ajout.fichier", nom, encoderTexte("ajout.fichier", texteAjout, encoA, true), ".txt");
+    };
+
+    // ---- ecrire.mld / lire.mld / ajout.mld : fichiers .mld (format MLG ; voir mldContenu / mldLire plus haut) ----
+    const lireTexteExactMld = (nomCmd, chemin) => {
+        const pont = window.MonLangage;
+        if (typeof pont.existeFichier === "function" && !pont.existeFichier(chemin)) {
+            throw new ErreurFichierIntrouvable(nomCmd + "(...) : le fichier '" + chemin + "' n'existe pas");
+        }
+        const t = (typeof pont.lireFichierEditeur === "function") ? pont.lireFichierEditeur(chemin) : pont.lireFichier(chemin);
+        if (t === null || t === undefined) throw new Error(nomCmd + "(...) : impossible de lire '" + chemin + "'");
+        return t;
+    };
+
+    fonctionsBase["ecrire.mld"] = fonctionsExpression["ecrire.mld"] = async function(args, ctxExpr) {
+        const { pos: posE, opts: optsE } = separerOptionsArgs(args, "ecrire.mld", ["ecra"]);
+        args = posE;
+        if (args.length < 2) throw new Error("ecrire.mld(nom, valeur, ecra~FAUX) attend un nom (ou un chemin) et une valeur");
+        if (args.length > 2) throw new ErreurTypeInvalide("ecrire.mld(...) : UNE seule valeur est attendue (recu : " + (args.length - 1) + "). Pour en sauvegarder plusieurs : liste(...) ou dictionnai(...)");
+        let nom = await evalExpr(args[0], ctxExpr);
+        if (typeof nom !== 'string') throw new ErreurTypeInvalide("ecrire.mld(nom, valeur) : nom doit etre du texte");
+        let ecra = optsE.ecra !== undefined ? estVrai(await evalExpr(optsE.ecra, ctxExpr)) : false;
+        const valeur = await evaluerElementBrut(args[1].trim(), ctxExpr);
+        const contenu = mldContenu(valeur, "ecrire.mld");
+
+        if (nom.indexOf("/") !== -1) {
+            if (!(window.MonLangage && typeof window.MonLangage.ecrireFichier === "function")) {
+                throw new Error("ecrire.mld(chemin, valeur) : l'ecriture directe par chemin n'est possible que dans l'app installee (utilise ecrire.mld(nom, valeur) sans '/' en previsualisation navigateur)");
+            }
+            if (!verifierPermissionStockage()) {
+                throw new ErreurPermissionRefusee("ecrire.mld(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
+            }
+            let cheminDirect = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".mld";
+            if (!ecra && typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminDirect)) {
+                throw new ErreurFichierDejaExistant("ecrire.mld(...) : le fichier '" + cheminDirect + "' existe deja (utilise ecra~VRAI pour l'ecraser, ou fichier.existe(...) pour verifier avant)");
+            }
+            if (!window.MonLangage.ecrireFichier(cheminDirect, contenu)) throw new Error("ecrire.mld(...) : echec de l'ecriture sur '" + cheminDirect + "'");
+            return true;
+        }
+
+        if (window.MonLangage && typeof window.MonLangage.ecrireFichier === "function") {
+            let nomSansExt = nom.replace(/\.[a-zA-Z0-9]+$/, "");
+            let mExtNom = nom.match(/\.[a-zA-Z0-9]+$/);
+            let cheminComplet = await demanderEmplacementEcritureFichier(nomSansExt, mExtNom ? mExtNom[0] : ".mld");
+            if (!ecra && typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminComplet)) {
+                throw new ErreurFichierDejaExistant("ecrire.mld(...) : le fichier '" + cheminComplet + "' existe deja (utilise ecra~VRAI pour l'ecraser, ou fichier.existe(...) pour verifier avant)");
+            }
+            if (!window.MonLangage.ecrireFichier(cheminComplet, contenu)) throw new Error("ecrire.mld(...) : echec de l'ecriture sur le telephone");
+            return true;
+        }
+
+        // Repli navigateur web (previsualisation hors app) : telechargement classique (ecra est ignore ici).
+        let nomFichier = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".mld";
+        let blob = new Blob([contenu], { type: "text/plain;charset=utf-8" });
+        let url = URL.createObjectURL(blob);
+        let a = document.createElement("a");
+        a.href = url;
+        a.download = nomFichier;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        return true;
+    };
+
+    fonctionsBase["lire.mld"] = fonctionsExpression["lire.mld"] = async function(args, ctxExpr) {
+        if (args.length > 1) throw new Error("lire.mld(chemin) attend au plus un argument (sans argument : ouvre le navigateur de fichiers)");
+        let texte;
+        if (args.length === 1) {
+            let chemin = await evalExpr(args[0], ctxExpr);
+            if (typeof chemin !== 'string') throw new ErreurTypeInvalide("lire.mld(chemin) : chemin doit etre du texte");
+            if (!(window.MonLangage && typeof window.MonLangage.lireFichier === "function")) {
+                throw new Error("lire.mld(chemin) : la lecture directe par chemin n'est possible que dans l'app installee (utilise lire.mld() sans argument en previsualisation navigateur)");
+            }
+            if (!verifierPermissionStockage()) {
+                throw new ErreurPermissionRefusee("lire.mld(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
+            }
+            texte = lireTexteExactMld("lire.mld", /\.[a-zA-Z0-9]+$/.test(chemin) ? chemin : chemin + ".mld");
+        } else if (window.MonLangage && typeof window.MonLangage.lireFichier === "function") {
+            texte = lireTexteExactMld("lire.mld", await demanderEmplacementLectureFichier());
+        } else {
+            texte = await demanderFichierConsole();
+        }
+        return mldLire(texte, "lire.mld");
+    };
+
+    fonctionsBase["ajout.mld"] = fonctionsExpression["ajout.mld"] = async function(args, ctxExpr) {
+        const { pos: posA } = separerOptionsArgs(args, "ajout.mld", []);
+        args = posA;
+        if (args.length < 2) throw new Error("ajout.mld(nom, valeur) attend un nom (ou un chemin) et une valeur");
+        if (args.length > 2) throw new ErreurTypeInvalide("ajout.mld(...) : UNE seule valeur est attendue (recu : " + (args.length - 1) + "). Pour en ajouter plusieurs : liste(...)");
+        let nom = await evalExpr(args[0], ctxExpr);
+        if (typeof nom !== 'string') throw new ErreurTypeInvalide("ajout.mld(nom, valeur) : nom doit etre du texte");
+        if (!(window.MonLangage && typeof window.MonLangage.lireFichier === "function" && typeof window.MonLangage.ecrireFichier === "function")) {
+            throw new ErreurIndisponibleHorsApp("ajout.mld(...) : disponible uniquement dans l'app installee");
+        }
+        if (!verifierPermissionStockage()) {
+            throw new ErreurPermissionRefusee("ajout.mld(...) : l'acces au stockage n'est pas autorise (active la permission dans les reglages de l'app)");
+        }
+        const nouvelle = await evaluerElementBrut(args[1].trim(), ctxExpr);
+        let cheminComplet;
+        if (nom.indexOf("/") !== -1) {
+            cheminComplet = /\.[a-zA-Z0-9]+$/.test(nom) ? nom : nom + ".mld";
+            if (!(typeof window.MonLangage.existeFichier === "function" && window.MonLangage.existeFichier(cheminComplet))) {
+                throw new ErreurFichierIntrouvable("ajout.mld(...) : le fichier '" + cheminComplet + "' n'existe pas (utilise ecrire.mld(...) pour le creer)");
+            }
+        } else {
+            cheminComplet = await demanderEmplacementLectureFichier();
+        }
+        const existant = mldLire(lireTexteExactMld("ajout.mld", cheminComplet), "ajout.mld");
+        const contenu = mldContenu(fusionnerPourAjout(existant, [nouvelle]), "ajout.mld");
+        if (!window.MonLangage.ecrireFichier(cheminComplet, contenu)) throw new Error("ajout.mld(...) : echec de l'ecriture sur '" + cheminComplet + "'");
+        return true;
     };
 
     // voir.cle() : liste les NOMS de toutes les cles actuellement sauvegardees avec
